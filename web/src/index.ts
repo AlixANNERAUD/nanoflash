@@ -3,7 +3,7 @@ export type { BackendModule } from "./backend.js";
 export { camelize, isSupported } from "./convert.js";
 export { NanoflashError, fromWasm } from "./errors.js";
 export type { ErrorClass } from "./errors.js";
-export { detect, flash, prepare } from "./flash.js";
+export { detect, prepare } from "./flash.js";
 export type { Prepared } from "./flash.js";
 export { checkLayout, writeLayout } from "./layout.js";
 export type {

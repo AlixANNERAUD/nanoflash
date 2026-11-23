@@ -282,11 +282,6 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
   };
 }
 
-/** Reads the manifest at `manifestUrl` and flashes the board it describes. */
-export async function flash(manifestUrl: string | URL, options: FlashOptions = {}): Promise<FlashReport> {
-  return (await prepare(manifestUrl)).flash(options);
-}
-
 /** Tells what chip the device on a port is. */
 export async function detect(options: {
   protocol: Protocol;

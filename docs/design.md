@@ -360,9 +360,9 @@ nanoflash detect --port <port> [--protocol <protocol>] [--json]
 
 - `nanoflash-web` builds one WebAssembly module per backend (feature per backend, built by
   `wasm-bindgen-cli`), each containing `core` and that backend only.
-- The npm package `nanoflash` exposes `flash(manifestUrl, options)`, `detect()`, layout
-  functions, and `loadBackend(protocol)`, which imports the right module dynamically once the
-  board is known.
+- The npm package `nanoflash` exposes `prepare(manifestUrl)`, whose `flash(options)` asks for the
+  port inside the click, `detect()`, layout functions, and `loadBackend(protocol)`, which imports
+  the right module dynamically once the board is known.
 - `<nanoflash-button manifest="manifest.json">`: a custom element with progress, error and
   unsupported-browser states, styled through CSS custom properties and parts.
 - Budget: the core and one backend stay under 250 KiB of gzipped WebAssembly; CI measures each

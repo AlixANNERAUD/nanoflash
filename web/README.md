@@ -20,12 +20,17 @@ Web Serial exists in Chromium based browsers only (Chrome, Edge, Opera), on a se
 ## Flash a board
 
 ```ts
-import { flash, isSupported, NanoflashError } from "nanoflash";
+import { isSupported, prepare, NanoflashError } from "nanoflash";
+
+if (!isSupported()) showMessage("Use a Chromium based browser, or the command line.");
+// Before the click: reads the manifest and starts loading the WebAssembly module.
+const prepared = await prepare("/boards/esp32-s3.json");
+if (prepared.promptErase) showEraseCheckbox();
 
 button.addEventListener("click", async () => {
-  if (!isSupported()) return showMessage("Use a Chromium based browser, or the command line.");
   try {
-    const report = await flash("/boards/esp32-s3.json", {
+    const report = await prepared.flash({
+      eraseAll: checkbox.checked,
       onProgress: ({ stage, done, total }) => showProgress(stage, done, total),
       onMessage: (text) => log(text),
     });
@@ -37,19 +42,10 @@ button.addEventListener("click", async () => {
 });
 ```
 
-`flash` asks the user to choose a port, filtered by the devices of the manifest, then flashes.
-The port is requested before any other `await`, so call `flash` straight from the click handler
-(a browser grants the request to a user gesture only).
-
-To show something before the click, such as the erase checkbox, `prepare` the manifest first:
-
-```ts
-import { prepare } from "nanoflash";
-
-const prepared = await prepare("/boards/esp32-s3.json"); // starts loading the WebAssembly module
-if (prepared.promptErase) showEraseCheckbox();
-button.onclick = () => prepared.flash({ eraseAll: checkbox.checked });
-```
+`prepared.flash` asks the user to choose a port, filtered by the devices of the manifest, then
+flashes. A browser shows the port chooser only during a user gesture, and an `await` may end it:
+`prepare` the manifest beforehand, and call `prepared.flash` straight from the click handler,
+which asks for the port before its first `await`.
 
 `Prepared` has `manifestUrl`, `protocols`, `filters`, `bootloaderFilters` and `promptErase`.
 `FlashOptions` are `port`, `boardIdentifier`, `eraseAll`, `verify` (default `true`), `baudRate`,

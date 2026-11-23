@@ -3,12 +3,12 @@
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
+import * as nanoflash from "../dist/index.js";
 import {
   NanoflashError,
   camelize,
   checkLayout,
   detect,
-  flash,
   fromWasm,
   isSupported,
   loadBackend,
@@ -39,6 +39,11 @@ afterEach(() => {
   fetchRecord = null;
 });
 
+/** Prepares the manifest at `url`, then flashes it. */
+async function flash(url, options) {
+  return (await prepare(url)).flash(options);
+}
+
 /** Runs `promise`, which must reject, and gives what it rejected with. */
 async function rejection(promise) {
   try {
@@ -62,6 +67,10 @@ test("isSupported follows navigator.serial", () => {
     if (previous === undefined) delete globalThis.navigator;
     else Object.defineProperty(globalThis, "navigator", previous);
   }
+});
+
+test("flashing goes through prepare: there is no flash(manifestUrl)", () => {
+  assert.equal("flash" in nanoflash, false);
 });
 
 test("prepares our JSON manifest", async () => {
