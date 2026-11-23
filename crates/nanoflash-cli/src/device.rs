@@ -382,6 +382,7 @@ pub fn detect_command(arguments: &DetectArguments<'_>) -> Result<String, Failure
         DetectOperation {
             protocol: arguments.protocol.map(|protocol| match protocol {
                 ProtocolArgument::Espressif => Protocol::Espressif,
+                ProtocolArgument::Samba => Protocol::Samba,
             }),
             progress: progress_format(arguments.progress, arguments.json),
         },
@@ -396,8 +397,11 @@ pub fn detect_command(arguments: &DetectArguments<'_>) -> Result<String, Failure
         || "none".to_string(),
         |usb| format!("{:04x}:{:04x}", usb.vendor, usb.product),
     );
+    let writable = chip
+        .writable_from
+        .map_or_else(String::new, |offset| format!("writable from {offset:#x}\n"));
     Ok(format!(
-        "protocol {}\nchip {}\nflash {flash}\nusb {usb}\nsecure download mode {}\n",
+        "protocol {}\nchip {}\nflash {flash}\n{writable}usb {usb}\nsecure download mode {}\n",
         chip.protocol,
         chip.chip,
         if chip.secure_download_mode {

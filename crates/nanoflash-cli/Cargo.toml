@@ -17,7 +17,7 @@ path = "src/main.rs"
 [dependencies]
 getargs = "0.5"
 getargs-derive = { version = "0.1.1", features = ["std"] }
-nanoflash = { path = "../nanoflash", version = "0.1.0", features = ["toml", "json", "table-espressif", "table-mbr", "table-linker", "espressif", "native", "testing"] }
+nanoflash = { path = "../nanoflash", version = "0.1.0", features = ["toml", "json", "table-espressif", "table-mbr", "table-linker", "espressif", "samba", "native", "testing"] }
 pollster = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

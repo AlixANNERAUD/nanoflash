@@ -1,0 +1,15 @@
+# Arduino Nano 33 BLE (nRF52840): Arduino's bootloader in the first 64 KiB, the application after it.
+[flash]
+size = "1 MiB"
+base-address = 0x0
+
+[[partition]]
+name = "bootloader"
+role = "bootloader"
+offset = 0x0
+size = "64 KiB"
+
+[[partition]]
+name = "application"
+role = "firmware"
+size = "remaining"

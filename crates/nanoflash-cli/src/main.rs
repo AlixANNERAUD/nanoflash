@@ -41,13 +41,13 @@ enum Command {
         /// The board of the manifest to flash, when the device cannot tell.
         #[arg(long)]
         board_identifier: Option<String>,
-        /// Erase the whole flash of the chip before writing.
+        /// Erase the whole flash of the chip before writing; on SAM-BA, all of it after the bootloader.
         #[arg(long)]
         erase_all: bool,
         /// Do not check what was written.
         #[arg(long)]
         no_verify: bool,
-        /// The baud rate to flash at [default: 460800 through a UART bridge, 115200 on USB-Serial-JTAG].
+        /// The baud rate to flash at [default: 460800 through a UART bridge, 115200 on USB-Serial-JTAG; ignored on SAM-BA].
         #[arg(long)]
         baud_rate: Option<u32>,
         /// How to report progress on standard error; quiet with --json.
@@ -125,6 +125,8 @@ enum ProgressFormat {
 enum ProtocolArgument {
     /// The Espressif ROM loader.
     Espressif,
+    /// Arduino's SAM-BA bootloaders (Nano 33 BLE, SAMD21 boards).
+    Samba,
 }
 
 #[derive(Debug, Subcommand)]

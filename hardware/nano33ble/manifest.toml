@@ -1,0 +1,14 @@
+# Firmware: hardware/nano33ble/hello built with arduino-cli (see ../README.md).
+[[board]]
+identifier = "arduino-nano-33-ble"
+name = "Arduino Nano 33 BLE"
+protocol = "samba"
+chip = "nrf52840"
+layout = "layout.toml"
+reset = "touch-1200"
+application-devices = [{ vendor = 0x2341, product = 0x805a }]
+bootloader-devices = [{ vendor = 0x2341, product = 0x005a }]
+
+[[board.image]]
+partition = "application"
+path = "firmware/hello.ino.bin"
