@@ -1,9 +1,11 @@
 //! The layout model: the flash of a board and its named partitions.
 
 mod error;
+mod report;
 mod resolve;
 
 pub use error::{LayoutError, LayoutErrors};
+pub use report::{ImageSize, PartitionReport, Report};
 pub use resolve::{ResolvedLayout, ResolvedPartition};
 
 use crate::quantity;
