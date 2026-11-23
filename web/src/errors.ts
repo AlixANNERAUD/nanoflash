@@ -1,3 +1,5 @@
+import { camelize } from "./convert.js";
+
 /** Who is to act: fix the input, the device, or the firmware that did not verify. */
 export type ErrorClass = "input" | "device" | "verification";
 
@@ -8,7 +10,10 @@ export class NanoflashError extends Error {
   /** What kind of failure, such as `no-sync`, `verification-failed` or `not-granted`. */
   readonly kind: string;
   readonly errorClass: ErrorClass;
-  /** The structured detail the library gave, without `kind`, `class` and `message`. */
+  /**
+   * The structured detail the library gave, without `kind`, `class` and `message`, with camelCase
+   * keys (`bootMode` for the library's `boot_mode`).
+   */
   readonly details: Readonly<Record<string, unknown>>;
   /** What the library was doing, for errors of the port. */
   readonly during: string | undefined;
@@ -59,7 +64,7 @@ export function fromWasm(value: unknown): NanoflashError {
       outer === "transport" && typeof innerKind === "string" ? innerKind : outer,
       errorClass,
       typeof message === "string" ? message : outer,
-      details,
+      camelize<Record<string, unknown>>(details),
       { raw: value, ...(during === undefined ? {} : { during }) },
     );
   }

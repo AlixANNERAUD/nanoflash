@@ -367,6 +367,16 @@ test("fromWasm maps every shape", () => {
   assert.equal(transport.message, "gone");
   assert.deepEqual(transport.details.error, { kind: "disconnected" });
 
+  const bootMode = fromWasm({
+    kind: "not-in-download-mode",
+    boot_mode: "0x8",
+    class: "device",
+    message: "not in download mode",
+  });
+  assert.deepEqual(bootMode.details, { bootMode: "0x8" });
+  const nested = fromWasm({ kind: "image-source", path: "a.bin", error: { serial_number: null } });
+  assert.deepEqual(nested.details, { path: "a.bin", error: { serialNumber: null } });
+
   const thrown = fromWasm(new TypeError("boom"));
   assert.equal(thrown.kind, "internal");
   assert.equal(thrown.errorClass, "device");

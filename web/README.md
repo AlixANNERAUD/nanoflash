@@ -86,11 +86,11 @@ const table: Uint8Array = await writeLayout(text, "espressif"); // or "mbr", "li
 
 Every failure is a `NanoflashError` with `kind` (such as `no-sync`, `verification-failed`,
 `not-granted`, `disconnected`), `errorClass` (`input`, `device` or `verification`), `message`,
-`details`, `during` and the `raw` object of the library. When the user closes the port chooser,
-the kind is `no-port-chosen`; when the browser does not show it at all, `port-request-refused`
-(a page in an iframe needs `allow="serial"`, and a permissions policy may block Web Serial).
-`not-granted` means that the board came back as a device the page has no permission for (see
-the component's bootloader button).
+`details` (the fields of the library, in camelCase), `during` and the `raw` object of the library.
+When the user closes the port chooser, the kind is `no-port-chosen`; when the browser does not
+show it at all, `port-request-refused` (a page in an iframe needs `allow="serial"`, and a
+permissions policy may block Web Serial). `not-granted` means that the board came back as a
+device the page has no permission for (see the component's bootloader button).
 
 A WebAssembly trap (a bug of nanoflash) is fatal for its module, which cannot be instantiated
 again. A layout call runs synchronously and sees the trap at once. `flash` and `detect` run in
