@@ -182,7 +182,8 @@ mod tests {
         assert_eq!(
             block_on(enter_download_mode(&mut Leaving, &reset, 0)),
             Err(Error::Transport {
-                error: TransportError::Disconnected
+                error: TransportError::Disconnected,
+                during: None
             })
         );
     }

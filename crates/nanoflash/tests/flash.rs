@@ -501,3 +501,27 @@ fn a_part_beyond_the_flash_of_the_chip_is_refused_before_erasing() {
     provider.finish().unwrap();
     assert_eq!(progress.stages, [Stage::Connecting, Stage::Resetting]);
 }
+
+#[test]
+fn a_disconnection_says_what_was_being_done() {
+    let mut progress = Recorder::default();
+    let (result, _provider) = run_flash(
+        &manifest(),
+        &transcript("flash-disconnect"),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::Transport {
+            error: nanoflash::transport::TransportError::Disconnected,
+            during: Some("writing \"bootloader\" at 0x0".into()),
+        }
+    );
+    assert_eq!(
+        error.to_string(),
+        "the device disconnected while writing \"bootloader\" at 0x0: check the cable and the port, then try again"
+    );
+}

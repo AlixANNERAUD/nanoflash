@@ -199,6 +199,7 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
             match reset::enter_download_mode(&mut self.port, &self.reset, attempt).await {
                 Err(Error::Transport {
                     error: TransportError::Disconnected,
+                    ..
                 }) => self.reopen(&mut reopened).await?,
                 other => other?,
             }
@@ -260,6 +261,7 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
                 Ok(_) | Err(Error::NoResponse { .. }) => tries += 1,
                 Err(Error::Transport {
                     error: TransportError::Disconnected,
+                    ..
                 }) => {
                     // A fresh port gets every try again; `reopen` only succeeds once.
                     self.reopen(reopened).await?;

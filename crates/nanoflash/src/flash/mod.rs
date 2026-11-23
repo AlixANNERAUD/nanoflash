@@ -113,13 +113,28 @@ fn report(progress: &mut dyn Progress, stage: Stage, offset: u64, done: u64, tot
     });
 }
 
+/// Connects, reporting `Connecting`.
+async fn connect<P: PortProvider>(
+    backend: &mut Backends<'_, P>,
+    progress: &mut dyn Progress,
+) -> Result<ChipInformation, Error> {
+    report(progress, Stage::Connecting, 0, 0, 0);
+    backend
+        .connect(progress)
+        .await
+        .map_err(|error| error.during(|| "connecting".into()))
+}
+
 /// Resets into the application, reporting `Resetting`.
 async fn reset<P: PortProvider>(
     backend: &mut Backends<'_, P>,
     progress: &mut dyn Progress,
 ) -> Result<(), Error> {
     report(progress, Stage::Resetting, 0, 0, 0);
-    backend.reset_to_application().await
+    backend
+        .reset_to_application()
+        .await
+        .map_err(|error| error.during(|| "resetting into the application".into()))
 }
 
 /// Erases `region`, reporting `Erasing` before and after.
@@ -129,7 +144,15 @@ async fn erase<P: PortProvider>(
     progress: &mut dyn Progress,
 ) -> Result<(), Error> {
     report(progress, Stage::Erasing, region.offset, 0, region.size);
-    backend.erase(region).await?;
+    backend.erase(region).await.map_err(|error| {
+        error.during(|| {
+            format!(
+                "erasing 0x{:x}..0x{:x}",
+                region.offset,
+                region.offset.saturating_add(region.size)
+            )
+        })
+    })?;
     report(
         progress,
         Stage::Erasing,
@@ -175,8 +198,7 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
         selection.reset.clone(),
         &options.backend,
     )?;
-    report(progress, Stage::Connecting, 0, 0, 0);
-    let chip = backend.connect(progress).await?;
+    let chip = connect(&mut backend, progress).await?;
     let outcome = flash_connected(
         &mut backend,
         &selection,
@@ -232,6 +254,11 @@ fn check_detected_flash(prepared: &Prepared, flash_size: u64) -> Result<(), Erro
     Ok(())
 }
 
+/// What a stage does with a segment, such as `writing "application" at 0x20000`.
+fn doing(stage: &str, segment: &Segment<'_>) -> String {
+    format!("{stage} \"{}\" at 0x{:x}", segment.label, segment.offset)
+}
+
 /// The part of [`flash`] between connecting and resetting into the application.
 async fn flash_connected<P: PortProvider, S: ImageSource>(
     backend: &mut Backends<'_, P>,
@@ -283,9 +310,20 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
             data: &image.bytes,
         })
         .collect();
-    backend.write(&segments, progress).await?;
+    // One segment at a time, so that a failure names the image.
+    for segment in &segments {
+        backend
+            .write(core::slice::from_ref(segment), progress)
+            .await
+            .map_err(|error| error.during(|| doing("writing", segment)))?;
+    }
     if options.verify {
-        backend.verify(&segments, progress).await?;
+        for segment in &segments {
+            backend
+                .verify(core::slice::from_ref(segment), progress)
+                .await
+                .map_err(|error| error.during(|| doing("verifying", segment)))?;
+        }
     }
     Ok(FlashReport {
         board: board.identifier.clone(),
@@ -320,8 +358,7 @@ pub async fn detect<P: PortProvider>(
         None => return Err(Error::ProtocolRequired { identity }),
     };
     let mut backend = Backends::new(protocol, port, provider, None, options)?;
-    report(progress, Stage::Connecting, 0, 0, 0);
-    let chip = backend.connect(progress).await?;
+    let chip = connect(&mut backend, progress).await?;
     reset(&mut backend, progress).await?;
     Ok(chip)
 }

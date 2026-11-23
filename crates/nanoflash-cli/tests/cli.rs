@@ -472,11 +472,23 @@ fn disconnect_exits_2() {
     assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
     let document = document(&output);
     assert_eq!(document["errors"][0]["class"], "device");
+    assert_eq!(
+        document["errors"][0]["during"],
+        "writing \"bootloader\" at 0x0"
+    );
+    let message = document["errors"][0]["message"].as_str().unwrap();
     assert!(
-        document["errors"][0]["message"]
-            .as_str()
-            .unwrap()
-            .contains("disconnected")
+        message.contains("the device disconnected while writing \"bootloader\" at 0x0"),
+        "{message}"
+    );
+    let output = flash_replaying("flash-disconnect.transcript", &["--progress", "quiet"]);
+    assert_eq!(output.status.code(), Some(2));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.starts_with(
+            "error: the device disconnected while writing \"bootloader\" at 0x0: check the cable"
+        ),
+        "{stderr}"
     );
 }
 

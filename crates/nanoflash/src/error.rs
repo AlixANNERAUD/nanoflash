@@ -19,6 +19,8 @@ pub enum Error {
     Transport {
         /// What failed.
         error: TransportError,
+        /// What was being done, such as `writing "application" at 0x20000`, when it is known.
+        during: Option<String>,
     },
     /// The board did not answer a command.
     NoResponse {
@@ -363,14 +365,43 @@ impl Error {
 
 impl From<TransportError> for Error {
     fn from(error: TransportError) -> Self {
-        Error::Transport { error }
+        Error::Transport {
+            error,
+            during: None,
+        }
+    }
+}
+
+impl Error {
+    /// Says what was being done when the serial port failed, unless the error already says.
+    /// Other errors are returned unchanged.
+    pub fn during(self, what: impl FnOnce() -> String) -> Error {
+        match self {
+            Error::Transport {
+                error,
+                during: None,
+            } => Error::Transport {
+                error,
+                during: Some(what()),
+            },
+            other => other,
+        }
     }
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::Transport { error } => write!(formatter, "{error}"),
+            Error::Transport { error, during } => {
+                write!(formatter, "{error}")?;
+                if let Some(during) = during {
+                    write!(formatter, " while {during}")?;
+                }
+                if *error == TransportError::Disconnected {
+                    formatter.write_str(": check the cable and the port, then try again")?;
+                }
+                Ok(())
+            }
             Error::NoResponse { command } => write!(
                 formatter,
                 "the board did not answer {command}: check the port and the cable, then try again"
