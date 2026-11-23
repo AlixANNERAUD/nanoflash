@@ -67,46 +67,55 @@ For the backends the choice was between reusing existing tools and writing our o
 | B'. For SAM-BA, BOSSA everywhere (`cxx` natively, BOSSA compiled to WebAssembly with Chromium's JSPI in the browser) | Reuses BOSSA, but needs a C++ toolchain, a second WebAssembly module with JavaScript glue, and makes the crate BSD-3-Clause | Rejected by the author in favour of our own code |
 | C. Make the upstream tools asynchronous first (espflash, probe-rs), then build on them | Best for the ecosystem, but blocked on maintainers' major-version decisions | Deferred: offered upstream once our loop has run on hardware |
 
-Per backend:
+Per backend, choosing for the smallest codebase, simplicity and portability (dependencies count
+as code: they weigh on the WebAssembly bundle and on `no_std`):
 
-| Backend | Reused (both platforms) | Ours |
+| Backend or writer | Reused | Ours |
 | --- | --- | --- |
-| Espressif ROM loader | `espflash` with `default-features = false`: `command` (encoding), `target::Chip` (detection values, registers, write sizes, eFuse fields), stubs. Builds for `wasm32-unknown-unknown`. | SLIP framing, asynchronous send and receive loop, reset sequences (UART bridge, USB-Serial-JTAG), orchestration, verification |
+| Espressif ROM loader | `miniz_oxide` (compression), `md-5` | SLIP framing, commands, a ~40-line chip table copied from `espflash` (MIT OR Apache-2.0, attributed), asynchronous loop, reset sequences, orchestration. No flasher stub at first: the ROM already supports compressed writes and MD5, the stub is only a speed-up and can come later. |
 | SAM-BA | none usable in the browser | our own code, written from the protocol (Microchip's SAM-BA documentation, observed bootloader behaviour); BOSSA (BSD-3-Clause) is a behaviour reference only, no code ported |
-| USB DFU | `dfu-core` (`no_std`, sans-I/O) | glue to the USB transport, DfuSe |
-| UF2 | `uf2_block` | family identifiers, drive handling |
+| Espressif partition table | `md-5` | ~100 lines: 32-byte entries and the MD5 row. `esp-idf-part` (needs `std`, `regex`, `deku`) is a test-only dependency to read our output back. |
+| MBR | none | ~50 lines: four 16-byte entries and the signature. `mbrman` is a test-only dependency. |
+| USB DFU (later) | `dfu-core` (`no_std`, sans-I/O) | glue to the USB transport, DfuSe |
+| UF2 (later) | none (the format is a 32-byte header) | encoder, family identifiers, drive handling |
 | CMSIS-DAP (later) | `probe-rs` natively; in the browser, to be decided when scheduled | glue |
+
+`espflash` as a dependency was considered (it builds for WebAssembly without its serial feature),
+but it would bring `regex`, `deku`, `object` and `esp-idf-part` into the bundle for about 40 lines
+of constants, so the constants are copied instead.
 
 CMSIS-DAP in the browser would today mean DAPjs next to probe-rs, which is two engines (an
 anti-goal). The choice between that exception and waiting for an asynchronous probe-rs (or
 contributing it) is made when the backend is scheduled.
 
-If `espflash`'s dependencies make the WebAssembly bundle too large (budget below), we copy the
-chip tables we need (MIT OR Apache-2.0, attributed) instead of depending on it.
-
 ## Architecture
 
 ### Crates
 
-All in one Cargo workspace under `crates/`, published to crates.io as `nanoflash-*`; the web
-layer is also published to npm as `nanoflash`.
+Three crates in one workspace, plus the npm package. Fewer crates means one version to release,
+no glue between crates, and features instead of crate boundaries for what a firmware or a web
+page leaves out.
 
-| Crate | `no_std` | Role |
+| Crate | Role |
+| --- | --- |
+| `nanoflash` (`crates/nanoflash`) | The library, `no_std` + `alloc` by default. Modules: `layout` (model, resolution, checks, report), `manifest` (board manifest, esp-web-tools conversion), `transport` (traits), `table` (writers), `espressif`, `samba`, `build` (constants and `memory.x` for `build.rs`), `native` and `web` (transports), `testing` (transcript replay and recording). |
+| `nanoflash-cli` (`crates/nanoflash-cli`) | The `nanoflash` command. |
+| `nanoflash-web` (`crates/nanoflash-web`) | `wasm-bindgen` bindings, built once per backend into separate WebAssembly modules. |
+
+Features of `nanoflash` (every one only adds):
+
+| Feature | Enables | Needs `std` |
 | --- | --- | --- |
-| `nanoflash-core` | yes | Layout model, resolution and checks; manifest model; transport, backend and hook traits; errors; progress events |
-| `nanoflash-partition` | features | Table writers behind features: `espressif` (needs `std`, through `esp-idf-part`), `mbr` (`mbrman`), `gpt` (`gpt_disk_types`), `linker` (memory regions, plain offsets) |
-| `nanoflash-filesystem` | no | Optional file system image writers behind a trait: `fat` (`fatfs`), `littlefs` (`littlefs2`, native only) |
-| `nanoflash-espressif` | yes | Espressif ROM loader backend |
-| `nanoflash-samba` | yes | SAM-BA backend, Arduino dialect, 1200-baud touch |
-| `nanoflash-dfu` | yes | USB DFU backend (later) |
-| `nanoflash-uf2` | yes | UF2 encoder and backend (later) |
-| `nanoflash-transport-native` | no | `serialport` (serial) and `nusb` (USB), port discovery, mounted drives |
-| `nanoflash-transport-web` | no | Web Serial and WebUSB through `web-sys` (`web_sys_unstable_apis`), File System Access |
-| `nanoflash` | features | Facade: re-exports `core`, enables backends and writers by feature, offers `flash(board, ...)` dispatching on the board's protocol |
-| `nanoflash-cli` | no | The `nanoflash` command |
-| `nanoflash-build` | no | For firmware `build.rs`: reads a layout, writes Rust constants (and optionally `memory.x`) |
-| `nanoflash-web` | no | `wasm-bindgen` bindings; one WebAssembly module per backend |
-| `nanoflash-testing` | no | Unpublished: transcript replay and recording transports, fixtures |
+| `toml`, `json` | parsing layouts and manifests | no |
+| `espressif`, `samba` | backends | no |
+| `table-espressif`, `table-mbr`, `table-linker` | writers | no |
+| `build` | helpers for `build.rs` (implies `toml`, `table-linker`) | yes |
+| `native` | `serialport` transport, port listing | yes |
+| `web` | Web Serial transport over hand-written `wasm-bindgen` bindings (no `web_sys_unstable_apis` flag needed downstream) | no |
+| `testing` | transcript replay and recording transports | no |
+
+The USB transport (`nusb`) arrives with the first USB backend (DFU); deliverables 1 to 4 only use
+serial ports.
 
 The npm package (`web/` at the repository root) holds the TypeScript API, the backend loader and
 the `<nanoflash-button>` web component.
@@ -173,24 +182,23 @@ data.
 
 | Writer | Output | Notes |
 | --- | --- | --- |
-| `espressif` | Binary partition table (`esp-idf-part`), placed at the `partition-table` partition | Role mapping: `firmware` to `app/factory`, `update` slot n to `app/ota_n`, `storage` to `data` with a subtype from `filesystem`, `crash-record` to `data/coredump`; `custom` needs explicit `espressif` attributes. Update slots require an `otadata` partition. |
-| `mbr` | 512-byte MBR (`mbrman`) | For SD cards and disk images; sector size 512, partition types from attributes or the role |
-| `gpt` | Protective MBR, primary and backup GPT (`gpt_disk_types`) | Type GUIDs from attributes; deterministic disk and partition GUIDs from a seed for reproducible images |
+| `espressif` | Binary partition table (ours, checked against `esp-idf-part` and `gen_esp32part.py`), placed at the `partition-table` partition | Role mapping: `firmware` to `app/factory`, `update` slot n to `app/ota_n`, `storage` to `data` with a subtype from `filesystem`, `crash-record` to `data/coredump`; `custom` needs explicit `espressif` attributes. Update slots require an `otadata` partition. |
+| `mbr` | 512-byte MBR (ours, checked against `mbrman` and `sfdisk`) | For SD cards and disk images; sector size 512, partition types from attributes or the role |
+| `gpt` (later) | Protective MBR, primary and backup GPT (`gpt_disk_types`) | Type GUIDs from attributes; deterministic disk and partition GUIDs from a seed for reproducible images |
 | `linker` | `memory.x` regions or Rust constants | For families with no on-flash table (an nRF52840 behind a bootloader whose application starts at a fixed address) |
 
 ### File system images
 
-A `FileSystemImageWriter` trait builds an image of a given size from a list of files.
-`nanoflash-filesystem` implements it for FAT and LittleFS behind features. The core never
-depends on it: a manifest image may target a `storage` partition with a caller-supplied image,
+Later, a `FileSystemImageWriter` trait builds an image of a given size from a list of files, with
+FAT (`fatfs`) and LittleFS (`littlefs2`, native only) behind features. Nothing depends on it: a manifest image may target a `storage` partition with a caller-supplied image,
 which is padded to the partition and checked to fit.
 
-### `build` crate
+### `build` feature
 
 ```rust
 // build.rs of a firmware
 fn main() {
-    nanoflash_build::Layout::read("layouts/board.toml")
+    nanoflash::build::Layout::read("layouts/board.toml")
         .unwrap()
         .write_constants("layout.rs")   // into OUT_DIR
         .unwrap();
@@ -220,26 +228,17 @@ pub trait SerialPort {
     fn identity(&self) -> Option<UsbIdentity>; // vendor, product, serial number
 }
 
-pub trait UsbDevice {
-    async fn control_in(&mut self, request: ControlRequest, buffer: &mut [u8]) -> Result<usize, TransportError>;
-    async fn control_out(&mut self, request: ControlRequest, data: &[u8]) -> Result<(), TransportError>;
-    async fn bulk_in(&mut self, endpoint: u8, buffer: &mut [u8], timeout: Duration) -> Result<usize, TransportError>;
-    async fn bulk_out(&mut self, endpoint: u8, data: &[u8]) -> Result<(), TransportError>;
-    async fn sleep(&mut self, duration: Duration);
-}
-
-/// Finds or reopens a device, for resets that re-enumerate (1200-baud touch, USB-Serial-JTAG).
-pub trait DeviceProvider {
-    type Serial: SerialPort;
-    type Usb: UsbDevice;
-    async fn serial(&mut self, filter: &DeviceFilter, timeout: Duration) -> Result<Self::Serial, TransportError>;
-    async fn usb(&mut self, filter: &DeviceFilter, timeout: Duration) -> Result<Self::Usb, TransportError>;
+/// Finds or reopens a port, for resets that re-enumerate (1200-baud touch, USB-Serial-JTAG).
+pub trait PortProvider {
+    type Port: SerialPort;
+    async fn open(&mut self, filter: &DeviceFilter, baud_rate: u32, timeout: Duration) -> Result<Self::Port, TransportError>;
 }
 ```
 
-The brief asked for one transport trait; it is split in two (serial and USB) because no device is
-both, and a `DeviceProvider` is added because the touch reset makes the bootloader appear as a
-new device. Timeouts are part of `read` so `no_std` backends need no timer of their own.
+The brief asked for one transport trait with USB control requests too. USB devices get their own
+trait (control and bulk transfers, over `nusb` natively and in the browser) with the first USB
+backend, DFU; no device is both a serial port and a raw USB device. A `PortProvider` is added
+because the touch reset makes the bootloader appear as a new device. Timeouts are part of `read` so `no_std` backends need no timer of their own.
 
 In the browser, a re-enumerated device is only reachable without a user gesture if permission
 was granted earlier. The web component asks for the application and bootloader identities of the
@@ -375,7 +374,7 @@ nanoflash detect --port <port> [--protocol <protocol>] [--json]
 
 - **Transcripts:** a text format, one event per line: `>` bytes from the host, `<` bytes from
   the device (hexadecimal), `!` line changes, baud rate changes, waits, re-enumerations, `#`
-  comments. `nanoflash-testing` provides a replay transport that fails on any divergence, and a
+  comments. the `testing` feature provides a replay transport that fails on any divergence, and a
   recording transport behind `--record`.
 - **Sources of transcripts:** Espressif's QEMU (ESP32 and ESP32-C3 in download mode) in CI;
   arduino/BOSSA's SAM-BA emulator for SAM-BA; recordings from real boards added as they are
@@ -395,9 +394,9 @@ nanoflash detect --port <port> [--protocol <protocol>] [--json]
 One pull request each, stacked:
 
 1. This design and the prior art report, licence files.
-2. Workspace and tooling; `nanoflash-core` (layout model, resolution, checks, manifest model,
-   traits); the Espressif, MBR and `linker` writers (the `build` crate's `memory.x` and the
-   nRF52840 case need the last one); `nanoflash-build`; `nanoflash layout check` and
+2. Workspace and tooling; `nanoflash` (layout model, resolution, checks, manifest model,
+   traits); the Espressif, MBR and `linker` writers (the `build` feature's `memory.x` and the
+   nRF52840 case need the last one); the `build` feature; `nanoflash layout check` and
    `layout write` (its `--format` lists the writers that exist); all tested. GPT and the file
    system images come after deliverable 4.
 3. Transports (native and web); the Espressif backend; `flash`, `detect` and `image build`; the

@@ -56,11 +56,13 @@ licences come from crates.io, npm and the projects' repositories on that date.
 - The protocol is documented by Espressif:
   [serial protocol](https://docs.espressif.com/projects/esptool/en/latest/esp32/advanced-topics/serial-protocol.html).
 
-**Decision:** reuse `espflash` without `serialport` (commands, chip data, stubs) and write our
-own asynchronous connection loop, framing, reset sequences and orchestration over nanoflash's
-transport trait. Offer the transport design upstream on #1091 once it has proven itself. If the
-bundle cost of `espflash` is too high, copy the chip tables we need (MIT OR Apache-2.0, with
-attribution) instead of depending on it.
+**Decision:** write our own asynchronous loader over nanoflash's transport trait: SLIP framing,
+commands, reset sequences, orchestration, written from Espressif's protocol documentation with
+`espflash` and esptool-js as references. Copy the few chip constants we need (detection values,
+about 40 lines) from `espflash` with attribution (MIT OR Apache-2.0) rather than depending on it:
+its dependency tree would dominate the WebAssembly bundle for those few lines. Use the ROM loader
+without a flasher stub at first (the ROM supports compressed writes and MD5); the stub is a later
+speed-up. Offer the transport design upstream on #1091 once it has proven itself.
 
 ### SAM-BA and the bossac dialect
 
@@ -113,7 +115,8 @@ browser).
   [uftwo](https://crates.io/crates/uftwo) 0.3.0 (MPL-2.0, not used).
 - [picotool](https://github.com/raspberrypi/picotool) 2.3.1: BSD-3-Clause.
 
-**Decision:** encode blocks with `uf2_block` (or our own 50 lines if it does not fit); native
+**Decision:** encode blocks ourselves (a 32-byte header and a 476-byte payload; about 50 lines);
+native
 writes copy the file onto the mounted drive, the browser writes through the File System Access
 API (a directory picker on the board's drive).
 
@@ -135,8 +138,10 @@ API (a directory picker on the board's drive).
 | FAT image | [fatfs](https://crates.io/crates/fatfs) 0.3.6 | MIT | 0.4 (unreleased) |
 | LittleFS image | [littlefs2](https://crates.io/crates/littlefs2) 0.8.1 | MIT OR Apache-2.0 | yes, but wraps C (`littlefs2-sys`) |
 
-`esp-idf-part` needs `std`, so the Espressif writer lives outside `core`; it builds for
-WebAssembly. LittleFS image building stays native only (C toolchain); the browser accepts an
+`esp-idf-part` needs `std`, and both the Espressif table (32-byte entries plus an MD5 row) and
+the MBR (four 16-byte entries) are small fixed formats, so nanoflash writes them itself, `no_std`,
+and uses `esp-idf-part`, `mbrman`, ESP-IDF's `gen_esp32part.py` and `sfdisk` in tests to read its
+output back. LittleFS image building stays native only (C toolchain); the browser accepts an
 image built elsewhere.
 
 ## Transports
@@ -166,10 +171,10 @@ in [`src/const.ts`](https://github.com/esphome/esp-web-tools/blob/main/src/const
 
 | Reference | Licence | How nanoflash uses it |
 | --- | --- | --- |
-| espflash | MIT OR Apache-2.0 | dependency; reference for the loader loop |
+| espflash | MIT OR Apache-2.0 | reference for the loader; chip constants copied with attribution |
 | esptool-js | Apache-2.0 | reference for reset sequences in the browser |
 | esptool (Python) | GPL-2.0-or-later | **not used** |
-| esp-flasher-stub | Apache-2.0 OR MIT | stubs, through espflash |
+| esp-flasher-stub | Apache-2.0 OR MIT | stubs, later |
 | BOSSA, arduino/BOSSA | BSD-3-Clause | behaviour reference, no code ported |
 | ArduinoCore-samd bootloader | LGPL-2.1 | protocol reference only, not vendored |
 | dfu-core | MIT OR Apache-2.0 | dependency |
