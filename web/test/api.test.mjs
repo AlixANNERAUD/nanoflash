@@ -109,6 +109,7 @@ test("flashes with the chosen port", async () => {
   assert.equal(report.chip.flashSize, 8388608);
   assert.equal(report.chip.secureDownloadMode, false);
   assert.equal(report.chip.writableFrom, null);
+  assert.equal(report.chip.writableTo, null);
   assert.equal(report.chip.erasesToEnd, false);
   assert.deepEqual(report.chip.usb, { vendor: 0x303a, product: 0x1001, serialNumber: null });
   assert.deepEqual(
@@ -202,6 +203,7 @@ test("a manifest of several protocols loads the module of the port it is given",
   assert.equal(flashed.board, "arduino-nano-33-ble");
   assert.equal(flashed.chip.protocol, "samba");
   assert.equal(flashed.chip.writableFrom, 0x10000);
+  assert.equal(flashed.chip.writableTo, null);
   assert.equal(flashed.verified, true);
   bootloader.finish();
   const port = (usbVendorId, usbProductId) => ({

@@ -7,8 +7,51 @@ use crate::error::Error;
 use crate::manifest::{Board, Manifest, Protocol, ResetSequence};
 use crate::transport::UsbIdentity;
 
-/// The protocol the USB vendor of `identity` speaks, when it is known.
+/// The Arduino AVR boards by USB identity, as `boards.txt` of ArduinoCore-avr lists them: the
+/// Arduino vendors `0x2341` and `0x2A03` (pairs `boards.txt` does not list for `0x2A03` are left
+/// out) and SparkFun's Pro Micro. Other Arduino products run SAM-BA.
+const ARDUINO_AVR: &[(u16, u16, Protocol)] = &[
+    // The Uno and the Uno Mini: Optiboot.
+    (0x2341, 0x0043, Protocol::Stk500v1),
+    (0x2341, 0x0001, Protocol::Stk500v1),
+    (0x2341, 0x0243, Protocol::Stk500v1),
+    (0x2341, 0x006A, Protocol::Stk500v1),
+    (0x2A03, 0x0043, Protocol::Stk500v1),
+    // The Mega 2560: the wiring bootloader.
+    (0x2341, 0x0010, Protocol::Stk500v2),
+    (0x2341, 0x0042, Protocol::Stk500v2),
+    (0x2341, 0x0210, Protocol::Stk500v2),
+    (0x2341, 0x0242, Protocol::Stk500v2),
+    (0x2A03, 0x0010, Protocol::Stk500v2),
+    (0x2A03, 0x0042, Protocol::Stk500v2),
+    (0x2A03, 0x0242, Protocol::Stk500v2),
+    // The Leonardo, the Micro and their Ethernet variants: Caterina.
+    (0x2341, 0x0036, Protocol::Avr109),
+    (0x2341, 0x8036, Protocol::Avr109),
+    (0x2341, 0x0037, Protocol::Avr109),
+    (0x2341, 0x8037, Protocol::Avr109),
+    (0x2341, 0x0237, Protocol::Avr109),
+    (0x2341, 0x8237, Protocol::Avr109),
+    (0x2A03, 0x0036, Protocol::Avr109),
+    (0x2A03, 0x8036, Protocol::Avr109),
+    (0x2A03, 0x0037, Protocol::Avr109),
+    (0x2A03, 0x8037, Protocol::Avr109),
+    // The SparkFun Pro Micro, in its application and in its bootloader.
+    (0x1B4F, 0x9203, Protocol::Avr109),
+    (0x1B4F, 0x9204, Protocol::Avr109),
+    (0x1B4F, 0x9205, Protocol::Avr109),
+    (0x1B4F, 0x9206, Protocol::Avr109),
+];
+
+/// The protocol the USB identity speaks, when it is known: an AVR board of the table, else the
+/// protocol of its vendor.
 pub fn protocol_for_identity(identity: &UsbIdentity) -> Option<Protocol> {
+    if let Some((_, _, protocol)) = ARDUINO_AVR
+        .iter()
+        .find(|(vendor, product, _)| *vendor == identity.vendor && *product == identity.product)
+    {
+        return Some(*protocol);
+    }
     match identity.vendor {
         0x303a => Some(Protocol::Espressif),
         0x2341 => Some(Protocol::Samba),
@@ -343,5 +386,23 @@ path = "a.bin"
             Some(Protocol::Samba)
         );
         assert_eq!(protocol_for_identity(&identity(0x0483, 0xdf11)), None);
+    }
+
+    #[test]
+    fn arduino_avr_identities_pick_their_protocol() {
+        for (vendor, product, protocol) in [
+            (0x2341, 0x0043, Some(Protocol::Stk500v1)),
+            (0x2a03, 0x0042, Some(Protocol::Stk500v2)),
+            (0x2341, 0x8036, Some(Protocol::Avr109)),
+            (0x1b4f, 0x9206, Some(Protocol::Avr109)),
+            (0x2341, 0x805a, Some(Protocol::Samba)),
+            (0x1a86, 0x7523, None),
+        ] {
+            assert_eq!(
+                protocol_for_identity(&identity(vendor, product)),
+                protocol,
+                "{vendor:04x}:{product:04x}"
+            );
+        }
     }
 }

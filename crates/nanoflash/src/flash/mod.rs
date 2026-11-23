@@ -17,6 +17,7 @@ use crate::backend::{
     Backend, Backends, ChipInformation, Progress, ProgressEvent, Region, Segment, Stage,
 };
 use crate::error::Error;
+use crate::layout::{ResolvedLayout, Role};
 use crate::manifest::{Board, Manifest, Protocol};
 use crate::transport::{DeviceFilter, PortProvider, SerialPort};
 pub use intel_hex::{IntelHexError, IntelHexImage, decode_intel_hex, is_intel_hex};
@@ -239,7 +240,8 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
 }
 
 /// Checks every image, then every erase entry, against what `connect` reported: each must start
-/// at or after `writable_from` and end inside the `flash_size` bytes of the chip, and when the
+/// at or after `writable_from`, end at or before `writable_to` and inside the `flash_size` bytes
+/// of the chip, and when the
 /// bootloader erases to the end of flash, every erase entry must end there.
 fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(), Error> {
     let images = prepared.images.iter().map(|image| {
@@ -265,6 +267,15 @@ fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(),
             }
         }
         let end = offset.saturating_add(size);
+        if let Some(writable_to) = chip.writable_to {
+            if end > writable_to {
+                return Err(Error::AboveWritableFlash {
+                    what: format!("{kind} \"{label}\""),
+                    end,
+                    writable_to,
+                });
+            }
+        }
         if let Some(flash_size) = chip.flash_size {
             if end > flash_size {
                 return Err(Error::OutsideDetectedFlash {
@@ -345,13 +356,43 @@ fn erases_to_end_warning(
     })
 }
 
+/// Where the lowest bootloader partition at or above the application starts, when the layout
+/// has both: a bootloader the chip does not report as protected (an Optiboot of 512 bytes in a
+/// boot section of 2 KiB) still keeps its partition.
+fn bootloader_above_application(layout: Option<&ResolvedLayout>) -> Option<u64> {
+    let layout = layout?;
+    let application = layout
+        .partitions
+        .iter()
+        .filter(|partition| partition.definition.role == Role::Firmware)
+        .map(|partition| partition.offset)
+        .min()?;
+    layout
+        .partitions
+        .iter()
+        .filter(|partition| {
+            partition.definition.role == Role::Bootloader && partition.offset >= application
+        })
+        .map(|partition| partition.offset)
+        .min()
+}
+
 /// The region `--erase-all` erases: the flash of the chip, else of the layout, from where the
-/// bootloader starts writing.
-fn erase_all_region(chip: &ChipInformation, layout_size: Option<u64>) -> Result<Region, Error> {
-    let flash_size = chip
+/// bootloader starts writing to where the bootloader at the top of the flash starts: the
+/// smaller of `writable_to` and `bootloader_start`, the bootloader partition of the layout above
+/// the application.
+fn erase_all_region(
+    chip: &ChipInformation,
+    layout_size: Option<u64>,
+    bootloader_start: Option<u64>,
+) -> Result<Region, Error> {
+    let mut flash_size = chip
         .flash_size
         .or(layout_size)
         .ok_or(Error::UnknownFlashSize)?;
+    for limit in [chip.writable_to, bootloader_start].into_iter().flatten() {
+        flash_size = flash_size.min(limit);
+    }
     let offset = chip.writable_from.unwrap_or(0);
     let size = flash_size
         .checked_sub(offset)
@@ -411,7 +452,8 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
     check_against_chip(&prepared, &chip)?;
     let erases_to_end = erases_to_end_warning(&prepared, &chip, options.erase_all);
     if options.erase_all {
-        let region = erase_all_region(&chip, layout_size)?;
+        let bootloader_start = bootloader_above_application(prepared.layout.as_ref());
+        let region = erase_all_region(&chip, layout_size, bootloader_start)?;
         erase(backend, region, progress).await?;
     }
     for entry in &prepared.erase {
@@ -508,6 +550,7 @@ mod tests {
             secure_download_mode: false,
             usb: None,
             writable_from,
+            writable_to: None,
             erases_to_end: false,
         }
     }
@@ -772,33 +815,33 @@ mod tests {
     #[test]
     fn erase_all_starts_at_the_writable_flash() {
         assert_eq!(
-            erase_all_region(&chip(Some(0x10_0000), Some(0x1_0000)), None),
+            erase_all_region(&chip(Some(0x10_0000), Some(0x1_0000)), None, None),
             Ok(Region {
                 offset: 0x1_0000,
                 size: 0xF_0000,
             })
         );
         assert_eq!(
-            erase_all_region(&chip(Some(0x80_0000), None), None),
+            erase_all_region(&chip(Some(0x80_0000), None), None, None),
             Ok(Region {
                 offset: 0,
                 size: 0x80_0000,
             })
         );
         assert_eq!(
-            erase_all_region(&chip(None, None), Some(0x4_0000)),
+            erase_all_region(&chip(None, None), Some(0x4_0000), None),
             Ok(Region {
                 offset: 0,
                 size: 0x4_0000,
             })
         );
         assert_eq!(
-            erase_all_region(&chip(None, None), None),
+            erase_all_region(&chip(None, None), None, None),
             Err(Error::UnknownFlashSize)
         );
         // The chip's size wins over the layout's.
         assert_eq!(
-            erase_all_region(&chip(Some(0x10_0000), Some(0x1_0000)), Some(0x8_0000)),
+            erase_all_region(&chip(Some(0x10_0000), Some(0x1_0000)), Some(0x8_0000), None),
             Ok(Region {
                 offset: 0x1_0000,
                 size: 0xF_0000,
@@ -806,10 +849,112 @@ mod tests {
         );
     }
 
+    fn avr(flash_size: u64, writable_to: u64) -> ChipInformation {
+        ChipInformation {
+            protocol: Protocol::Stk500v1,
+            chip: "atmega328p".into(),
+            writable_to: Some(writable_to),
+            ..chip(Some(flash_size), None)
+        }
+    }
+
+    #[test]
+    fn images_above_writable_flash_are_refused() {
+        let uno = avr(0x8000, 0x7E00);
+        let error =
+            check_against_chip(&prepared(&[("application", 0, 0x7E01)], &[]), &uno).unwrap_err();
+        assert_eq!(
+            error,
+            Error::AboveWritableFlash {
+                what: "image \"application\"".into(),
+                end: 0x7E01,
+                writable_to: 0x7E00,
+            }
+        );
+        assert_eq!(error.class(), ErrorClass::Input);
+        assert_eq!(
+            check_against_chip(&prepared(&[("application", 0, 0x7E00)], &[]), &uno),
+            Ok(())
+        );
+        assert_eq!(
+            check_against_chip(&prepared(&[], &[("bootloader", 0x7E00, 0x200)]), &uno),
+            Err(Error::AboveWritableFlash {
+                what: "erase entry \"bootloader\"".into(),
+                end: 0x8000,
+                writable_to: 0x7E00,
+            })
+        );
+        // Without `writable_to`, the flash is writable up to its size.
+        assert_eq!(
+            check_against_chip(
+                &prepared(&[("application", 0, 0x8000)], &[]),
+                &chip(Some(0x8000), None)
+            ),
+            Ok(())
+        );
+        // Past the bootloader, but also past the flash: the bootloader is named first.
+        assert!(matches!(
+            check_against_chip(&prepared(&[("application", 0, 0x8001)], &[]), &uno),
+            Err(Error::AboveWritableFlash { .. })
+        ));
+    }
+
+    #[test]
+    fn erase_all_stops_at_the_bootloader() {
+        assert_eq!(
+            erase_all_region(&avr(0x8000, 0x7E00), None, None),
+            Ok(Region {
+                offset: 0,
+                size: 0x7E00,
+            })
+        );
+        assert_eq!(
+            erase_all_region(&avr(0x4_0000, 0x3_E000), None, None),
+            Ok(Region {
+                offset: 0,
+                size: 0x3_E000,
+            })
+        );
+    }
+
+    #[test]
+    fn erase_all_stops_at_the_bootloader_of_the_layout() {
+        // A Nano: Optiboot reports 0x7E00, but the layout keeps 2 KiB for the bootloader.
+        let layout = crate::layout::Layout::from_toml(
+            "[flash]\nsize = \"32 KiB\"\nalignment = 0x80\n\n\
+             [[partition]]\nname = \"application\"\nrole = \"firmware\"\noffset = 0x0\nsize = 0x7800\n\n\
+             [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x7800\nsize = 0x800\n",
+        )
+        .unwrap()
+        .resolve()
+        .unwrap();
+        let start = bootloader_above_application(Some(&layout));
+        assert_eq!(start, Some(0x7800));
+        assert_eq!(
+            erase_all_region(&avr(0x8000, 0x7E00), Some(0x8000), start),
+            Ok(Region {
+                offset: 0,
+                size: 0x7800,
+            })
+        );
+        // Without a layout, the chip's limit stands.
+        assert_eq!(bootloader_above_application(None), None);
+        // A bootloader below the application (SAMD21, nRF52) is not at the top.
+        let below = crate::layout::Layout::from_toml(
+            "[flash]\nsize = \"256 KiB\"\n\n\
+             [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x0\nsize = 0x2000\n\n\
+             [[partition]]\nname = \"application\"\nrole = \"firmware\"\nsize = 0x3_E000\n",
+        )
+        .unwrap()
+        .resolve()
+        .unwrap();
+        assert_eq!(bootloader_above_application(Some(&below)), None);
+    }
+
     #[test]
     fn erase_all_of_a_bootloader_larger_than_the_flash() {
         assert_eq!(
-            erase_all_region(&chip(Some(0x1000), Some(0x2000)), None),
+            erase_all_region(&chip(Some(0x1000), Some(0x2000)), None, None),
             Err(Error::OutsideDetectedFlash {
                 what: "bootloader".into(),
                 end: 0x2000,

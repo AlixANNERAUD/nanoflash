@@ -164,6 +164,7 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             secure_download_mode: false,
             usb: self.port()?.identity(),
             writable_from: Some(family.application_start),
+            writable_to: None,
             erases_to_end: family.erase_to_end,
         })
     }

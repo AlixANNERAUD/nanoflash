@@ -351,6 +351,27 @@ pub enum Error {
         /// The lowest flash offset the bootloader writes.
         writable_from: u64,
     },
+    /// An image or an erase entry ends in the flash the bootloader occupies at the top of the
+    /// flash.
+    AboveWritableFlash {
+        /// What ends there, such as `image "application"`.
+        what: String,
+        /// Its end offset.
+        end: u64,
+        /// The end of the flash the bootloader writes.
+        writable_to: u64,
+    },
+    /// The flash read back differs from what was written.
+    ReadBackDiffers {
+        /// The image.
+        label: String,
+        /// The flash offset of the first differing byte.
+        offset: u64,
+        /// The byte written.
+        expected: u8,
+        /// The byte read back.
+        actual: u8,
+    },
     /// An erase region stops before the end of flash, and the bootloader only erases from an
     /// offset to the end of flash.
     EraseShortOfFlashEnd {
@@ -428,6 +449,7 @@ impl Error {
             | Error::FlashTooSmall { .. }
             | Error::UnknownBootloaderDevice { .. }
             | Error::BelowWritableFlash { .. }
+            | Error::AboveWritableFlash { .. }
             | Error::EraseShortOfFlashEnd { .. }
             | Error::ImageBelowWritten { .. }
             | Error::NotConnected { .. } => ErrorClass::Input,
@@ -442,7 +464,9 @@ impl Error {
             | Error::WrongChip { .. }
             | Error::NoBootloader { .. }
             | Error::UnsupportedBootloader { .. } => ErrorClass::Device,
-            Error::VerificationFailed { .. } => ErrorClass::Verification,
+            Error::VerificationFailed { .. } | Error::ReadBackDiffers { .. } => {
+                ErrorClass::Verification
+            }
         }
     }
 }
@@ -776,7 +800,12 @@ impl fmt::Display for Error {
                     ),
                 },
                 Protocol::Stk500v1 | Protocol::Stk500v2 => {
-                    write!(formatter, "no {protocol} bootloader answered on the port")?;
+                    let name = if *protocol == Protocol::Stk500v1 {
+                        "STK500v1"
+                    } else {
+                        "STK500v2"
+                    };
+                    write!(formatter, "no {name} bootloader answered on the port")?;
                     let mut rates = rates.iter();
                     if let Some(first) = rates.next() {
                         write!(formatter, " at {first}")?;
@@ -810,6 +839,23 @@ impl fmt::Display for Error {
             } => write!(
                 formatter,
                 "the {what} starts at 0x{offset:x}, below 0x{writable_from:x}: the bootloader occupies the flash below 0x{writable_from:x} and does not write it; remove it from the manifest or move it to 0x{writable_from:x} or above"
+            ),
+            Error::AboveWritableFlash {
+                what,
+                end,
+                writable_to,
+            } => write!(
+                formatter,
+                "the {what} ends at 0x{end:x}, past 0x{writable_to:x}: the bootloader occupies the flash from 0x{writable_to:x} and does not write it; remove it from the manifest or make it end at 0x{writable_to:x} or below"
+            ),
+            Error::ReadBackDiffers {
+                label,
+                offset,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "the image \"{label}\" does not read back as written: the byte at 0x{offset:x} is 0x{actual:02x} instead of 0x{expected:02x}: flash again; if it fails at the same place, the lock bits of the chip protect that part of the flash"
             ),
             Error::EraseShortOfFlashEnd {
                 chip,
@@ -935,6 +981,16 @@ mod tests {
             below.to_string(),
             "the image \"bootloader\" starts at 0x0, below 0x10000: the bootloader occupies the flash below 0x10000 and does not write it; remove it from the manifest or move it to 0x10000 or above"
         );
+        let above = Error::AboveWritableFlash {
+            what: "image \"application\"".into(),
+            end: 0x7E01,
+            writable_to: 0x7E00,
+        };
+        assert_eq!(above.class(), ErrorClass::Input);
+        assert_eq!(
+            above.to_string(),
+            "the image \"application\" ends at 0x7e01, past 0x7e00: the bootloader occupies the flash from 0x7e00 and does not write it; remove it from the manifest or make it end at 0x7e00 or below"
+        );
         let short = Error::EraseShortOfFlashEnd {
             chip: "samd21g18a".into(),
             entry: "storage".into(),
@@ -956,6 +1012,21 @@ mod tests {
         assert_eq!(
             order.to_string(),
             "the image \"low\" at 0x2000 is written after an image above it, and the bootloader of the samd21g18a erases from 0x2000 to the end of flash before writing it, which would erase that image, so it was not written: write the images in order of offset"
+        );
+    }
+
+    #[test]
+    fn read_back_differences_are_verification_failures() {
+        let error = Error::ReadBackDiffers {
+            label: "application".into(),
+            offset: 0x85,
+            expected: 0x0f,
+            actual: 0xff,
+        };
+        assert_eq!(error.class(), ErrorClass::Verification);
+        assert_eq!(
+            error.to_string(),
+            "the image \"application\" does not read back as written: the byte at 0x85 is 0xff instead of 0x0f: flash again; if it fails at the same place, the lock bits of the chip protect that part of the flash"
         );
     }
 
@@ -1001,7 +1072,7 @@ mod tests {
         assert_eq!(optiboot.class(), ErrorClass::Device);
         assert_eq!(
             optiboot.to_string(),
-            "no stk500v1 bootloader answered on the port at 115200 and 57600 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
+            "no STK500v1 bootloader answered on the port at 115200 and 57600 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
         );
         let wiring = Error::NoBootloader {
             waited_for: None,
@@ -1011,7 +1082,7 @@ mod tests {
         };
         assert_eq!(
             wiring.to_string(),
-            "no stk500v2 bootloader answered on the port at 115200 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
+            "no STK500v2 bootloader answered on the port at 115200 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
         );
     }
 

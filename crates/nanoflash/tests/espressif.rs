@@ -97,6 +97,7 @@ fn connects_to_an_esp32_s3_over_usb() {
             secure_download_mode: false,
             usb: usb_jtag(),
             writable_from: None,
+            writable_to: None,
             erases_to_end: false,
         }
     );

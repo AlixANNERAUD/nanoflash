@@ -108,6 +108,7 @@ fn connects_to_a_nano_33_ble_after_the_touch() {
             secure_download_mode: false,
             usb: identity(0x2341, 0x005a),
             writable_from: Some(0x1_0000),
+            writable_to: None,
             erases_to_end: false,
         }
     );
@@ -303,6 +304,7 @@ fn connects_to_a_samd21_bootloader() {
             secure_download_mode: false,
             usb: identity(0x2341, 0x0054),
             writable_from: Some(0x2000),
+            writable_to: None,
             erases_to_end: true,
         }
     );

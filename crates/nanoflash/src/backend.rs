@@ -101,6 +101,9 @@ pub struct ChipInformation {
     /// The lowest flash offset the bootloader writes, when it protects the flash below it
     /// (SAM-BA bootloaders protect themselves); `None` when the whole flash is writable.
     pub writable_from: Option<u64>,
+    /// The end of the flash the bootloader writes, when it sits at the top of the flash (AVR
+    /// bootloaders); `None` when the flash up to `flash_size` is writable.
+    pub writable_to: Option<u64>,
     /// Whether the bootloader erases from an offset to the end of flash, never a region alone
     /// (the SAMD21's SAM-BA bootloader): every erase must then end at the end of flash.
     pub erases_to_end: bool,

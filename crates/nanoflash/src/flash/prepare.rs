@@ -952,6 +952,77 @@ mod tests {
         assert!(prepare_with(&aligned, &mut source).is_ok());
     }
 
+    /// A board of `protocol` without a layout, with one image at `offset` of `size` bytes.
+    fn bare(protocol: Protocol, offset: &str, size: usize) -> (Board, MemorySource) {
+        let mut source = fixture_source();
+        source
+            .files
+            .insert("small.bin".into(), alloc::vec![0; size]);
+        let mut avr = board(&offset_image(offset, "small.bin"));
+        avr.protocol = protocol;
+        avr.layout = None;
+        (avr, source)
+    }
+
+    #[test]
+    fn avr_images_start_on_a_page() {
+        let (mut v1, mut source) = bare(Protocol::Stk500v1, "0x40", 16);
+        assert_eq!(
+            prepare_with(&v1, &mut source).unwrap_err(),
+            Error::MisalignedImage {
+                label: "image at 0x40".into(),
+                offset: 0x40,
+                required: 0x80,
+            }
+        );
+        v1.images[0].target = ImageTarget::Offset(0x80);
+        assert!(prepare_with(&v1, &mut source).is_ok());
+        let (v2, mut source) = bare(Protocol::Stk500v2, "0x80", 16);
+        assert_eq!(
+            prepare_with(&v2, &mut source).unwrap_err(),
+            Error::MisalignedImage {
+                label: "image at 0x80".into(),
+                offset: 0x80,
+                required: 0x100,
+            }
+        );
+    }
+
+    #[test]
+    fn avr_addresses_stop_at_128_kib() {
+        let (v1, mut source) = bare(Protocol::Stk500v1, "0x1FF80", 0x81);
+        assert_eq!(
+            prepare_with(&v1, &mut source).unwrap_err(),
+            Error::OutsideAddressRange {
+                what: "image \"image at 0x1ff80\"".into(),
+                end: 0x2_0001,
+                limit: 0x2_0000,
+                protocol: Protocol::Stk500v1,
+            }
+        );
+        let (v2, mut source) = bare(Protocol::Stk500v2, "0x1FF00", 0x101);
+        assert!(prepare_with(&v2, &mut source).is_ok());
+    }
+
+    /// The erase units of the AVR protocols are the largest page of their chips: 128 bytes for
+    /// the ATmega328P and the ATmega32U4, 256 bytes for the ATmega2560. The check against every
+    /// chip's page moves to `avr/chip.rs` with the chip table (the `avr` module does not exist
+    /// yet, and this module's tests are the ones that run without it).
+    #[test]
+    fn erase_units_cover_the_pages_of_the_avr_chips() {
+        for (protocol, page) in [
+            (Protocol::Stk500v1, 0x80_u64),
+            (Protocol::Avr109, 0x80),
+            (Protocol::Stk500v2, 0x100),
+        ] {
+            assert_eq!(erase_unit(protocol), page, "{protocol}");
+            assert!(erase_unit(protocol).is_power_of_two());
+        }
+        assert_eq!(address_limit(Protocol::Stk500v1), 1 << 17);
+        assert_eq!(address_limit(Protocol::Avr109), 1 << 17);
+        assert_eq!(address_limit(Protocol::Stk500v2), 1 << 32);
+    }
+
     #[test]
     fn layout_problems_are_reported() {
         let mut source = fixture_source();
