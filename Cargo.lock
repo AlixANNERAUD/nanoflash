@@ -403,6 +403,7 @@ dependencies = [
  "esp-idf-part",
  "mbrman",
  "md-5 0.11.0",
+ "pollster",
  "proptest",
  "serde",
  "serde_json",
@@ -453,6 +454,12 @@ checksum = "1c464266693329dd5a8715098c7f86e6c5fd5d985018b8318f53d9c6c2b21a31"
 dependencies = [
  "num-traits",
 ]
+
+[[package]]
+name = "pollster"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f3a9f18d041e6d0e102a0a46750538147e5e8992d3b4873aaafee2520b00ce3"
 
 [[package]]
 name = "ppv-lite86"

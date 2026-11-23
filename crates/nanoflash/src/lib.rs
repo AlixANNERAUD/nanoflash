@@ -17,6 +17,9 @@ pub mod quantity;
     feature = "table-linker"
 ))]
 pub mod table;
+#[cfg(feature = "testing")]
+pub mod testing;
+pub mod transport;
 
 #[cfg(feature = "build")]
 pub mod build;
