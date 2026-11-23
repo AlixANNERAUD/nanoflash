@@ -41,7 +41,8 @@ pub struct PartitionReport {
     pub end: u64,
     /// Size in bytes.
     pub size: u64,
-    /// The least size, for a partition whose size depends on the flash.
+    /// The minimum the layout declares (0 for `remaining`); its size on the minimum flash may be
+    /// larger. Set for a partition whose size depends on the flash.
     #[serde(default)]
     pub minimum_size: Option<u64>,
     /// The bytes above the minimum size, for such a partition.

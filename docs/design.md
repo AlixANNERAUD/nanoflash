@@ -215,8 +215,10 @@ below the minimum of the layout, roles a writer cannot express. Each error names
 
 **Report:** for each partition its offset, end, size and, when images are known (from a
 manifest), the image size and the headroom left (bytes and percent); plus the unallocated flash.
-An image larger than its partition is an error. Human output is a table; `--json` gives the same
-data.
+For a layout whose flash size is detected, the report also gives `minimum_flash_size`, and each
+partition gives its `minimum_size` (the minimum the layout declares, 0 for `remaining`), its
+`growth` (the bytes above it), and whether it `grows_with_flash` or `moves_with_flash`. An image
+larger than its partition is an error. Human output is a table; `--json` gives the same data.
 
 ### Table writers
 

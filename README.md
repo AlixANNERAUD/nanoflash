@@ -248,8 +248,8 @@ erase entries that name a partition follow it, the partition table is generated 
 and nanoflash warns about what grew or moved. Images and erase entries given by offset, Intel HEX
 images and a manifest image of the partition table cannot follow the chip, and are refused when
 they touch a partition that moves or, for the table, when any partition grows or moves. On an
-Espressif board, build the bootloader for the largest flash or with flash size detection: the
-application uses the flash size of the bootloader header.
+Espressif board, build the bootloader for this flash size or with flash size detection (one bootloader per
+flash size): the chip refuses a bootloader header that names more flash than it has.
 
 ```console
 $ nanoflash flash --board boards/esp32-s3-detect.toml
