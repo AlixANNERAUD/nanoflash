@@ -127,9 +127,12 @@ enum ProtocolArgument {
     Espressif,
     /// Arduino's SAM-BA bootloaders (Nano 33 BLE, SAMD21 boards).
     Samba,
-    /// STK500v1: Arduino Uno, Nano, Pro Mini (Optiboot, old bootloader).
+    /// STK500v1: Arduino Uno, Nano, Pro Mini (Optiboot, old bootloader); `arduino` in
+    /// `boards.txt`.
+    #[value(alias = "arduino")]
     Stk500v1,
-    /// STK500v2: Arduino Mega 2560.
+    /// STK500v2: Arduino Mega 2560; `wiring` in `boards.txt`.
+    #[value(alias = "wiring")]
     Stk500v2,
     /// AVR109: Arduino Leonardo, Micro, Pro Micro (Caterina).
     Avr109,

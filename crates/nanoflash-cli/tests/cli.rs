@@ -1222,6 +1222,34 @@ fn layout_check_names_the_line_of_a_bad_hex_image() {
     );
 }
 
+#[test]
+fn layout_check_refuses_a_hex_image_that_starts_elsewhere() {
+    // The fixture starts at 0x0; the bootloader partition of the Uno starts at 0x7e00.
+    let layout = fixture("uno.toml");
+    let hex = images("avr-application.hex");
+    let argument = format!("bootloader={}", path_text(&hex));
+    let output = run(&[
+        "layout",
+        "check",
+        path_text(&layout),
+        "--image",
+        &argument,
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+    let document = document(&output);
+    assert_eq!(
+        document["errors"][0]["kind"], "misplaced-intel-hex",
+        "{document}"
+    );
+    let message = document["errors"][0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("starts at 0x0")
+            && message.contains("the partition \"bootloader\" it is written to starts at 0x7e00"),
+        "{message}"
+    );
+}
+
 // AVR: Arduino Uno, Nano, Mega 2560 and Leonardo.
 
 fn avr_transcript(name: &str) -> PathBuf {
@@ -1316,6 +1344,40 @@ fn detects_an_uno_and_a_leonardo() {
         assert!(
             stdout.lines().any(|found| found == line),
             "{line} in {stdout}"
+        );
+    }
+    // The protocols also go by their names in Arduino's boards.txt, as in manifests: `arduino`
+    // for the Uno, `wiring` for the Mega 2560 (its connection, then CMD_LEAVE_PROGMODE_ISP).
+    let directory = tempfile::tempdir().unwrap();
+    let mega = directory.path().join("detect-mega2560.transcript");
+    let connect = fs::read_to_string(avr_transcript("connect-mega2560.transcript")).unwrap();
+    fs::write(
+        &mega,
+        connect + "> 1b 05 00 03 0e 11 01 01 02\n< 1b 05 00 02 0e 11 00 03\n",
+    )
+    .unwrap();
+    for (alias, transcript, protocol) in
+        [("arduino", &uno, "stk500v1"), ("wiring", &mega, "stk500v2")]
+    {
+        let output = run(&[
+            "detect",
+            "--replay",
+            path_text(transcript),
+            "--protocol",
+            alias,
+        ]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{alias}: {}",
+            text(&output.stderr)
+        );
+        let stdout = text(&output.stdout);
+        assert!(
+            stdout
+                .lines()
+                .any(|line| line == format!("protocol {protocol}")),
+            "{alias}: {stdout}"
         );
     }
     let leonardo = avr_transcript("detect-leonardo.transcript");

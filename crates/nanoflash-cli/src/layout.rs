@@ -22,8 +22,9 @@ pub fn load(path: &Path) -> Result<ResolvedLayout, Failure> {
 }
 
 /// The size of the image of an `--image` argument: its file, or its decoded span for Intel HEX
-/// (`.hex`), which may span at most `maximum_span` bytes.
-fn image_size(argument: &str, maximum_span: u64) -> Result<ImageSize, Failure> {
+/// (`.hex`), which may span at most the flash of `layout` and must start where its partition
+/// does (the base address of the flash plus the offset of the partition).
+fn image_size(argument: &str, layout: &ResolvedLayout) -> Result<ImageSize, Failure> {
     let Some((partition, file)) = argument.split_once('=') else {
         return Err(Failure::Input(format!(
             "bad --image argument \"{argument}\": expected PARTITION=FILE"
@@ -44,7 +45,7 @@ fn image_size(argument: &str, maximum_span: u64) -> Result<ImageSize, Failure> {
     let size = if is_intel_hex(file) {
         let text = fs::read(file)
             .map_err(|error| Failure::Input(format!("cannot read image {file}: {error}")))?;
-        let image = decode_intel_hex(&text, maximum_span).map_err(|error| {
+        let image = decode_intel_hex(&text, layout.flash.size).map_err(|error| {
             Failure::Input(match error {
                 IntelHexError::Invalid { line, message } => Error::IntelHex {
                     path: file.to_string(),
@@ -55,6 +56,24 @@ fn image_size(argument: &str, maximum_span: u64) -> Result<ImageSize, Failure> {
                 IntelHexError::OutOfMemory { .. } => format!("cannot read image {file}: {error}"),
             })
         })?;
+        // An unknown partition is reported with the others by the layout's report.
+        let target = layout
+            .partitions
+            .iter()
+            .find(|found| found.definition.name == partition);
+        if let Some(target) = target {
+            let base_address = layout.flash.base_address;
+            let expected = base_address.saturating_add(target.offset);
+            if image.start != expected {
+                return Err(Failure::Error(Error::MisplacedIntelHex {
+                    path: file.to_string(),
+                    start: image.start,
+                    expected,
+                    base_address,
+                    partition: Some(partition.to_string()),
+                }));
+            }
+        }
         u64::try_from(image.bytes.len()).unwrap_or(u64::MAX)
     } else {
         metadata.len()
@@ -174,7 +193,7 @@ pub fn check(
         }
         None => images
             .iter()
-            .map(|argument| image_size(argument, resolved.flash.size))
+            .map(|argument| image_size(argument, &resolved))
             .collect::<Result<Vec<_>, _>>()?,
     };
     let report = resolved
