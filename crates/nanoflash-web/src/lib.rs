@@ -286,7 +286,7 @@ mod device {
                 baud_rate: options.baud_rate,
             },
         };
-        let mut provider = WebPortProvider::default();
+        let mut provider = WebPortProvider::new().await;
         let mut source = JsImageSource { read_file };
         let mut progress = JsProgress { callback: progress };
         let outcome = async {
@@ -317,7 +317,7 @@ mod device {
         progress: Function,
     ) -> Result<JsValue, JsValue> {
         let options: WebDetectOptions = self::options(&options, "detect")?;
-        let mut provider = WebPortProvider::default();
+        let mut provider = WebPortProvider::new().await;
         let mut progress = JsProgress { callback: progress };
         let outcome = async {
             let opened = open(&port).await?;

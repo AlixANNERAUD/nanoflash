@@ -468,12 +468,28 @@ impl SerialPort for WebSerialPort {
 
 /// Opens a device again among the ports the page was granted (`navigator.serial.getPorts()`),
 /// and remembers the ports it opened, for the caller to close them.
-#[derive(Default)]
+///
+/// A device that comes back after a reset is a new port object: ports granted when the provider
+/// was created are tried last, and ports still open are skipped.
 pub struct WebPortProvider {
+    /// The ports granted when the provider was created.
+    known: Vec<JsValue>,
     opened: Vec<JsValue>,
 }
 
 impl WebPortProvider {
+    /// A provider that remembers the ports granted now, before the device resets.
+    pub async fn new() -> WebPortProvider {
+        let known = match wait(bindings::get_ports(), PORT_TIMEOUT, "listing the ports").await {
+            Ok(ports) => Array::from(&ports).iter().collect(),
+            Err(_) => Vec::new(),
+        };
+        WebPortProvider {
+            known,
+            opened: Vec::new(),
+        }
+    }
+
     /// The `SerialPort` of every port this provider opened.
     pub fn opened(&self) -> Vec<JsValue> {
         self.opened.clone()
@@ -489,12 +505,17 @@ impl WebPortProvider {
         let ports = wait(bindings::get_ports(), PORT_TIMEOUT, "listing the ports")
             .await
             .ok()?;
-        for port in Array::from(&ports).iter() {
-            let handle: bindings::SerialPort = port.clone().unchecked_into();
-            let selected = identity_of(&handle).is_some_and(|identity| filter.matches(&identity));
-            if !selected {
-                continue;
-            }
+        let (known, fresh): (Vec<JsValue>, Vec<JsValue>) = Array::from(&ports)
+            .iter()
+            .filter(|port| {
+                let handle: &bindings::SerialPort = port.unchecked_ref();
+                // An open port, such as the one the device left, would only refuse to open.
+                !handle.readable().is_object()
+                    && identity_of(handle).is_some_and(|identity| filter.matches(&identity))
+            })
+            .partition(|port| self.known.iter().any(|known| Object::is(known, port)));
+        // New port objects first, in the order of the list.
+        for port in fresh.into_iter().chain(known) {
             if let Ok(opened) = WebSerialPort::open(port, baud_rate).await {
                 self.opened.push(opened.handle());
                 return Some(opened);

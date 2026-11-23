@@ -240,6 +240,45 @@ test("a line that keeps failing is an io error", async () => {
   assert.equal(port.isOpen, false);
 });
 
+/** The ports of `connect-reopen`: before the device leaves, and after it comes back. */
+function reopening() {
+  const [before, after] = transcript("connect-reopen").split("! reopen 303a:1001\n");
+  // The reset into the application that ends a detection.
+  const reset = "! signals dtr=0 rts=0\n! sleep 100\n! signals dtr=0 rts=1\n! sleep 100\n! signals dtr=0 rts=0\n";
+  return { left: mockPort(before), back: mockPort(`! identity 303a:1001\n${after}${reset}`) };
+}
+
+test("reopening skips the granted ports that are still open", async () => {
+  const { detect } = await loadModule("espressif");
+  const { left, back } = reopening();
+  let opens = 0;
+  const open = left.port.open;
+  left.port.open = (options) => {
+    opens += 1;
+    return open(options);
+  };
+  // The port the device left is still open, and still listed.
+  restoreNavigator = installNavigator([left.port, back.port]);
+  const chip = await detect(left.port, JSON.stringify({ protocol: null }), () => {});
+  assert.equal(chip.chip, "esp32-s3");
+  back.finish();
+  assert.equal(opens, 1);
+});
+
+test("reopening prefers the ports granted after the reset", async () => {
+  const { detect } = await loadModule("espressif");
+  const { left, back } = reopening();
+  // Another board of the same model, granted before, which must not be talked to.
+  const other = mockPort("! identity 303a:1001\n");
+  restoreNavigator = installNavigator([]);
+  let listings = 0;
+  navigator.serial.getPorts = async () => (listings++ === 0 ? [other.port] : [other.port, back.port]);
+  const chip = await detect(left.port, JSON.stringify({ protocol: null }), () => {});
+  assert.equal(chip.chip, "esp32-s3");
+  back.finish();
+  assert.deepEqual(other.port.log, []);
+});
+
 test("a write that never completes times out", async () => {
   const { detect } = await loadModule("espressif");
   const { port } = mockPort(transcript("detect-esp32s3-usb"), { stallWrites: true });
