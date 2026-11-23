@@ -9,8 +9,9 @@ pub(crate) const MAGIC_ADDRESS: u32 = 0x4000_1000;
 /// The magic value of an ESP8266, which this crate recognises but does not support.
 pub(crate) const ESP8266_MAGIC: u32 = 0xFFF0_C101;
 
-/// An Espressif chip family.
+/// An Espressif chip family. More are added as Espressif releases them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum Chip {
     Esp32,
     Esp32S2,
