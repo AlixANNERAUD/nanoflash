@@ -262,6 +262,82 @@ fn write_linker_regions() {
     ]);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
     assert!(fs::read_to_string(&output_path).unwrap().contains("MEMORY"));
+    assert!(
+        text(&output.stdout).starts_with("wrote linker output to "),
+        "{}",
+        text(&output.stdout)
+    );
+}
+
+#[test]
+fn bad_format_exits_1_with_json_when_asked() {
+    let layout = fixture(ESP32);
+    let arguments = [
+        "layout",
+        "write",
+        path_text(&layout),
+        "--format",
+        "bogus",
+        "--output",
+        "x",
+    ];
+    let output = run(&arguments);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(
+        text(&output.stderr).contains("bogus"),
+        "{}",
+        text(&output.stderr)
+    );
+
+    let mut with_json = arguments.to_vec();
+    with_json.push("--json");
+    let output = run(&with_json);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stderr.is_empty());
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(document["ok"], false);
+    assert_eq!(document["errors"].as_array().unwrap().len(), 1);
+    assert_eq!(document["errors"][0]["kind"], "input");
+    let message = document["errors"][0]["message"].as_str().unwrap();
+    assert!(
+        message.contains("bogus") && !message.contains('\u{1b}'),
+        "{message}"
+    );
+}
+
+#[test]
+fn help_and_version_exit_0() {
+    for argument in ["--help", "--version"] {
+        let output = run(&[argument]);
+        assert_eq!(output.status.code(), Some(0), "{argument}");
+        assert!(!output.stdout.is_empty());
+    }
+}
+
+#[test]
+fn image_directory_is_rejected() {
+    let directory = tempfile::tempdir().unwrap();
+    let layout = fixture(ESP32);
+    let argument = format!("application={}", path_text(directory.path()));
+    let output = run(&["layout", "check", path_text(&layout), "--image", &argument]);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = text(&output.stderr);
+    assert!(stderr.contains("not a regular file"), "{stderr}");
+    assert!(stderr.contains(path_text(directory.path())), "{stderr}");
+}
+
+#[test]
+fn closed_stdout_does_not_panic() {
+    let layout = fixture(ESP32);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nanoflash"))
+        .args(["layout", "check", path_text(&layout)])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stdout.take());
+    let status = child.wait().unwrap();
+    assert_eq!(status.code(), Some(0));
 }
 
 #[test]

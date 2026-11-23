@@ -8,7 +8,9 @@ use clap::{Parser, Subcommand, ValueEnum};
 use nanoflash::layout::{ImageSize, Layout, LayoutErrors, ResolvedLayout};
 use nanoflash::table::{TableError, espressif, linker, mbr};
 use output::Failure;
+use std::ffi::OsString;
 use std::fs;
+use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -82,7 +84,11 @@ impl Format {
 }
 
 fn main() -> ExitCode {
-    let arguments = Arguments::parse();
+    let raw: Vec<OsString> = std::env::args_os().collect();
+    let arguments = match Arguments::try_parse_from(&raw) {
+        Ok(arguments) => arguments,
+        Err(error) => return argument_error(&error, &raw),
+    };
     let Command::Layout { command } = arguments.command;
     let (json, result) = match command {
         LayoutCommand::Check {
@@ -98,18 +104,35 @@ fn main() -> ExitCode {
         } => (json, write(&layout, format, &output, json)),
     };
     match result {
-        Ok(text) => {
-            print!("{text}");
-            ExitCode::SUCCESS
-        }
-        Err(failure) => {
-            if json {
-                print!("{}", failure.json());
-            } else {
-                eprint!("{}", failure.human());
-            }
-            ExitCode::from(1)
-        }
+        Ok(text) => emit(&mut io::stdout().lock(), &text, 0),
+        Err(failure) if json => emit(&mut io::stdout().lock(), &failure.json(), 1),
+        Err(failure) => emit(&mut io::stderr().lock(), &failure.human(), 1),
+    }
+}
+
+/// Write `text` and return `code`; a closed pipe ends quietly with `code`.
+fn emit(destination: &mut impl Write, text: &str, code: u8) -> ExitCode {
+    match destination
+        .write_all(text.as_bytes())
+        .and_then(|()| destination.flush())
+    {
+        Err(error) if error.kind() != ErrorKind::BrokenPipe => ExitCode::from(1),
+        _ => ExitCode::from(code),
+    }
+}
+
+/// Report an argument error: help and version succeed, anything else exits 1, as JSON when
+/// `--json` was given.
+fn argument_error(error: &clap::Error, raw: &[OsString]) -> ExitCode {
+    if !error.use_stderr() {
+        let _ = error.print();
+        return ExitCode::SUCCESS;
+    }
+    if raw.iter().any(|argument| argument == "--json") {
+        let message = error.render().to_string().trim_end().to_string();
+        emit(&mut io::stdout().lock(), &Failure::Input(message).json(), 1)
+    } else {
+        emit(&mut io::stderr().lock(), &error.render().to_string(), 1)
     }
 }
 
@@ -136,6 +159,11 @@ fn image_size(argument: &str) -> Result<ImageSize, Failure> {
     }
     let metadata = fs::metadata(file)
         .map_err(|error| Failure::Input(format!("cannot read image {file}: {error}")))?;
+    if !metadata.is_file() {
+        return Err(Failure::Input(format!(
+            "cannot read image {file}: not a regular file"
+        )));
+    }
     Ok(ImageSize {
         partition: partition.to_string(),
         size: metadata.len(),
@@ -174,8 +202,12 @@ fn write(layout: &Path, format: Format, destination: &Path, json: bool) -> Resul
     Ok(if json {
         output::written_json(&file, bytes.len())
     } else {
+        let kind = match format {
+            Format::Espressif | Format::Mbr => "table",
+            Format::Linker | Format::Constants => "output",
+        };
         format!(
-            "wrote {} table to {file} ({} bytes)\n",
+            "wrote {} {kind} to {file} ({} bytes)\n",
             format.name(),
             bytes.len()
         )
