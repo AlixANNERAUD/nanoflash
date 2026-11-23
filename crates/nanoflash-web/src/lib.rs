@@ -120,13 +120,36 @@ mod device {
     use nanoflash::backend::{Progress, ProgressEvent};
     use nanoflash::flash::{BackendOptions, FlashOptions, FlashReport, Hooks, ImageSource};
     use nanoflash::manifest::{Manifest, Protocol};
-    use nanoflash::web::{WebPortProvider, WebSerialPort, bindings, describe};
+    use nanoflash::web::{WebPortProvider, WebSerialPort, close_port};
     use serde::Deserialize;
     use serde_json::Value;
     use wasm_bindgen::prelude::*;
     use wasm_bindgen_futures::JsFuture;
 
     use super::{failure, invalid_argument, serialized, to_js};
+
+    #[wasm_bindgen]
+    extern "C" {
+        /// The string form of any value, as `String(value)` gives it.
+        #[wasm_bindgen(catch, js_name = String)]
+        fn string(value: &JsValue) -> Result<String, JsValue>;
+    }
+
+    /// What a JavaScript error says: its `message`, else its string form.
+    fn describe(error: &JsValue) -> String {
+        let message = if error.is_object() {
+            Reflect::get(error, &"message".into()).ok()
+        } else {
+            None
+        };
+        if let Some(message) = message.and_then(|message| message.as_string()) {
+            return message;
+        }
+        if let Some(text) = error.as_string() {
+            return text;
+        }
+        string(error).unwrap_or_else(|_| "an unknown error".to_string())
+    }
 
     /// The baud rate the port is opened at: the one ROM loaders start at.
     const INITIAL_BAUD_RATE: u32 = 115_200;
@@ -228,10 +251,8 @@ mod device {
     /// next attempt must find them closed.
     async fn close(port: &JsValue, provider: &WebPortProvider) {
         for handle in core::iter::once(port.clone()).chain(provider.opened()) {
-            let handle: bindings::SerialPort = handle.unchecked_into();
-            if let Ok(promise) = handle.close() {
-                let _ = JsFuture::from(promise).await;
-            }
+            // Closing waits a few seconds at most; a port already closed refuses, which is fine.
+            let _ = close_port(&handle).await;
         }
     }
 

@@ -190,6 +190,21 @@ test("a lost device is a device error", async () => {
   assert.equal(port.isOpen, false);
 });
 
+test("a write that never completes times out", async () => {
+  const { detect } = await loadModule("espressif");
+  const { port } = mockPort(transcript("detect-esp32s3-usb"), { stallWrites: true });
+  const started = Date.now();
+  const error = await rejection(detect(port, JSON.stringify({ protocol: null }), () => {}));
+  assert.equal(error.kind, "transport");
+  assert.equal(error.error.kind, "io");
+  assert.match(error.error.message, /writing to the port did not finish within \d+ ms/);
+  assert.equal(error.during, "connecting");
+  assert.equal(error.class, "device");
+  // The reset into download mode takes about 0.3 s, the write gives up after about 1 s.
+  assert.ok(Date.now() - started < 5000, `${Date.now() - started} ms`);
+  assert.equal(port.isOpen, false);
+});
+
 test("closes the port when an image cannot be read", async () => {
   const { flash } = await loadModule("espressif");
   const { port, finish } = mockPort("! identity 303a:1001\n");

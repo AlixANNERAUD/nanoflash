@@ -4,7 +4,7 @@
 //! [`WebPortProvider`] finds a device that came back as a new port among the ports the page was
 //! granted. Both stay `no_std`: time is measured by `setTimeout`, not by a clock.
 
-pub mod bindings;
+mod bindings;
 
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -28,6 +28,14 @@ const OPEN_RETRIES: u32 = 10;
 
 /// How often the provider looks for a device that has not appeared yet.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+/// How long a write may wait beyond the time its bytes take on the line, as the native
+/// transport waits for a stalled write.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How long opening, closing, cancelling a read, setting the signals or listing the ports may
+/// take.
+const PORT_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// An object with the given properties.
 fn object(properties: &[(&str, JsValue)]) -> Object {
@@ -53,7 +61,7 @@ fn error_name(error: &JsValue) -> Option<String> {
 }
 
 /// What a JavaScript error says: its `message`, else its string form.
-pub fn describe(error: &JsValue) -> String {
+fn describe(error: &JsValue) -> String {
     if let Some(message) = property(error, "message").as_string() {
         return message;
     }
@@ -74,9 +82,38 @@ fn transport_error(error: &JsValue) -> TransportError {
     }
 }
 
-/// Waits for the promise a call returned, or gives what it threw.
-async fn settle(promise: Result<Promise, JsValue>) -> Result<JsValue, JsValue> {
-    JsFuture::from(promise?).await
+/// Waits up to `limit` for `promise`: its value, `None` when the limit passed first, or what it
+/// rejected with.
+async fn bounded(promise: &Promise, limit: Duration) -> Result<Option<JsValue>, JsValue> {
+    // The timer resolves to an object nothing else can give.
+    let expired: JsValue = Object::new().into();
+    let mut id = JsValue::UNDEFINED;
+    let timer = Promise::new(&mut |resolve, _reject| {
+        id = bindings::set_timeout_with(&resolve, milliseconds(limit), &expired);
+    });
+    let outcome = JsFuture::from(Promise::race(&Array::of2(promise, &timer))).await;
+    if matches!(&outcome, Ok(value) if Object::is(value, &expired)) {
+        return Ok(None);
+    }
+    bindings::clear_timeout(&id);
+    outcome.map(Some)
+}
+
+/// Waits up to `limit` for the promise a call of Web Serial returned; what it threw or rejected
+/// with is a transport error, and so is the limit passing first, naming `what` was done.
+async fn wait(
+    promise: Result<Promise, JsValue>,
+    limit: Duration,
+    what: &str,
+) -> Result<JsValue, TransportError> {
+    let promise = promise.map_err(|error| transport_error(&error))?;
+    match bounded(&promise, limit).await {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err(TransportError::Io {
+            message: alloc::format!("{what} did not finish within {} ms", limit.as_millis()),
+        }),
+        Err(error) => Err(transport_error(&error)),
+    }
 }
 
 /// Lets a promise settle unobserved, without an unhandled rejection.
@@ -87,25 +124,35 @@ fn ignore(promise: Result<Promise, JsValue>) {
     }
 }
 
-/// A promise that resolves to `undefined` after `milliseconds`, and its timer.
-fn timer(milliseconds: i32) -> (Promise, JsValue) {
-    let mut id = JsValue::UNDEFINED;
-    let promise = Promise::new(&mut |resolve, _reject| {
-        id = bindings::set_timeout(&resolve, milliseconds);
-    });
-    (promise, id)
-}
-
 /// The milliseconds of `duration`, at most `i32::MAX` (24 days) as `setTimeout` takes.
 fn milliseconds(duration: Duration) -> i32 {
     i32::try_from(duration.as_millis()).unwrap_or(i32::MAX)
 }
 
 /// Waits for `duration`.
-pub async fn sleep(duration: Duration) {
-    let (promise, _) = timer(milliseconds(duration));
+async fn sleep(duration: Duration) {
+    let promise = Promise::new(&mut |resolve, _reject| {
+        bindings::set_timeout(&resolve, milliseconds(duration));
+    });
     // The promise only resolves.
     let _ = JsFuture::from(promise).await;
+}
+
+/// How long writing `length` bytes at `baud_rate` may take: twice their time on the line (ten
+/// bits a byte), and [`WRITE_TIMEOUT`].
+fn write_limit(length: usize, baud_rate: u32) -> Duration {
+    let bits = u64::try_from(length).unwrap_or(u64::MAX).saturating_mul(20);
+    let line = bits.saturating_mul(1000) / u64::from(baud_rate.max(1));
+    WRITE_TIMEOUT.saturating_add(Duration::from_millis(line))
+}
+
+/// Closes `port`, a `SerialPort` of Web Serial whose streams are unlocked, waiting at most a few
+/// seconds.
+pub async fn close_port(port: &JsValue) -> Result<(), TransportError> {
+    let port: &bindings::SerialPort = port.unchecked_ref();
+    wait(port.close(), PORT_TIMEOUT, "closing the port")
+        .await
+        .map(drop)
 }
 
 /// A USB identifier from `getInfo()`: a whole number of 16 bits.
@@ -138,8 +185,20 @@ async fn open_port(port: &bindings::SerialPort, baud_rate: u32) -> Result<(), Tr
     ]);
     let mut retries = 0;
     loop {
-        match settle(port.open(&options)).await {
-            Ok(_) => return Ok(()),
+        let outcome = match port.open(&options) {
+            Ok(promise) => bounded(&promise, PORT_TIMEOUT).await,
+            Err(error) => Err(error),
+        };
+        match outcome {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {
+                return Err(TransportError::Io {
+                    message: alloc::format!(
+                        "opening the port did not finish within {} ms",
+                        PORT_TIMEOUT.as_millis()
+                    ),
+                });
+            }
             Err(error)
                 if retries < OPEN_RETRIES
                     && error_name(&error).as_deref() == Some("InvalidStateError") =>
@@ -191,6 +250,8 @@ pub struct WebSerialPort {
     /// The bytes of the last chunk that did not fit in the buffer of the read.
     leftover: Option<Uint8Array>,
     identity: Option<UsbIdentity>,
+    /// The baud rate the port is open at, which bounds how long a write may take.
+    baud_rate: u32,
 }
 
 impl WebSerialPort {
@@ -213,16 +274,14 @@ impl WebSerialPort {
             pending: None,
             leftover: None,
             identity,
+            baud_rate,
         })
     }
 
     /// Releases the streams and closes the port.
     pub async fn close(mut self) -> Result<(), TransportError> {
         self.release().await;
-        settle(self.port.close())
-            .await
-            .map(drop)
-            .map_err(|error| transport_error(&error))
+        close_port(&self.port).await
     }
 
     /// The `SerialPort` of Web Serial.
@@ -237,7 +296,7 @@ impl WebSerialPort {
         self.leftover = None;
         if let Some(reader) = self.reader.take() {
             // A failed cancellation leaves the stream locked: closing reports it.
-            let _ = settle(reader.cancel()).await;
+            let _ = wait(reader.cancel(), PORT_TIMEOUT, "cancelling the read").await;
             let _ = reader.release_lock();
         }
         if let Some(writer) = self.writer.take() {
@@ -300,15 +359,15 @@ impl SerialPort for WebSerialPort {
         };
         // Kept until it settles, so that a read dropped while waiting loses nothing.
         self.pending = Some(pending.clone());
-        let (timer, id) = timer(milliseconds(timeout));
-        let outcome = JsFuture::from(Promise::race(&Array::of2(&pending, &timer))).await;
-        // The timer resolves to `undefined`, a read to `{ value, done }`.
-        if matches!(&outcome, Ok(result) if result.is_undefined()) {
-            return Ok(0);
-        }
+        let result = match bounded(&pending, timeout).await {
+            Ok(None) => return Ok(0),
+            Ok(Some(result)) => result,
+            Err(error) => {
+                self.pending = None;
+                return Err(transport_error(&error));
+            }
+        };
         self.pending = None;
-        bindings::clear_timeout(&id);
-        let result = outcome.map_err(|error| transport_error(&error))?;
         if property(&result, "done").as_bool() == Some(true) {
             return Err(TransportError::Disconnected);
         }
@@ -324,19 +383,18 @@ impl SerialPort for WebSerialPort {
         let writer = self.writer.as_ref().ok_or_else(WebSerialPort::not_open)?;
         // A copy: the memory of the module may move while the write is pending.
         let chunk = Uint8Array::from(data);
-        settle(writer.write(&chunk))
+        let limit = write_limit(data.len(), self.baud_rate);
+        wait(writer.write(&chunk), limit, "writing to the port")
             .await
             .map(drop)
-            .map_err(|error| transport_error(&error))
     }
 
     async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), TransportError> {
         // Web Serial has no baud rate change: close the port and open it again.
         self.release().await;
-        settle(self.port.close())
-            .await
-            .map_err(|error| transport_error(&error))?;
+        close_port(&self.port).await?;
         open_port(&self.port, baud_rate).await?;
+        self.baud_rate = baud_rate;
         let (reader, writer) = lock_streams(&self.port)?;
         self.reader = Some(reader);
         self.writer = Some(writer);
@@ -348,10 +406,13 @@ impl SerialPort for WebSerialPort {
             ("dataTerminalReady", JsValue::from_bool(signals.dtr)),
             ("requestToSend", JsValue::from_bool(signals.rts)),
         ]);
-        settle(self.port.set_signals(&signals))
-            .await
-            .map(drop)
-            .map_err(|error| transport_error(&error))
+        wait(
+            self.port.set_signals(&signals),
+            PORT_TIMEOUT,
+            "setting the signals",
+        )
+        .await
+        .map(drop)
     }
 
     async fn sleep(&mut self, duration: Duration) {
@@ -383,7 +444,9 @@ impl WebPortProvider {
         baud_rate: u32,
     ) -> Option<WebSerialPort> {
         // Listing and opening errors are retried: the device may still be appearing.
-        let ports = settle(bindings::get_ports()).await.ok()?;
+        let ports = wait(bindings::get_ports(), PORT_TIMEOUT, "listing the ports")
+            .await
+            .ok()?;
         for port in Array::from(&ports).iter() {
             let handle: bindings::SerialPort = port.clone().unchecked_into();
             let selected = identity_of(&handle).is_some_and(|identity| filter.matches(&identity));

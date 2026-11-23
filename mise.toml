@@ -115,10 +115,19 @@ description = "Check that every WebAssembly module of the web package is at most
 depends = ["web-wasm"]
 run = """
 status=0
-for file in web/src/wasm/*_bg.wasm; do
+for module in core espressif; do
+  file=web/src/wasm/nanoflash_${module}_bg.wasm
+  if [ ! -s "$file" ]; then
+    echo "$file is missing or empty: run mise run web-wasm" >&2
+    status=1
+    continue
+  fi
   size=$(gzip -9 -c "$file" | wc -c)
   echo "$file $size"
-  if [ "$size" -gt 256000 ]; then
+  if [ "$size" -eq 0 ]; then
+    echo "$file could not be compressed" >&2
+    status=1
+  elif [ "$size" -gt 256000 ]; then
     echo "$file is $size bytes compressed, over the budget of 256000 bytes" >&2
     status=1
   fi

@@ -104,9 +104,10 @@ function lostDevice() {
 /**
  * A port following `transcriptText`. `finish()` throws naming the first event left, sleeps and
  * timeouts aside. The port records its calls in `log` (`open 115200`, `close`) and the size of
- * every chunk it delivered in `chunks`.
+ * every chunk it delivered in `chunks`. With `stallWrites`, no write ever completes, as with a
+ * device that stopped reading.
  */
-export function mockPort(transcriptText) {
+export function mockPort(transcriptText, { stallWrites = false } = {}) {
   const { identity, events } = parseTranscript(transcriptText);
   let next = 0;
   // Within a `>` event: the token the next byte is compared with, and the bytes a `..` took.
@@ -225,6 +226,7 @@ export function mockPort(transcriptText) {
         writableController = controller;
       },
       write(chunk) {
+        if (stallWrites) return new Promise(() => {});
         if (lost) throw lostDevice();
         if (!(chunk instanceof Uint8Array)) {
           throw new TypeError("a Web Serial port only takes Uint8Array chunks");

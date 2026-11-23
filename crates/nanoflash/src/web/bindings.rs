@@ -85,6 +85,10 @@ extern "C" {
     #[wasm_bindgen(js_name = setTimeout)]
     pub fn set_timeout(handler: &Function, milliseconds: i32) -> JsValue;
 
+    /// Calls `handler` with `argument` after `milliseconds`; returns the timer.
+    #[wasm_bindgen(js_name = setTimeout)]
+    pub fn set_timeout_with(handler: &Function, milliseconds: i32, argument: &JsValue) -> JsValue;
+
     /// Cancels a timer of `setTimeout`.
     #[wasm_bindgen(js_name = clearTimeout)]
     pub fn clear_timeout(id: &JsValue);
