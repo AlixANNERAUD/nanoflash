@@ -161,10 +161,16 @@ alignment = "64 KiB"
 name = "storage"
 role = "storage"
 filesystem = "littlefs"       # informative; drives the Espressif subtype
-size = "remaining"            # at most one partition may fill what is left
+size = "remaining"            # shares what is left with the other growing partitions
 ```
 
 - Sizes and offsets are integers or strings with a unit (`"4 KiB"`, `"8 MiB"`, `"0x1000"`).
+- The flash size is a size, or `"detect"` with a `minimum` (`size = "detect"`, `minimum = "4 MiB"`):
+  offline tools (`layout check`, `layout write`, `build`) resolve the layout against the minimum,
+  and `flash` resolves it again against the flash the chip reports.
+- A partition size is a size, `"remaining"`, or a table `{ minimum = "1 MiB", grow = 3, maximum =
+  "2 MiB" }`: at least `minimum`, plus a share of the free space weighted by `grow` (a whole number
+  from 1, default 1), up to `maximum` (optional). `remaining` is `{ minimum = 0, grow = 1 }`.
 - Roles: `bootloader`, `partition-table`, `firmware`, `update` (with `slot = <n>`), `storage`,
   `crash-record`, `custom`. `partition-table` is added to the list of roles from the brief,
   because table writers need to know where their table goes.
@@ -174,8 +180,36 @@ size = "remaining"            # at most one partition may fill what is left
 **Resolution** keeps the file order. Partitions with a fixed offset stay where they are; the
 others go at the first offset after the previous partition that satisfies their alignment.
 Resolution and checks fail on: duplicate names, zero sizes, misaligned fixed offsets, overlaps,
-exceeding the flash size, more than one `remaining`, roles a writer cannot express. Each error
-names the partitions and the addresses involved.
+exceeding the flash size, a `remaining` left without space, a `maximum` below its `minimum`, a
+growing `firmware` or `update` partition, a partition whose role needs a fixed offset placed after
+one that grows with the flash, a flash below the minimum of the layout, roles a writer cannot
+express. Each error names the partitions and the addresses involved.
+
+**Growth.** Partitions place first at their minimum size; the free space is then shared:
+
+- R1 *Segments.* Every partition with a fixed offset starts a segment of the file order; a segment
+  ends where the next one starts, the last one at the end of the flash. Growth only fills the free
+  space at the end of its own segment, so only the last segment depends on the flash size.
+- R2 *Steps.* The share of a `{ grow }` partition is a multiple of the largest of its alignment
+  and the alignments of the partitions after it in its segment, so these move by whole multiples
+  of their alignment and need no new padding.
+- R3 *`remaining`* grows in steps of the largest alignment of the partitions after it, or of one
+  byte when it is the last of its segment: alone at the end of a segment it fills to the byte, as
+  before.
+- R4 *Sharing.* The free space is shared by weight, each share rounded down to its step; a
+  `maximum` holds a share and what it leaves goes to the others; the rounding remainder stays
+  unallocated. Several `remaining` partitions share like `{ grow = 1 }`, and the partitions after a
+  growing one are pushed towards the end of its segment. Every layout valid before growing sizes
+  resolves exactly as before.
+- R5 *Roles.* `firmware` and `update` never take the table form (their images are built for a
+  size). They may be `remaining` where that size does not depend on the device: a fixed flash
+  size, or a segment that ends at a fixed offset. In a `detect` layout, a `bootloader`,
+  `partition-table`, `firmware` or `update` partition whose offset would move with the flash is
+  refused.
+- R6 *Dependence.* In a `detect` layout, a partition *grows with the flash* when it is
+  `remaining` or `{ grow }` in the last segment, unless its `maximum` keeps it below one step
+  above its minimum; it *moves with the flash* when it is in the last segment, has no fixed offset
+  and comes after a partition that grows with the flash.
 
 **Report:** for each partition its offset, end, size and, when images are known (from a
 manifest), the image size and the headroom left (bytes and percent); plus the unallocated flash.

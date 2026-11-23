@@ -76,8 +76,23 @@ alignment = "64 KiB"
 name = "storage"
 role = "storage"
 filesystem = "littlefs"       # informative; drives the Espressif subtype
-size = "remaining"            # at most one partition may fill what is left
+size = "remaining"            # shares what is left; see growing sizes below
 ```
+
+A layout can also take the flash size from the chip and let partitions grow with it:
+
+```toml
+[flash]
+size = "detect"                # read from the chip when flashing
+minimum = "4 MiB"              # what offline tools resolve against
+
+# in a partition: at least 1 MiB, three shares of the free space, at most 8 MiB
+size = { minimum = "1 MiB", grow = 3, maximum = "8 MiB" }
+```
+
+Partitions that grow share the free space by weight (`remaining` is `{ minimum = 0, grow = 1 }`),
+in steps that keep the partitions after them aligned. With `size = "detect"`, `flash` resolves the
+layout again for the flash the chip reports and writes the partition table of that size.
 
 ## Check a layout
 

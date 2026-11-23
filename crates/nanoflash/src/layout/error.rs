@@ -1,5 +1,6 @@
 //! The errors found while checking a layout.
 
+use super::Role;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt;
@@ -68,20 +69,6 @@ pub enum LayoutError {
         /// The flash size.
         flash_size: u64,
     },
-    /// Several partitions take the remaining space.
-    SeveralRemaining {
-        /// The first one in file order.
-        first: String,
-        /// The second one in file order.
-        second: String,
-    },
-    /// A partition taking the remaining space is followed by a partition without a fixed offset.
-    RemainingFollowedByUnfixed {
-        /// The partition taking the remaining space.
-        partition: String,
-        /// The partition after it.
-        next: String,
-    },
     /// A partition taking the remaining space has no space left.
     NoSpaceForRemaining {
         /// The partition.
@@ -92,6 +79,55 @@ pub enum LayoutError {
         limit: u64,
         /// The partition that starts at `limit`, or `None` when the flash ends there.
         limited_by: Option<String>,
+    },
+    /// A partition taking the remaining space shares it with others, and its share rounds down
+    /// to zero bytes.
+    NoShareForRemaining {
+        /// The partition.
+        partition: String,
+        /// Where the free space of its segment starts.
+        start: u64,
+        /// Where the free space of its segment ends.
+        limit: u64,
+        /// Its share is a multiple of this, the largest alignment of the partitions after it.
+        step: u64,
+    },
+    /// A partition whose role needs a fixed size grows.
+    RoleCannotGrow {
+        /// The partition.
+        partition: String,
+        /// Its role.
+        role: Role,
+    },
+    /// A growing partition has a maximum below its minimum.
+    InvalidGrowth {
+        /// The partition.
+        partition: String,
+        /// Its minimum.
+        minimum: u64,
+        /// Its maximum.
+        maximum: u64,
+    },
+    /// A partition whose role needs a known offset would move with the flash of the device.
+    OffsetDependsOnFlash {
+        /// The partition.
+        partition: String,
+        /// The first partition before it that grows with the flash.
+        after: String,
+    },
+    /// A layout with a fixed flash size was asked to resolve for another size.
+    FlashSizeFixed {
+        /// The flash size of the layout.
+        size: u64,
+        /// The size asked for.
+        requested: u64,
+    },
+    /// The flash is smaller than the minimum of a `detect` layout.
+    FlashBelowMinimum {
+        /// The size of the flash.
+        size: u64,
+        /// The minimum of the layout.
+        minimum: u64,
     },
     /// Two update partitions use the same slot.
     DuplicateSlot {
@@ -178,14 +214,6 @@ impl fmt::Display for LayoutError {
                 formatter,
                 "partition \"{partition}\" ends at {end:#x}, past the end of the flash at {flash_size:#x}"
             ),
-            Self::SeveralRemaining { first, second } => write!(
-                formatter,
-                "partitions \"{first}\" and \"{second}\" both take the remaining space"
-            ),
-            Self::RemainingFollowedByUnfixed { partition, next } => write!(
-                formatter,
-                "partition \"{partition}\" uses the remaining space, so the partition after it, \"{next}\", needs a fixed offset"
-            ),
             Self::NoSpaceForRemaining {
                 partition,
                 offset,
@@ -203,6 +231,40 @@ impl fmt::Display for LayoutError {
             } => write!(
                 formatter,
                 "partition \"{partition}\" uses the remaining space but starts at {offset:#x}, and the flash ends at {limit:#x}, so no space is left"
+            ),
+            Self::NoShareForRemaining {
+                partition,
+                start,
+                limit,
+                step,
+            } => write!(
+                formatter,
+                "partition \"{partition}\" uses the remaining space, but its share of the free space from {start:#x} to {limit:#x} rounds down to zero bytes in steps of {step:#x}"
+            ),
+            Self::RoleCannotGrow { partition, role } => write!(
+                formatter,
+                "partition \"{partition}\" has role {} and cannot grow: give it a fixed size",
+                role_name(*role)
+            ),
+            Self::InvalidGrowth {
+                partition,
+                minimum,
+                maximum,
+            } => write!(
+                formatter,
+                "partition \"{partition}\" may grow to a maximum of {maximum:#x} bytes, less than its minimum of {minimum:#x} bytes"
+            ),
+            Self::OffsetDependsOnFlash { partition, after } => write!(
+                formatter,
+                "partition \"{partition}\" comes after \"{after}\", which grows with the flash of the device, so its offset would depend on the device: give \"{partition}\" a fixed offset or put it before \"{after}\""
+            ),
+            Self::FlashSizeFixed { size, requested } => write!(
+                formatter,
+                "the layout has a fixed flash size of {size:#x} bytes and cannot be resolved for {requested:#x}: only a layout with size = \"detect\" can"
+            ),
+            Self::FlashBelowMinimum { size, minimum } => write!(
+                formatter,
+                "the flash of {size:#x} bytes is smaller than the minimum of {minimum:#x} bytes of the layout"
             ),
             Self::DuplicateSlot {
                 slot,
@@ -232,6 +294,19 @@ impl fmt::Display for LayoutError {
 }
 
 impl core::error::Error for LayoutError {}
+
+/// The role as a layout file writes it.
+fn role_name(role: Role) -> &'static str {
+    match role {
+        Role::Bootloader => "bootloader",
+        Role::PartitionTable => "partition-table",
+        Role::Firmware => "firmware",
+        Role::Update { .. } => "update",
+        Role::Storage => "storage",
+        Role::CrashRecord => "crash-record",
+        Role::Custom => "custom",
+    }
+}
 
 /// Every problem found in a layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -1,6 +1,9 @@
 //! The layout model: the flash of a board and its named partitions.
 
 mod error;
+mod growth;
+#[cfg(test)]
+mod legacy;
 mod report;
 mod resolve;
 
