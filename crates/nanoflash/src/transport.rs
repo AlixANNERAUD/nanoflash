@@ -210,6 +210,14 @@ pub trait PortProvider {
         baud_rate: u32,
         timeout: Duration,
     ) -> Result<Self::Port, TransportError>;
+
+    /// How long to wait for the device of Caterina (AVR109), which goes back to the sketch 8 s
+    /// after it started. A host may need more than 5 s to bind a new port (a driver on Windows,
+    /// ModemManager on Linux), so the default is 7 s; the browser provider shortens it so that
+    /// the permission button appears while Caterina still runs.
+    fn caterina_reopen_timeout(&self) -> Duration {
+        Duration::from_secs(7)
+    }
 }
 
 #[cfg(test)]

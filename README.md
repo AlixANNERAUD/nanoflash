@@ -196,7 +196,7 @@ The port is the only one that suits the board, or `--port`. `--erase-all` erases
 first, from the lowest offset the bootloader writes to the end (a protected bootloader stays; on
 AVR, pages are programmed with `0xFF` up to where the bootloader starts), `--no-verify` skips
 the MD5, CRC-16 or read-back checks, `--baud-rate` changes the speed (460800 through a UART
-bridge by default; the rate of the bootloader on STK500, which tries 115200 then 57600; the
+bridge by default; the rate of the bootloader on STK500, where STK500v1 tries 115200 then 57600 and STK500v2 uses 115200 only; the
 SAM-BA and AVR109 bootloaders ignore it), `--json` prints one JSON document.
 The exit code is 0 on success, 1 for an input error, 2 for a device or connection error and 3
 when the flash does not read back as written.

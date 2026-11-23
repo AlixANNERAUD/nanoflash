@@ -847,15 +847,15 @@ impl fmt::Display for Error {
                 Protocol::Avr109 => match (waited_for, reset) {
                     (Some(filter), Some("touch-1200")) => write!(
                         formatter,
-                        "no bootloader device matching {filter} appeared within 5 s after the 1200-baud touch: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
+                        "no bootloader device matching {filter} appeared after the 1200-baud touch: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
                     ),
                     (Some(filter), Some(reset)) => write!(
                         formatter,
-                        "no bootloader device matching {filter} appeared within 5 s after the reset sequence \"{reset}\" of the board: check the reset sequence of the board in the manifest, or press the reset button of the board once (its LED pulses for 8 s in the bootloader) and try again with the port it shows"
+                        "no bootloader device matching {filter} appeared after the reset sequence \"{reset}\" of the board: check the reset sequence of the board in the manifest, or press the reset button of the board once (its LED pulses for 8 s in the bootloader) and try again with the port it shows"
                     ),
                     (Some(filter), None) => write!(
                         formatter,
-                        "no bootloader device matching {filter} appeared within 5 s after the reset: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
+                        "no bootloader device matching {filter} appeared after the reset: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
                     ),
                     (None, _) => formatter.write_str(
                         "no AVR109 bootloader answered on the port: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows",
@@ -1157,7 +1157,7 @@ mod tests {
         assert_eq!(caterina.class(), ErrorClass::Device);
         assert_eq!(
             caterina.to_string(),
-            "no bootloader device matching 2341:0036 appeared within 5 s after the 1200-baud touch: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
+            "no bootloader device matching 2341:0036 appeared after the 1200-baud touch: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
         );
         let custom = Error::NoBootloader {
             waited_for: Some("2341:0036".into()),
@@ -1167,7 +1167,7 @@ mod tests {
         };
         assert_eq!(
             custom.to_string(),
-            "no bootloader device matching 2341:0036 appeared within 5 s after the reset sequence \"custom\" of the board: check the reset sequence of the board in the manifest, or press the reset button of the board once (its LED pulses for 8 s in the bootloader) and try again with the port it shows"
+            "no bootloader device matching 2341:0036 appeared after the reset sequence \"custom\" of the board: check the reset sequence of the board in the manifest, or press the reset button of the board once (its LED pulses for 8 s in the bootloader) and try again with the port it shows"
         );
         let silent = Error::NoBootloader {
             waited_for: None,

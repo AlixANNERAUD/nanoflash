@@ -528,6 +528,12 @@ impl WebPortProvider {
 impl PortProvider for WebPortProvider {
     type Port = WebSerialPort;
 
+    /// A first grant fails after this wait (`not-granted`) while Caterina still runs, and a press
+    /// of the reset button restarts it for the user to choose its port.
+    fn caterina_reopen_timeout(&self) -> Duration {
+        Duration::from_secs(5)
+    }
+
     async fn open(
         &mut self,
         filter: &DeviceFilter,

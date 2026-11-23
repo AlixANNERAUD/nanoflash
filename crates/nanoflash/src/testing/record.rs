@@ -148,6 +148,10 @@ impl<S: SerialPort> SerialPort for RecordingPort<S> {
 impl<P: PortProvider> PortProvider for RecordingProvider<P> {
     type Port = RecordingPort<P::Port>;
 
+    fn caterina_reopen_timeout(&self) -> Duration {
+        self.inner.caterina_reopen_timeout()
+    }
+
     async fn open(
         &mut self,
         filter: &DeviceFilter,

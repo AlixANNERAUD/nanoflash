@@ -353,7 +353,8 @@ impl PortProvider for Opens {
 #[test]
 fn caterina_is_waited_for_less_than_it_stays() {
     // Caterina goes back to the sketch 8 s after it starts: waiting 15 s for its port, as for a
-    // SAM-BA bootloader, would outlive it.
+    // SAM-BA bootloader, would outlive it. A provider that does not say gets 7 s (the browser's
+    // gets 5 s).
     let (port, provider) = replay(Transcript::parse(&transcript("connect-leonardo")).unwrap());
     let mut provider = Opens(provider, Vec::new());
     let result = {
@@ -368,7 +369,7 @@ fn caterina_is_waited_for_less_than_it_stays() {
         block_on(backend.connect(&mut ()))
     };
     assert_eq!(result.unwrap().usb, identity(0x2341, 0x0036));
-    assert_eq!(provider.1, [(57_600, Duration::from_secs(5))]);
+    assert_eq!(provider.1, [(57_600, Duration::from_secs(7))]);
     provider.0.finish().unwrap();
 }
 

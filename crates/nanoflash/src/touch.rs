@@ -28,16 +28,14 @@ const TOUCH_BAUD_RATE: u32 = 1200;
 /// How long a SAM-BA bootloader's USB device may take to appear after the touch: it stays until
 /// it is flashed.
 const SAMBA_REOPEN_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long Caterina's (AVR109) may take: it enumerates a second or two after the touch, and
-/// goes back to the sketch 8 s after it started, so a longer wait would only find it gone. In
-/// the browser, a first grant fails after this wait (`not-granted`) while Caterina still runs,
-/// and a press of the reset button restarts it for the user to choose its port.
-const AVR109_REOPEN_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// How long the bootloader of `protocol` may take to appear after the touch.
-pub(crate) fn reopen_timeout(protocol: Protocol) -> Duration {
+///
+/// Caterina's (AVR109) enumerates a second or two after the touch and goes back to the sketch 8 s
+/// after it started, so a longer wait would only find it gone: the provider chooses (see
+/// [`PortProvider::caterina_reopen_timeout`]).
+pub(crate) fn reopen_timeout<P: PortProvider>(provider: &P, protocol: Protocol) -> Duration {
     match protocol {
-        Protocol::Avr109 => AVR109_REOPEN_TIMEOUT,
+        Protocol::Avr109 => provider.caterina_reopen_timeout(),
         _ => SAMBA_REOPEN_TIMEOUT,
     }
 }
@@ -149,7 +147,7 @@ pub(crate) async fn enter_bootloader<P: PortProvider>(
     // The port must be closed before the bootloader's device can be opened.
     drop(port.take());
     match provider
-        .open(&filter, baud_rate, reopen_timeout(protocol))
+        .open(&filter, baud_rate, reopen_timeout(provider, protocol))
         .await
     {
         Ok(opened) => {
