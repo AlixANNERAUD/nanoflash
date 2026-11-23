@@ -11,6 +11,7 @@ pub(crate) mod avr109;
 pub(crate) mod chip;
 pub(crate) mod stk500v1;
 pub(crate) mod stk500v2;
+mod write;
 
 pub use chip::{CHIPS, Chip};
 
@@ -70,6 +71,8 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(1);
 const SKIP_BUDGET: usize = 4096;
 /// The length of the answer to the AVR109 `S`, such as `CATERIN`.
 const IDENTIFIER_LENGTH: usize = 7;
+/// The bytes of an answer an error message shows at most.
+const EXCERPT_LENGTH: usize = 16;
 
 /// How the AVR backend connects.
 #[derive(Debug, Clone, Default)]
@@ -107,6 +110,15 @@ struct Session {
     chip: &'static Chip,
     /// The baud rate the bootloader answered at; on AVR109, the rate its port was opened at.
     baud_rate: u32,
+}
+
+impl Session {
+    /// The end of the flash the bootloader of `protocol` leaves to the application.
+    fn writable_to(&self, protocol: Protocol) -> u64 {
+        self.chip
+            .flash_size
+            .saturating_sub(bootloader_size(protocol, self.baud_rate))
+    }
 }
 
 /// An STK500v2 message read from the port.
@@ -151,6 +163,17 @@ pub(crate) fn hexadecimal(bytes: &[u8]) -> String {
         let _ = write!(text, "{separator}{byte:02x}");
     }
     text
+}
+
+/// The bytes shown in an error message: in hexadecimal up to [`EXCERPT_LENGTH`] bytes, else the
+/// first of them and the count.
+pub(crate) fn excerpt(bytes: &[u8]) -> String {
+    match bytes.get(..EXCERPT_LENGTH) {
+        Some(start) if bytes.len() > EXCERPT_LENGTH => {
+            format!("{} ... ({} bytes)", hexadecimal(start), bytes.len())
+        }
+        _ => hexadecimal(bytes),
+    }
 }
 
 impl<'p, P: PortProvider> AvrBackend<'p, P> {
@@ -238,24 +261,9 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
             secure_download_mode: false,
             usb,
             writable_from: None,
-            writable_to: Some(
-                session
-                    .chip
-                    .flash_size
-                    .saturating_sub(bootloader_size(protocol, session.baud_rate)),
-            ),
+            writable_to: Some(session.writable_to(protocol)),
             erases_to_end: false,
         })
-    }
-
-    /// The baud rates to try on STK500v1 or STK500v2.
-    fn rates(&self) -> Vec<u32> {
-        match (self.options.baud_rate, self.dialect) {
-            (Some(rate), _) => vec![rate],
-            (None, Dialect::Stk500v1) => STK500V1_RATES.to_vec(),
-            // AVR109 opens its port at its own rate and never asks.
-            (None, Dialect::Stk500v2 | Dialect::Avr109) => vec![STK500V2_RATE],
-        }
     }
 
     /// No bootloader answered on the port at `rates`.
@@ -331,7 +339,10 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
     }
 
     async fn connect_stk500v1(&mut self) -> Result<([u8; 3], u32), Error> {
-        let rates = self.rates();
+        let rates = match self.options.baud_rate {
+            Some(rate) => vec![rate],
+            None => STK500V1_RATES.to_vec(),
+        };
         for &rate in &rates {
             self.port()?.set_baud_rate(rate).await?;
             for _ in 0..STK500V1_RESETS {
@@ -372,22 +383,36 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
 
     async fn stk500v1_signature(&mut self) -> Result<[u8; 3], Error> {
         const COMMAND: &str = "STK_READ_SIGN";
-        self.port()?.write(&stk500v1::READ_SIGNATURE).await?;
-        let reply = self.read_answer(5, COMMAND_TIMEOUT).await?;
+        let data = self
+            .stk500v1_command(COMMAND, &stk500v1::READ_SIGNATURE, 3, COMMAND_TIMEOUT)
+            .await?;
+        <[u8; 3]>::try_from(data.as_slice()).map_err(|_| Error::InvalidResponse {
+            command: COMMAND,
+            message: format!("expected 3 signature bytes, got {}", hexadecimal(&data)),
+        })
+    }
+
+    /// Sends the STK500v1 `request` and reads its answer, `14`, `payload` bytes and `10`, at
+    /// most `payload + 2` bytes; returns the payload.
+    async fn stk500v1_command(
+        &mut self,
+        command: &'static str,
+        request: &[u8],
+        payload: usize,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, Error> {
+        self.port()?.write(request).await?;
+        let reply = self.read_answer(payload.saturating_add(2), timeout).await?;
         if reply.is_empty() {
-            return Err(Error::NoResponse { command: COMMAND });
+            return Err(Error::NoResponse { command });
         }
-        stk500v1::answer(&reply, 3)
-            .and_then(|data| <[u8; 3]>::try_from(data).map_err(|_| hexadecimal(data)))
-            .map_err(|message| Error::InvalidResponse {
-                command: COMMAND,
-                message,
-            })
+        stk500v1::answer(&reply, payload)
+            .map(<[u8]>::to_vec)
+            .map_err(|message| Error::InvalidResponse { command, message })
     }
 
     async fn connect_stk500v2(&mut self) -> Result<([u8; 3], u32), Error> {
-        let rates = self.rates();
-        let rate = rates.first().copied().unwrap_or(STK500V2_RATE);
+        let rate = self.options.baud_rate.unwrap_or(STK500V2_RATE);
         self.port()?.set_baud_rate(rate).await?;
         for _ in 0..SIGN_ON_ATTEMPTS {
             self.reset().await?;
@@ -401,43 +426,48 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
                 return Ok((self.stk500v2_signature().await?, rate));
             }
         }
-        Err(self.no_bootloader(rates))
+        Err(self.no_bootloader(vec![rate]))
     }
 
     async fn stk500v2_signature(&mut self) -> Result<[u8; 3], Error> {
         const COMMAND: &str = "CMD_READ_SIGNATURE_ISP";
         let mut signature = [0_u8; 3];
         for (index, byte) in (0_u8..).zip(signature.iter_mut()) {
-            let answer = self
-                .exchange(
+            let data = self
+                .stk500v2_command(
+                    COMMAND,
                     &stk500v2::read_signature(index),
                     COMMAND_TIMEOUT,
                     stk500v2::answer_with_status,
                 )
                 .await?;
-            *byte = match answer {
-                None => return Err(Error::NoResponse { command: COMMAND }),
-                Some(Ok(data)) => match data.as_slice() {
-                    [value] => *value,
-                    _ => {
-                        return Err(Error::InvalidResponse {
-                            command: COMMAND,
-                            message: format!(
-                                "expected one signature byte, got {}",
-                                hexadecimal(&data)
-                            ),
-                        });
-                    }
-                },
-                Some(Err(message)) => {
+            *byte = match data.as_slice() {
+                [value] => *value,
+                _ => {
                     return Err(Error::InvalidResponse {
                         command: COMMAND,
-                        message,
+                        message: format!("expected one signature byte, got {}", excerpt(&data)),
                     });
                 }
             };
         }
         Ok(signature)
+    }
+
+    /// Sends `body` in the next STK500v2 message and returns the data of the answer as `check`
+    /// gives it.
+    async fn stk500v2_command(
+        &mut self,
+        command: &'static str,
+        body: &[u8],
+        timeout: Duration,
+        check: Check,
+    ) -> Result<Vec<u8>, Error> {
+        match self.exchange(body, timeout, check).await? {
+            None => Err(Error::NoResponse { command }),
+            Some(Ok(data)) => Ok(data),
+            Some(Err(message)) => Err(Error::InvalidResponse { command, message }),
+        }
     }
 
     /// Sends `body` in the next STK500v2 message and returns the data of the answer as `check`
@@ -492,7 +522,7 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
                     Frame::Broken(format!(
                         "the message stopped after {} bytes: {}",
                         message.len(),
-                        hexadecimal(&message)
+                        excerpt(&message)
                     ))
                 });
             }
@@ -540,6 +570,9 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
         progress: &mut dyn Progress,
     ) -> Result<([u8; 3], u32), Error> {
         const COMMAND: &str = "AVR109 s";
+        if self.options.baud_rate.is_some() {
+            progress.message("AVR109 bootloaders talk over USB: the baud rate is ignored");
+        }
         let touch = ResetSequence::Touch1200;
         let reset = self.reset.as_ref().unwrap_or(&touch);
         touch::enter_bootloader(
@@ -551,16 +584,12 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
             AVR109_RATE,
         )
         .await?;
-        if self.options.baud_rate.is_some() {
-            progress.message("AVR109 bootloaders talk over USB: the baud rate is ignored");
-        }
         self.drain(DRAIN_TIMEOUT).await?;
         let mut identified = false;
         for _ in 0..IDENTIFIER_TRIES {
             self.port()?.write(&[avr109::IDENTIFIER]).await?;
             let reply = self.read_answer(IDENTIFIER_LENGTH, COMMAND_TIMEOUT).await?;
-            // `?` answers a command the bootloader does not know.
-            if reply.len() == IDENTIFIER_LENGTH && reply.first() != Some(&b'?') {
+            if reply.len() == IDENTIFIER_LENGTH && reply.first() != Some(&avr109::UNKNOWN) {
                 identified = true;
                 break;
             }

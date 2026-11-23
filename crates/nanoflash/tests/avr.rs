@@ -1,11 +1,15 @@
 //! Transcript tests of the AVR backend.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
 use nanoflash::avr::{AvrBackend, AvrOptions};
-use nanoflash::backend::{ChipInformation, ProgressEvent};
+use nanoflash::backend::{Backend, ChipInformation, ProgressEvent, Region, Segment, Stage};
+use nanoflash::flash::decode_intel_hex;
 use nanoflash::manifest::{Protocol, ResetSequence, ResetStep};
-use nanoflash::testing::{ReplayProvider, Transcript, replay};
+use nanoflash::testing::{
+    Event, HostToken, RecordingProvider, ReplayProvider, Transcript, record, replay,
+};
 use nanoflash::transport::{Duration, UsbIdentity};
 use nanoflash::{Error, ErrorClass};
 use pollster::block_on;
@@ -464,4 +468,702 @@ fn avr109_ignores_the_baud_rate() {
     assert_eq!(messages.len(), 1, "{messages:?}");
     assert!(messages[0].contains("ignored"), "{}", messages[0]);
     provider.finish().unwrap();
+}
+
+#[test]
+fn a_board_without_reset_is_not_said_to_miss_dtr() {
+    let text = transcript("connect-silent").replace(PULSE, "");
+    let (result, provider, _) = connect_text(
+        &text,
+        Protocol::Stk500v1,
+        Some(ResetSequence::None),
+        AvrOptions::default(),
+    );
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::NoBootloader {
+            waited_for: None,
+            reset: Some("none"),
+            protocol: Protocol::Stk500v1,
+            rates: vec![115_200, 57_600],
+        }
+    );
+    assert!(error.to_string().contains("\"none\""), "{error}");
+    assert!(!error.to_string().contains("DTR"), "{error}");
+    provider.finish().unwrap();
+}
+
+#[derive(Default)]
+struct Recorder {
+    events: Vec<ProgressEvent>,
+    messages: Vec<String>,
+}
+
+impl nanoflash::backend::Progress for Recorder {
+    fn report(&mut self, event: ProgressEvent) {
+        self.events.push(event);
+    }
+
+    fn message(&mut self, text: &str) {
+        self.messages.push(text.to_string());
+    }
+}
+
+fn event(stage: Stage, offset: u64, done: u64, total: u64) -> ProgressEvent {
+    ProgressEvent {
+        stage,
+        offset,
+        done,
+        total,
+    }
+}
+
+/// The 300 bytes of `tests/images/avr-application.hex`, from offset 0.
+fn application() -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/images/avr-application.hex");
+    let image = decode_intel_hex(&std::fs::read(path).unwrap(), 0x8000).unwrap();
+    assert_eq!((image.start, image.bytes.len()), (0, 300));
+    image.bytes
+}
+
+fn hexadecimal(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// An STK500v2 message: start, sequence, body length, token, body and the XOR of every byte
+/// before the checksum.
+fn message(sequence: u8, body: &[u8]) -> Vec<u8> {
+    let [high, low] = u16::try_from(body.len()).unwrap().to_be_bytes();
+    let mut bytes = vec![0x1b, sequence, high, low, 0x0e];
+    bytes.extend_from_slice(body);
+    bytes.push(bytes.iter().fold(0, |sum, byte| sum ^ byte));
+    bytes
+}
+
+/// The pages of `image`, the last one padded with `0xFF`.
+fn pages(image: &[u8], page_size: usize) -> Vec<Vec<u8>> {
+    image
+        .chunks(page_size)
+        .map(|chunk| {
+            let mut page = chunk.to_vec();
+            page.resize(page_size, 0xFF);
+            page
+        })
+        .collect()
+}
+
+/// The lines that follow a `connect-*` transcript to write `image` at offset 0 page by page,
+/// read it back page by page and leave the bootloader, from the Protocol summary. The bytes of
+/// a written page are a counted wildcard; the STK500v2 messages continue the numbering of the
+/// connection (1 to 4).
+fn session(protocol: Protocol, image: &[u8], page_size: usize) -> String {
+    let pages = pages(image, page_size);
+    let [length_high, length_low] = u16::try_from(page_size).unwrap().to_be_bytes();
+    let word = |index: usize| index * page_size / 2;
+    let mut text = String::new();
+    match protocol {
+        Protocol::Stk500v1 => {
+            let load = |index: usize| {
+                let [low, high] = u16::try_from(word(index)).unwrap().to_le_bytes();
+                format!("> 55 {low:02x} {high:02x} 20\n< 14 10\n")
+            };
+            for index in 0..pages.len() {
+                text.push_str(&load(index));
+                writeln!(
+                    text,
+                    "> 64 {length_high:02x} {length_low:02x} 46 ..{page_size} 20\n< 14 10"
+                )
+                .unwrap();
+            }
+            for (index, page) in pages.iter().enumerate() {
+                text.push_str(&load(index));
+                writeln!(
+                    text,
+                    "> 74 {length_high:02x} {length_low:02x} 46 20\n< 14 {} 10",
+                    hexadecimal(page)
+                )
+                .unwrap();
+            }
+            text.push_str("> 51 20\n< 14 10\n");
+        }
+        Protocol::Stk500v2 => {
+            let mut sequence = 4_u8;
+            let mut next = || {
+                sequence += 1;
+                sequence
+            };
+            let load = |sequence: u8, index: usize| {
+                let word = u32::try_from(word(index)).unwrap() | 1 << 31;
+                let mut body = vec![0x06];
+                body.extend_from_slice(&word.to_be_bytes());
+                format!(
+                    "> {}\n< {}\n",
+                    hexadecimal(&message(sequence, &body)),
+                    hexadecimal(&message(sequence, &[0x06, 0x00]))
+                )
+            };
+            for index in 0..pages.len() {
+                text.push_str(&load(next(), index));
+                let sequence = next();
+                let [body_high, body_low] = u16::try_from(page_size + 10).unwrap().to_be_bytes();
+                let head = [
+                    0x1b,
+                    sequence,
+                    body_high,
+                    body_low,
+                    0x0e,
+                    0x13,
+                    length_high,
+                    length_low,
+                    0xc1,
+                    0x0a,
+                    0x40,
+                    0x4c,
+                    0x20,
+                    0x00,
+                    0x00,
+                ];
+                writeln!(
+                    text,
+                    "> {} ..{}\n< {}",
+                    hexadecimal(&head),
+                    page_size + 1,
+                    hexadecimal(&message(sequence, &[0x13, 0x00]))
+                )
+                .unwrap();
+            }
+            for (index, page) in pages.iter().enumerate() {
+                text.push_str(&load(next(), index));
+                let sequence = next();
+                let mut answer = vec![0x14, 0x00];
+                answer.extend_from_slice(page);
+                answer.push(0x00);
+                writeln!(
+                    text,
+                    "> {}\n< {}",
+                    hexadecimal(&message(sequence, &[0x14, length_high, length_low, 0x20])),
+                    hexadecimal(&message(sequence, &answer))
+                )
+                .unwrap();
+            }
+            let sequence = next();
+            writeln!(
+                text,
+                "> {}\n< {}",
+                hexadecimal(&message(sequence, &[0x11, 0x01, 0x01])),
+                hexadecimal(&message(sequence, &[0x11, 0x00]))
+            )
+            .unwrap();
+        }
+        Protocol::Avr109 => {
+            let load = |index: usize| {
+                let [high, low] = u16::try_from(word(index)).unwrap().to_be_bytes();
+                format!("> \"A\" {high:02x} {low:02x}\n< \"\\r\"\n")
+            };
+            for index in 0..pages.len() {
+                text.push_str(&load(index));
+                writeln!(
+                    text,
+                    "> \"B\" {length_high:02x} {length_low:02x} \"F\" ..{page_size}\n< \"\\r\""
+                )
+                .unwrap();
+            }
+            for (index, page) in pages.iter().enumerate() {
+                text.push_str(&load(index));
+                writeln!(
+                    text,
+                    "> \"g\" {length_high:02x} {length_low:02x} \"F\"\n< {}",
+                    hexadecimal(page)
+                )
+                .unwrap();
+            }
+            text.push_str("> \"E\"\n< \"\\r\"\n");
+        }
+        Protocol::Espressif | Protocol::Samba => unreachable!("not an AVR protocol"),
+    }
+    text
+}
+
+/// The events of a transcript, without their lines.
+fn events(transcript: &Transcript) -> Vec<Event> {
+    transcript
+        .events
+        .iter()
+        .map(|entry| entry.event.clone())
+        .collect()
+}
+
+/// The bytes of every write of a recorded session.
+fn writes(transcript: &Transcript) -> Vec<Vec<u8>> {
+    transcript
+        .events
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            Event::Host(tokens) => Some(
+                tokens
+                    .iter()
+                    .map(|token| match token {
+                        HostToken::Byte(byte) => *byte,
+                        HostToken::Any | HostToken::Count(_) => {
+                            panic!("a recording has no wildcard")
+                        }
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The data of every `STK_PROG_PAGE` of a recorded session.
+fn programmed_pages(transcript: &Transcript) -> Vec<Vec<u8>> {
+    writes(transcript)
+        .into_iter()
+        .filter(|bytes| bytes.first() == Some(&0x64))
+        .map(|bytes| bytes[4..bytes.len() - 1].to_vec())
+        .collect()
+}
+
+/// Connects over a replay of `text` through `Backend::connect`, then runs `body`.
+fn run<T>(
+    text: &str,
+    protocol: Protocol,
+    body: impl FnOnce(&mut AvrBackend<'_, ReplayProvider>, &mut Recorder) -> T,
+) -> (T, ReplayProvider, Recorder) {
+    let (port, mut provider) = replay(Transcript::parse(text).unwrap());
+    let mut recorder = Recorder::default();
+    let result = {
+        let mut backend =
+            AvrBackend::new(protocol, port, &mut provider, None, AvrOptions::default()).unwrap();
+        block_on(Backend::connect(&mut backend)).unwrap();
+        body(&mut backend, &mut recorder)
+    };
+    (result, provider, recorder)
+}
+
+/// [`run`], recording what passes on the port.
+fn run_recorded<T>(
+    text: &str,
+    protocol: Protocol,
+    body: impl FnOnce(&mut AvrBackend<'_, RecordingProvider<ReplayProvider>>) -> T,
+) -> (T, RecordingProvider<ReplayProvider>) {
+    let (port, provider) = replay(Transcript::parse(text).unwrap());
+    let (port, mut provider) = record(port, provider);
+    let result = {
+        let mut backend =
+            AvrBackend::new(protocol, port, &mut provider, None, AvrOptions::default()).unwrap();
+        block_on(Backend::connect(&mut backend)).unwrap();
+        body(&mut backend)
+    };
+    (result, provider)
+}
+
+/// Writes, verifies and resets `application()` over `connect-<board>` and `write-<board>`.
+fn writes_and_verifies(board: &str, protocol: Protocol, done: &[u64]) {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0,
+        data: &image,
+    };
+    let text = transcript(&format!("connect-{board}")) + &transcript(&format!("write-{board}"));
+    let (result, provider, recorder) = run(&text, protocol, |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))?;
+        block_on(backend.reset_to_application())
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+    let expected: Vec<ProgressEvent> = [Stage::Writing, Stage::Verifying]
+        .into_iter()
+        .flat_map(|stage| done.iter().map(move |done| event(stage, 0, *done, 300)))
+        .collect();
+    assert_eq!(recorder.events, expected);
+    assert!(recorder.messages.is_empty(), "{:?}", recorder.messages);
+}
+
+#[test]
+fn writes_and_verifies_an_uno() {
+    writes_and_verifies("uno", Protocol::Stk500v1, &[128, 256, 300]);
+}
+
+#[test]
+fn writes_and_verifies_a_mega_2560() {
+    writes_and_verifies("mega2560", Protocol::Stk500v2, &[256, 300]);
+}
+
+#[test]
+fn writes_and_verifies_a_leonardo() {
+    writes_and_verifies("leonardo", Protocol::Avr109, &[128, 256, 300]);
+}
+
+#[test]
+fn committed_write_transcripts_match_the_protocol_summary() {
+    let image = application();
+    for (name, protocol, page_size) in [
+        ("write-uno", Protocol::Stk500v1, 128),
+        ("write-mega2560", Protocol::Stk500v2, 256),
+        ("write-leonardo", Protocol::Avr109, 128),
+    ] {
+        let committed = Transcript::parse(&transcript(name)).unwrap();
+        let expected = Transcript::parse(&session(protocol, &image, page_size)).unwrap();
+        assert_eq!(committed.identity, None, "{name}");
+        assert_eq!(events(&committed), events(&expected), "{name}");
+    }
+}
+
+#[test]
+fn sends_the_pages_as_given() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0,
+        data: &image,
+    };
+    let text = transcript("connect-uno") + &transcript("write-uno");
+    let (result, provider) = run_recorded(&text, Protocol::Stk500v1, |backend| {
+        block_on(backend.write(&[segment], &mut ()))?;
+        block_on(backend.verify(&[segment], &mut ()))?;
+        block_on(backend.reset_to_application())
+    });
+    result.unwrap();
+    provider.inner().finish().unwrap();
+    let mut last = image[256..].to_vec();
+    last.extend_from_slice(&[0xFF; 84]);
+    assert_eq!(
+        programmed_pages(&provider.transcript()),
+        [image[..128].to_vec(), image[128..256].to_vec(), last]
+    );
+}
+
+#[test]
+fn pads_the_last_page_and_checks_the_image_bytes_only() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0,
+        data: &image,
+    };
+    // The padding of the last page reads back as 0x00: only the 44 image bytes are compared.
+    let last = &pages(&image, 128)[2];
+    let mut zeroed = last.clone();
+    zeroed[44..].fill(0x00);
+    let original = transcript("connect-uno") + &transcript("write-uno");
+    let text = original.replace(
+        &format!("< 14 {} 10", hexadecimal(last)),
+        &format!("< 14 {} 10", hexadecimal(&zeroed)),
+    );
+    assert_ne!(text, original);
+    let (result, provider, _) = run(&text, Protocol::Stk500v1, |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))?;
+        block_on(backend.reset_to_application())
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+
+    // A one-byte image programs one whole page.
+    let segment = Segment {
+        label: "application",
+        offset: 0,
+        data: &[0xAB],
+    };
+    let text = transcript("connect-uno") + &session(Protocol::Stk500v1, &[0xAB], 128);
+    let (result, provider) = run_recorded(&text, Protocol::Stk500v1, |backend| {
+        block_on(backend.write(&[segment], &mut ()))?;
+        block_on(backend.verify(&[segment], &mut ()))?;
+        block_on(backend.reset_to_application())
+    });
+    result.unwrap();
+    provider.inner().finish().unwrap();
+    let mut page = vec![0xAB];
+    page.resize(128, 0xFF);
+    assert_eq!(programmed_pages(&provider.transcript()), [page]);
+}
+
+#[test]
+fn a_differing_byte_is_reported() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0,
+        data: &image,
+    };
+    let page = &image[0x80..0x100];
+    let mut changed = page.to_vec();
+    changed[5] = 0xff;
+    let original = transcript("connect-uno") + &transcript("write-uno");
+    let text = original.replace(
+        &format!("< 14 {} 10", hexadecimal(page)),
+        &format!("< 14 {} 10", hexadecimal(&changed)),
+    );
+    assert_ne!(text, original);
+    let (result, _, _) = run(&text, Protocol::Stk500v1, |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))
+    });
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::ReadBackDiffers {
+            label: "application".into(),
+            offset: 0x85,
+            expected: 0xa4,
+            actual: 0xff,
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Verification);
+}
+
+/// What `body` returns after `connect-<board>` followed by `lines`.
+fn after_connect<T>(
+    board: &str,
+    protocol: Protocol,
+    lines: &str,
+    body: impl FnOnce(&mut AvrBackend<'_, ReplayProvider>, &mut Recorder) -> T,
+) -> T {
+    let text = transcript(&format!("connect-{board}")) + lines;
+    run(&text, protocol, body).0
+}
+
+fn invalid_response(error: Error, expected: &str) -> String {
+    match error {
+        Error::InvalidResponse { command, message } => {
+            assert_eq!(command, expected, "{message}");
+            message
+        }
+        error => panic!("{error:?}"),
+    }
+}
+
+#[test]
+fn malformed_answers_name_the_command() {
+    let image = application();
+    let page = Segment {
+        label: "application",
+        offset: 0,
+        data: &image[..128],
+    };
+
+    let lines = "> 55 00 00 20\n< 14 10\n> 64 00 80 46 ..128 20\n< 15\n";
+    let error = after_connect("uno", Protocol::Stk500v1, lines, |backend, progress| {
+        block_on(backend.write(&[page], progress))
+    })
+    .unwrap_err();
+    let detail = invalid_response(error, "STK_PROG_PAGE");
+    assert!(detail.contains("STK_NOSYNC"), "{detail}");
+
+    let lines = format!(
+        "> 55 00 00 20\n< 14 10\n> 74 00 80 46 20\n< 14 {}\n",
+        hexadecimal(&image[..128])
+    );
+    let error = after_connect("uno", Protocol::Stk500v1, &lines, |backend, progress| {
+        block_on(backend.verify(&[page], progress))
+    })
+    .unwrap_err();
+    invalid_response(error, "STK_READ_PAGE");
+
+    // Three bytes of noise, then an answer whose checksum should be 02.
+    let lines = format!(
+        "> {}\n< {}\n> 1b 06 01 0a 0e 13 01 00 c1 0a 40 4c 20 00 00 ..257\n< 00 11 22 1b 06 00 02 0e 13 00 ff\n",
+        hexadecimal(&message(5, &[0x06, 0x80, 0x00, 0x00, 0x00])),
+        hexadecimal(&message(5, &[0x06, 0x00]))
+    );
+    let error = after_connect(
+        "mega2560",
+        Protocol::Stk500v2,
+        &lines,
+        |backend, progress| block_on(backend.write(&[page], progress)),
+    )
+    .unwrap_err();
+    let detail = invalid_response(error, "CMD_PROGRAM_FLASH_ISP");
+    assert!(detail.contains("checksum"), "{detail}");
+
+    let lines = "> \"A\" 00 00\n< \"\\r\"\n> \"B\" 00 80 \"F\" ..128\n< \"?\"\n";
+    let error = after_connect("leonardo", Protocol::Avr109, lines, |backend, progress| {
+        block_on(backend.write(&[page], progress))
+    })
+    .unwrap_err();
+    invalid_response(error, "AVR109 B");
+
+    let error = after_connect("uno", Protocol::Stk500v1, "> 51 20\n", |backend, _| {
+        block_on(backend.reset_to_application())
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        Error::NoResponse {
+            command: "STK_LEAVE_PROGMODE"
+        }
+    );
+
+    // A device that sends 0x41 forever after STK_READ_PAGE.
+    let lines = format!(
+        "> 55 00 00 20\n< 14 10\n> 74 00 80 46 20\n< {}\n",
+        hexadecimal(&[0x41; 4096])
+    );
+    let text = transcript("connect-uno") + &lines;
+    let (result, provider) = run_recorded(&text, Protocol::Stk500v1, |backend| {
+        block_on(backend.verify(&[page], &mut ()))
+    });
+    invalid_response(result.unwrap_err(), "STK_READ_PAGE");
+    let recorded = provider.transcript();
+    let after_read = recorded
+        .events
+        .iter()
+        .rposition(|entry| matches!(&entry.event, Event::Host(tokens) if tokens.first() == Some(&HostToken::Byte(0x74))))
+        .unwrap();
+    let received: usize = recorded.events[after_read..]
+        .iter()
+        .map(|entry| match &entry.event {
+            Event::Device(bytes) => bytes.len(),
+            _ => 0,
+        })
+        .sum();
+    assert!(received <= 128 + 2 + 64, "{received} bytes read");
+}
+
+#[test]
+fn erasing_programs_erased_pages() {
+    let erased = hexadecimal(&[0xFF; 128]);
+    let lines = format!(
+        "> 55 80 3e 20\n< 14 10\n> 64 00 80 46 {erased} 20\n< 14 10\n> 55 c0 3e 20\n< 14 10\n> 64 00 80 46 {erased} 20\n< 14 10\n"
+    );
+    let text = transcript("connect-uno") + &lines;
+    let region = Region {
+        offset: 0x7D00,
+        size: 0x100,
+    };
+    let (result, provider, recorder) = run(&text, Protocol::Stk500v1, |backend, progress| {
+        block_on(backend.erase(region, progress))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+    // The orchestration reports the start and the end of the region: only the pages between.
+    assert_eq!(
+        recorder.events,
+        [event(Stage::Erasing, 0x7D00, 0x80, 0x100)]
+    );
+}
+
+#[test]
+fn pages_above_the_bootloader_are_refused_before_sending() {
+    let data = [0x00; 0x80];
+    let segment = Segment {
+        label: "application",
+        offset: 0x7E00,
+        data: &data,
+    };
+    let (result, provider, _) = run(
+        &transcript("connect-uno"),
+        Protocol::Stk500v1,
+        |backend, progress| {
+            let write = block_on(backend.write(&[segment], progress));
+            let verify = block_on(backend.verify(&[segment], progress));
+            let region = Region {
+                offset: 0x7D80,
+                size: 0x100,
+            };
+            let erase = block_on(backend.erase(region, progress));
+            (write, verify, erase)
+        },
+    );
+    let above = Error::AboveWritableFlash {
+        what: "image \"application\"".into(),
+        end: 0x7E80,
+        writable_to: 0x7E00,
+    };
+    assert_eq!(result.0, Err(above.clone()));
+    assert_eq!(result.1, Err(above));
+    assert_eq!(
+        result.2,
+        Err(Error::AboveWritableFlash {
+            what: "erase region at 0x7d80".into(),
+            end: 0x7E80,
+            writable_to: 0x7E00,
+        })
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn misaligned_segments_are_refused_before_sending() {
+    let data = [0x00; 0x10];
+    let segment = Segment {
+        label: "application",
+        offset: 0x40,
+        data: &data,
+    };
+    let (result, provider, _) = run(
+        &transcript("connect-uno"),
+        Protocol::Stk500v1,
+        |backend, progress| {
+            let write = block_on(backend.write(&[segment], progress));
+            let region = Region {
+                offset: 0x80,
+                size: 0x40,
+            };
+            let erase = block_on(backend.erase(region, progress));
+            (write, erase)
+        },
+    );
+    assert_eq!(
+        result.0,
+        Err(Error::MisalignedImage {
+            label: "application".into(),
+            offset: 0x40,
+            required: 0x80,
+        })
+    );
+    assert_eq!(
+        result.1,
+        Err(Error::MisalignedErase {
+            entry: "region at 0x80".into(),
+            offset: 0x80,
+            size: 0x40,
+            required: 0x80,
+        })
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn a_disconnect_after_exit_is_success() {
+    let lines = "> \"E\"\n! disconnect\n";
+    let text = transcript("connect-leonardo") + lines;
+    let (result, provider, _) = run(&text, Protocol::Avr109, |backend, _| {
+        block_on(backend.reset_to_application())
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn nothing_is_done_before_connecting() {
+    for protocol in [Protocol::Stk500v1, Protocol::Stk500v2, Protocol::Avr109] {
+        let (port, mut provider) = replay(Transcript::default());
+        let mut backend =
+            AvrBackend::new(protocol, port, &mut provider, None, AvrOptions::default()).unwrap();
+        let segment = Segment {
+            label: "application",
+            offset: 0,
+            data: &[0; 4],
+        };
+        let region = Region {
+            offset: 0,
+            size: 0x100,
+        };
+        let none = Err(Error::NotConnected { protocol });
+        assert_eq!(block_on(backend.write(&[segment], &mut ())), none);
+        assert_eq!(block_on(backend.verify(&[segment], &mut ())), none);
+        assert_eq!(block_on(backend.erase(region, &mut ())), none);
+        assert_eq!(block_on(backend.reset_to_application()), none);
+        drop(backend);
+        provider.finish().unwrap();
+    }
 }

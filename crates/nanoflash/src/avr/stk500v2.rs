@@ -6,9 +6,6 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-// The page commands are compiled for the tests only until the page loop programs and reads
-// pages with them.
-
 /// The start of every message.
 pub(crate) const START: u8 = 0x1B;
 /// The bytes before the body: start, sequence, body length and token.
@@ -24,7 +21,6 @@ const STATUS_OK: u8 = 0x00;
 /// `CMD_SIGN_ON`.
 pub(crate) const SIGN_ON: [u8; 1] = [0x01];
 /// `CMD_LEAVE_PROGMODE_ISP`.
-#[cfg(test)]
 pub(crate) const LEAVE: [u8; 3] = [0x11, 0x01, 0x01];
 
 /// A message: start, sequence, body length, token, body and the XOR of every byte before the
@@ -127,7 +123,6 @@ pub(crate) fn read_signature(index: u8) -> [u8; 6] {
 
 /// `CMD_LOAD_ADDRESS` for a byte offset, taken as a word address with bit 31 set (the extended
 /// address); `None` when the word needs more than 31 bits.
-#[cfg(test)]
 pub(crate) fn load_address(offset: u64) -> Option<[u8; 5]> {
     let word = u32::try_from(offset / 2)
         .ok()
@@ -138,7 +133,6 @@ pub(crate) fn load_address(offset: u64) -> Option<[u8; 5]> {
 
 /// `CMD_PROGRAM_FLASH_ISP` in AVR068 mode `C1` (page mode, write page, ready/busy polling; the
 /// bootloader ignores the mode, delay and instruction bytes). The length saturates at 65535.
-#[cfg(test)]
 pub(crate) fn program_flash(data: &[u8]) -> Vec<u8> {
     let length = u16::try_from(data.len()).unwrap_or(u16::MAX);
     let [high, low] = length.to_be_bytes();
@@ -149,7 +143,6 @@ pub(crate) fn program_flash(data: &[u8]) -> Vec<u8> {
 }
 
 /// `CMD_READ_FLASH_ISP`.
-#[cfg(test)]
 pub(crate) fn read_flash(length: u16) -> [u8; 4] {
     let [high, low] = length.to_be_bytes();
     [0x14, high, low, 0x20]

@@ -93,6 +93,19 @@ mod tests {
     }
 
     #[test]
+    fn bootloaders_leave_whole_pages() {
+        // The page loop pads the last page of an image up to `writable_to`, never past it.
+        for chip in CHIPS {
+            for protocol in [Protocol::Stk500v1, Protocol::Stk500v2, Protocol::Avr109] {
+                for rate in [57_600, 115_200] {
+                    let writable_to = chip.flash_size - bootloader_size(protocol, rate);
+                    assert_eq!(writable_to % chip.page_size, 0, "{}", chip.name);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn erase_units_cover_every_page() {
         let chip = |name| CHIPS.iter().find(|chip| chip.name == name).unwrap();
         // Images start on a page of the chip each protocol flashes.

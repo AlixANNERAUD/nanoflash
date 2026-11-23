@@ -4,13 +4,9 @@
 
 use alloc::format;
 use alloc::string::String;
-#[cfg(test)]
 use alloc::vec::Vec;
 
-use super::hexadecimal;
-
-// The page commands are compiled for the tests only until the page loop programs and reads
-// pages with them.
+use super::excerpt;
 
 /// `STK_INSYNC`.
 const IN_SYNC: u8 = 0x14;
@@ -21,7 +17,6 @@ const OK: u8 = 0x10;
 /// `CRC_EOP`, which ends every command.
 const END: u8 = 0x20;
 /// The memory type of flash, `F`.
-#[cfg(test)]
 const FLASH: u8 = 0x46;
 
 /// `STK_GET_SYNC`.
@@ -29,12 +24,10 @@ pub(crate) const GET_SYNC: [u8; 2] = [0x30, END];
 /// `STK_READ_SIGN`.
 pub(crate) const READ_SIGNATURE: [u8; 2] = [0x75, END];
 /// `STK_LEAVE_PROGMODE`.
-#[cfg(test)]
 pub(crate) const LEAVE: [u8; 2] = [0x51, END];
 
 /// `STK_LOAD_ADDRESS` for a byte offset, which the protocol takes as a 16-bit word address;
 /// `None` when the word does not fit.
-#[cfg(test)]
 pub(crate) fn load_address(offset: u64) -> Option<[u8; 4]> {
     let word = u16::try_from(offset / 2).ok()?;
     let [low, high] = word.to_le_bytes();
@@ -42,7 +35,6 @@ pub(crate) fn load_address(offset: u64) -> Option<[u8; 4]> {
 }
 
 /// `STK_PROG_PAGE` of flash. The length saturates at 65535: pages are a few hundred bytes.
-#[cfg(test)]
 pub(crate) fn program_page(data: &[u8]) -> Vec<u8> {
     let length = u16::try_from(data.len()).unwrap_or(u16::MAX);
     let [high, low] = length.to_be_bytes();
@@ -54,7 +46,6 @@ pub(crate) fn program_page(data: &[u8]) -> Vec<u8> {
 }
 
 /// `STK_READ_PAGE` of flash.
-#[cfg(test)]
 pub(crate) fn read_page(length: u16) -> [u8; 5] {
     let [high, low] = length.to_be_bytes();
     [0x74, high, low, FLASH, END]
@@ -74,7 +65,7 @@ pub(crate) fn answer(bytes: &[u8], payload: usize) -> Result<&[u8], String> {
     }
     Err(format!(
         "expected 14 <{payload} bytes> 10, got {}",
-        hexadecimal(bytes)
+        excerpt(bytes)
     ))
 }
 

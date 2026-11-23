@@ -818,6 +818,10 @@ impl fmt::Display for Error {
                         formatter.write_str(
                             " after the reset sequence \"custom\" of the board: check the port and the cable and the reset sequence of the board in the manifest, or press the reset button of the board just before flashing",
                         )
+                    } else if *reset == Some("none") {
+                        formatter.write_str(
+                            " with the reset sequence \"none\" of the board, which does not reset it: press the reset button of the board just before flashing, or check the port and the cable",
+                        )
                     } else {
                         formatter.write_str(
                             ": check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)",
@@ -1088,7 +1092,7 @@ mod tests {
         };
         assert_eq!(
             wiring.to_string(),
-            "no STK500v2 bootloader answered on the port at 115200 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
+            "no STK500v2 bootloader answered on the port at 115200 baud with the reset sequence \"none\" of the board, which does not reset it: press the reset button of the board just before flashing, or check the port and the cable"
         );
         let custom = Error::NoBootloader {
             waited_for: None,
