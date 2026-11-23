@@ -1,5 +1,10 @@
 //! Erasing, writing compressed, verifying by MD5 and resetting into the application, through
 //! the ROM loader. No `FLASH_DEFL_END` is sent: it would leave the loader before verification.
+//!
+//! The ESP32 is written uncompressed (`FLASH_BEGIN`, `FLASH_DATA`): its ROM loader programs a
+//! whole 32 KiB inflate window from the offset of every compressed image, writing zeros over
+//! up to 32 KiB of flash after it that was never erased (seen in Espressif's QEMU, whose
+//! ESP32-C3 ROM writes only the image). espflash also writes uncompressed through the ROM.
 
 use alloc::format;
 use alloc::string::String;
@@ -12,7 +17,7 @@ use miniz_oxide::inflate::stream::{InflateState, inflate};
 use miniz_oxide::{DataFormat, MZError, MZFlush};
 
 use super::command::{self, opcode, words};
-use super::{EspressifBackend, reset};
+use super::{Chip, EspressifBackend, reset};
 use crate::backend::{Backend, ChipInformation, Progress, ProgressEvent, Region, Segment, Stage};
 use crate::error::Error;
 use crate::transport::{Duration, PortProvider};
@@ -136,11 +141,20 @@ impl<P: PortProvider> EspressifBackend<'_, P> {
         self.chip.is_none_or(|chip| chip.has_encryption_word())
     }
 
+    /// Whether images are written compressed: on every chip but the ESP32, see the module
+    /// documentation.
+    fn compressed(&self) -> bool {
+        self.chip != Some(Chip::Esp32)
+    }
+
     async fn write_segment(
         &mut self,
         segment: &Checked<'_>,
         progress: &mut dyn Progress,
     ) -> Result<(), Error> {
+        if !self.compressed() {
+            return self.write_segment_uncompressed(segment, progress).await;
+        }
         let padded = segment.padded();
         let compressed = compress_to_vec_zlib(&padded, COMPRESSION_LEVEL);
         let blocks = u32::try_from(compressed.len().div_ceil(BLOCK_SIZE as usize))
@@ -171,6 +185,50 @@ impl<P: PortProvider> EspressifBackend<'_, P> {
             let timeout = scaled_timeout(WRITE_SECONDS_PER_MEGABYTE, size);
             let (payload, checksum) = command::block(chunk, sequence);
             self.command_with(opcode::FLASH_DEFL_DATA, &payload, checksum, timeout)
+                .await?;
+            let done = total
+                .saturating_mul(u64::from(sequence).saturating_add(1))
+                .checked_div(u64::from(blocks))
+                .unwrap_or(total);
+            progress.report(ProgressEvent {
+                stage: Stage::Writing,
+                offset: u64::from(segment.offset),
+                done,
+                total,
+            });
+        }
+        Ok(())
+    }
+
+    /// Writes `segment` with `FLASH_BEGIN` and `FLASH_DATA`, in blocks padded with `0xFF`.
+    async fn write_segment_uncompressed(
+        &mut self,
+        segment: &Checked<'_>,
+        progress: &mut dyn Progress,
+    ) -> Result<(), Error> {
+        let padded = segment.padded();
+        let blocks = segment.padded_length.div_ceil(BLOCK_SIZE);
+        let begin = command::begin_data(
+            segment.erase_size,
+            blocks,
+            BLOCK_SIZE,
+            segment.offset,
+            self.encryption_word(),
+        );
+        self.command_with(
+            opcode::FLASH_BEGIN,
+            &begin,
+            0,
+            scaled_timeout(ERASE_SECONDS_PER_MEGABYTE, segment.erase_size),
+        )
+        .await?;
+        let timeout = scaled_timeout(WRITE_SECONDS_PER_MEGABYTE, BLOCK_SIZE);
+        let total = segment.data.len() as u64;
+        for (sequence, chunk) in (0_u32..).zip(padded.chunks(BLOCK_SIZE as usize)) {
+            let mut block = chunk.to_vec();
+            block.resize(BLOCK_SIZE as usize, 0xFF);
+            let (payload, checksum) = command::block(&block, sequence);
+            self.command_with(opcode::FLASH_DATA, &payload, checksum, timeout)
                 .await?;
             let done = total
                 .saturating_mul(u64::from(sequence).saturating_add(1))

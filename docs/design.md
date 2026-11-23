@@ -72,7 +72,7 @@ as code: they weigh on the WebAssembly bundle and on `no_std`):
 
 | Backend or writer | Reused | Ours |
 | --- | --- | --- |
-| Espressif ROM loader | `miniz_oxide` (compression), `md-5` | SLIP framing, commands, a ~40-line chip table copied from `espflash` (MIT OR Apache-2.0, attributed), asynchronous loop, reset sequences, orchestration. No flasher stub at first: the ROM already supports compressed writes and MD5, the stub is only a speed-up and can come later. |
+| Espressif ROM loader | `miniz_oxide` (compression), `md-5` | SLIP framing, commands, a ~40-line chip table copied from `espflash` (MIT OR Apache-2.0, attributed), asynchronous loop, reset sequences, orchestration. No flasher stub at first: the ROM already supports compressed writes and MD5, the stub is only a speed-up and can come later. The ESP32 is written uncompressed: its ROM programs a whole 32 KiB inflate window after every compressed image (seen in Espressif's QEMU). |
 | SAM-BA | none usable in the browser | our own code, written from the protocol (Microchip's SAM-BA documentation, observed bootloader behaviour); BOSSA (BSD-3-Clause) is a behaviour reference only, no code ported |
 | Espressif partition table | `md-5` | ~100 lines: 32-byte entries and the MD5 row. `esp-idf-part` (needs `std`, `regex`, `deku`) is a test-only dependency to read our output back. |
 | MBR | none | ~50 lines: four 16-byte entries and the signature. `mbrman` is a test-only dependency. |

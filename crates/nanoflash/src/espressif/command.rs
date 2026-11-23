@@ -5,6 +5,7 @@ use alloc::vec::Vec;
 /// The command opcodes the backend uses.
 pub(crate) mod opcode {
     pub const FLASH_BEGIN: u8 = 0x02;
+    pub const FLASH_DATA: u8 = 0x03;
     pub const FLASH_END: u8 = 0x04;
     pub const SYNC: u8 = 0x08;
     pub const WRITE_REG: u8 = 0x09;
@@ -22,6 +23,7 @@ pub(crate) mod opcode {
 pub(crate) fn name(opcode: u8) -> &'static str {
     match opcode {
         opcode::FLASH_BEGIN => "FLASH_BEGIN",
+        opcode::FLASH_DATA => "FLASH_DATA",
         opcode::FLASH_END => "FLASH_END",
         opcode::SYNC => "SYNC",
         opcode::WRITE_REG => "WRITE_REG",

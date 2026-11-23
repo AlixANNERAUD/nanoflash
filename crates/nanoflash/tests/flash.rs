@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use nanoflash::Error;
-use nanoflash::backend::{Progress, ProgressEvent, Stage};
+use nanoflash::backend::{BackendOptions, Progress, ProgressEvent, Stage};
 use nanoflash::flash::{FlashOptions, Hooks, detect, flash};
 use nanoflash::manifest::{EraseTarget, Manifest, Protocol};
 use nanoflash::testing::{MemorySource, ReplayProvider, Transcript, replay};
@@ -570,4 +570,51 @@ fn detect_keeps_the_baud_rate_of_the_bootloader() {
     let (result, provider) = run_detect(&text, Some(Protocol::Espressif));
     assert_eq!(result.unwrap().chip, "esp32");
     provider.finish().unwrap();
+}
+
+/// Flashes the board of `hardware/qemu/<chip>.toml` over a transcript recorded from the ROM
+/// loader of Espressif's QEMU, and checks it was written as `opcode` says.
+fn flash_qemu(chip: &str, first_offset: u64, baud_rate: Option<u32>, opcode: &str) {
+    let manifest = Manifest::from_toml(&format!(
+        "[[board]]\nidentifier = \"{chip}-qemu\"\nprotocol = \"espressif\"\nchip = \"{chip}\"\n\
+         layout = \"layout.toml\"\nreset = \"none\"\n\n\
+         [[board.image]]\npartition = \"bootloader\"\npath = \"../images/bootloader.bin\"\n\n\
+         [[board.image]]\npartition = \"application\"\npath = \"../images/application.bin\"\n"
+    ))
+    .unwrap();
+    let mut source = fixture_source();
+    source.files.insert(
+        "layout.toml".into(),
+        format!(
+            "[flash]\nsize = \"4 MiB\"\nalignment = \"4 KiB\"\n\n\
+             [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = {first_offset}\nsize = \"28 KiB\"\n\n\
+             [[partition]]\nname = \"partition-table\"\nrole = \"partition-table\"\noffset = 0x8000\nsize = \"4 KiB\"\n\n\
+             [[partition]]\nname = \"application\"\nrole = \"firmware\"\noffset = 0x10000\nsize = \"1 MiB\"\n"
+        )
+        .into_bytes(),
+    );
+    let text = transcript(&format!("flash-{chip}-qemu"));
+    assert!(text.contains(opcode), "{chip}: {opcode}");
+    let options = FlashOptions {
+        backend: BackendOptions { baud_rate },
+        ..FlashOptions::default()
+    };
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(&manifest, &text, &mut source, &options, &mut progress);
+    let report = result.unwrap();
+    provider.finish().unwrap();
+    assert!(report.verified);
+    assert_eq!(report.chip.flash_size, Some(4 * MEBIBYTE));
+}
+
+#[test]
+fn the_esp32_rom_is_written_uncompressed() {
+    // FLASH_DATA blocks, and no FLASH_DEFL_BEGIN.
+    flash_qemu("esp32", 0x1000, Some(115_200), "> c0 00 03 10 04");
+    assert!(!transcript("flash-esp32-qemu").contains("> c0 00 10 "));
+}
+
+#[test]
+fn the_esp32_c3_rom_is_written_compressed() {
+    flash_qemu("esp32c3", 0x0, None, "> c0 00 11 ");
 }
