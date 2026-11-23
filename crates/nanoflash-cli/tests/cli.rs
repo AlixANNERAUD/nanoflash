@@ -892,3 +892,42 @@ fn image_build_refuses_offsets_beyond_four_gibibytes() {
         assert!(!merged.exists());
     }
 }
+
+#[test]
+fn secure_download_mode_is_flashed_without_verification() {
+    // The connection of connect-secure-download, then the writes of flash-esp32s3-usb without
+    // its MD5 checks.
+    let flash = fs::read_to_string(transcript_path("flash-esp32s3-usb.transcript")).unwrap();
+    let writes: String = format!("> c0 00 10 {}", flash.split_once("> c0 00 10 ").unwrap().1)
+        .lines()
+        .filter(|line| !line.starts_with("> c0 00 13") && !line.starts_with("< c0 01 13"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let directory = tempfile::tempdir().unwrap();
+    let transcript = directory.path().join("secure.transcript");
+    fs::write(
+        &transcript,
+        fs::read_to_string(transcript_path("connect-secure-download.transcript")).unwrap()
+            + &writes,
+    )
+    .unwrap();
+    let board = boards(USB_BOARD);
+    let output = run(&[
+        "flash",
+        "--board",
+        path_text(&board),
+        "--replay",
+        path_text(&transcript),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    assert!(
+        stdout.ends_with("not verified (secure download mode)\n"),
+        "{stdout}"
+    );
+    assert!(
+        text(&output.stderr).contains("warning: the chip is in secure download mode"),
+        "{}",
+        text(&output.stderr)
+    );
+}

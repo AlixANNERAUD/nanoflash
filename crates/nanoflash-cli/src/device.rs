@@ -353,6 +353,8 @@ fn flash_text(report: &FlashReport) -> String {
     }
     text.push_str(if report.verified {
         "verified\n"
+    } else if report.chip.secure_download_mode {
+        "not verified (secure download mode)\n"
     } else {
         "not verified (--no-verify)\n"
     });

@@ -525,3 +525,45 @@ fn a_disconnection_says_what_was_being_done() {
         "the device disconnected while writing \"bootloader\" at 0x0: check the cable and the port, then try again"
     );
 }
+
+/// The flash of the fixture board on a chip in secure download mode: the connection of
+/// connect-secure-download, then the writes of flash-esp32s3-usb without its MD5 checks.
+fn secure_download_flash() -> String {
+    let flash = transcript("flash-esp32s3-usb");
+    let writes = flash.split_once("> c0 00 10 ").unwrap().1;
+    let writes: String = format!("> c0 00 10 {writes}")
+        .lines()
+        .filter(|line| !line.starts_with("> c0 00 13") && !line.starts_with("< c0 01 13"))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    transcript("connect-secure-download") + &writes
+}
+
+#[test]
+fn secure_download_mode_skips_the_verification() {
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(
+        &manifest(),
+        &secure_download_flash(),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    let report = result.unwrap();
+    provider.finish().unwrap();
+    assert!(!report.verified);
+    assert!(report.chip.secure_download_mode);
+    assert_eq!(
+        report.warnings,
+        [nanoflash::flash::Warning::NotVerifiedInSecureDownloadMode]
+    );
+    assert!(
+        progress
+            .messages
+            .iter()
+            .any(|message| message.contains("secure download mode")),
+        "{:?}",
+        progress.messages
+    );
+    assert!(!progress.stages.contains(&Stage::Verifying));
+}

@@ -62,6 +62,9 @@ pub enum Warning {
         /// Why the table cannot be generated.
         message: String,
     },
+    /// The chip is in secure download mode, whose ROM loader refuses `SPI_FLASH_MD5`: what was
+    /// written was not read back.
+    NotVerifiedInSecureDownloadMode,
 }
 
 impl fmt::Display for Warning {
@@ -74,6 +77,9 @@ impl fmt::Display for Warning {
             Warning::PartitionTableNotChecked { partition, message } => write!(
                 formatter,
                 "the image for the partition \"{partition}\" was not compared with the partition table of the layout, which cannot be generated: {message}"
+            ),
+            Warning::NotVerifiedInSecureDownloadMode => formatter.write_str(
+                "the chip is in secure download mode, whose ROM loader refuses to compute MD5 digests of the flash: what was written was not verified",
             ),
         }
     }

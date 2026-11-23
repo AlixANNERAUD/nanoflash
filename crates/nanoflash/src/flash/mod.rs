@@ -6,7 +6,7 @@ mod prepare;
 mod select;
 
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use serde::Serialize;
@@ -87,7 +87,7 @@ pub struct FlashReport {
     pub chip: ChipInformation,
     /// The images written, by offset.
     pub images: Vec<WrittenImage>,
-    /// Whether what was written was checked.
+    /// Whether what was written was checked: not when asked not to, nor in secure download mode.
     pub verified: bool,
     /// What the user may want to know.
     pub warnings: Vec<Warning>,
@@ -317,7 +317,16 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
             .await
             .map_err(|error| error.during(|| doing("writing", segment)))?;
     }
-    if options.verify {
+    let mut warnings = prepared.warnings;
+    // The ROM loader in secure download mode refuses SPI_FLASH_MD5: failing after a successful
+    // write would only hide that the write went through.
+    let verify = options.verify && !chip.secure_download_mode;
+    if options.verify && !verify {
+        let warning = Warning::NotVerifiedInSecureDownloadMode;
+        progress.message(&warning.to_string());
+        warnings.push(warning);
+    }
+    if verify {
         for segment in &segments {
             backend
                 .verify(core::slice::from_ref(segment), progress)
@@ -336,8 +345,8 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
                 size: u64::try_from(segment.data.len()).unwrap_or(u64::MAX),
             })
             .collect(),
-        verified: options.verify,
-        warnings: prepared.warnings,
+        verified: verify,
+        warnings,
     })
 }
 
