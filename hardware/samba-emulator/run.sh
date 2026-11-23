@@ -49,4 +49,4 @@ python3 -I hardware/samba-emulator/emulate.py --bossa "$directory/BOSSA" \
 # Recording and replaying must agree on the traffic of the emulated bootloader.
 "$nanoflash" flash --board hardware/samba-emulator/nano33ble.toml \
     --replay "$directory/nano33ble.transcript"
-echo "samba emulator: flashed with nanoflash and bossac, flash content identical, transcript replayed"
+echo "samba emulator: flashed with nanoflash and bossac, images identical, transcript replayed"
