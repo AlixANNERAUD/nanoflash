@@ -100,9 +100,12 @@ enum ImageCommand {
         /// The file to write.
         #[arg(long)]
         output: PathBuf,
-        /// Pad the image to the flash size of the layout.
+        /// Pad the image to the flash size of the layout (the minimum of a "detect" layout, or --flash-size).
         #[arg(long)]
         fill: bool,
+        /// Build for this flash size a layout whose flash size is "detect", such as "16 MiB"; by default for its minimum.
+        #[arg(long, value_name = "SIZE")]
+        flash_size: Option<String>,
         /// Print one JSON document instead of a sentence.
         #[arg(long)]
         json: bool,
@@ -157,6 +160,9 @@ enum LayoutCommand {
         /// The board of the manifest, when several use the layout.
         #[arg(long, requires = "manifest")]
         board_identifier: Option<String>,
+        /// Resolve a layout whose flash size is "detect" for this flash size, such as "16 MiB"; images are still checked against the minimum flash size, as `flash` does.
+        #[arg(long, value_name = "SIZE")]
+        flash_size: Option<String>,
         /// Print one JSON document instead of the table.
         #[arg(long)]
         json: bool,
@@ -171,6 +177,9 @@ enum LayoutCommand {
         /// The file to write.
         #[arg(long)]
         output: PathBuf,
+        /// Resolve a layout whose flash size is "detect" for this flash size, such as "16 MiB".
+        #[arg(long, value_name = "SIZE")]
+        flash_size: Option<String>,
         /// Print one JSON document instead of a sentence.
         #[arg(long)]
         json: bool,
@@ -223,20 +232,28 @@ fn run(command: Command) -> (bool, Result<String, Failure>) {
                 images,
                 manifest,
                 board_identifier,
+                flash_size,
                 json,
             } => {
                 let choice = manifest.as_deref().map(|manifest| layout::ManifestChoice {
                     manifest,
                     board_identifier: board_identifier.as_deref(),
                 });
-                (json, layout::check(&layout, &images, choice, json))
+                (
+                    json,
+                    layout::check(&layout, &images, choice, json, flash_size.as_deref()),
+                )
             }
             LayoutCommand::Write {
                 layout,
                 format,
                 output,
+                flash_size,
                 json,
-            } => (json, layout::write(&layout, format, &output, json)),
+            } => (
+                json,
+                layout::write(&layout, format, &output, json, flash_size.as_deref()),
+            ),
         },
         Command::Flash {
             board,
@@ -288,10 +305,18 @@ fn run(command: Command) -> (bool, Result<String, Failure>) {
                 board_identifier,
                 output,
                 fill,
+                flash_size,
                 json,
             } => (
                 json,
-                image::build(&board, board_identifier.as_deref(), &output, fill, json),
+                image::build(
+                    &board,
+                    board_identifier.as_deref(),
+                    &output,
+                    fill,
+                    flash_size.as_deref(),
+                    json,
+                ),
             ),
         },
     }

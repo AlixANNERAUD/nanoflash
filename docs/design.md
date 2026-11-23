@@ -477,15 +477,23 @@ sha256 = "9f86d0..."               # optional
 ### Command line
 
 ```
-nanoflash layout check <layout> [--manifest <manifest>] [--json]
-nanoflash layout write <layout> --format espressif|mbr|gpt|linker --output <file>
-nanoflash image build --board <manifest> [--board-identifier <id>] --output image.bin
+nanoflash layout check <layout> [--manifest <manifest>] [--flash-size <size>] [--json]
+nanoflash layout write <layout> --format espressif|mbr|gpt|linker --output <file> [--flash-size <size>]
+nanoflash image build --board <manifest> [--board-identifier <id>] [--flash-size <size>] --output image.bin
 nanoflash flash --board <manifest> [--port <port>] [--board-identifier <id>] [--no-verify] [--json]
 nanoflash detect --port <port> [--protocol <protocol>] [--json]
 ```
 
 - `image build` merges the images into one flat file padded with `0xFF` (or the layout's disk
-  image for MBR and GPT).
+  image for MBR and GPT). For a `detect` layout it builds for the minimum flash size, since a
+  merged image cannot follow the chip, and `--fill` pads to that size; `--flash-size` builds for
+  another size (table, image offsets and padding).
+- `--flash-size` resolves a `detect` layout for that size (an error on a fixed layout or below
+  the minimum). The `check` report adds the `minimum` and `growth` columns when a partition
+  grows, and a line naming the partitions that move with the flash size. Images are always
+  checked against the sizes on the minimum flash, which is what `flash` enforces before
+  connecting, so `--flash-size` changes the offsets, sizes and headroom shown, not what is
+  accepted.
 - Errors go to standard error with the cause chain and a hint; exit codes: 0 success, 1 user or
   input error, 2 device or transport error, 3 verification failure.
 - `--json` prints one JSON document on standard output (and progress as JSON lines on standard

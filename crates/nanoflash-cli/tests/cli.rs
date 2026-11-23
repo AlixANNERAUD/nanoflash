@@ -424,7 +424,11 @@ fn images(name: &str) -> PathBuf {
 const USB_BOARD: &str = "esp32-s3-usb.toml";
 
 fn flash_replaying(transcript: &str, extra: &[&str]) -> Output {
-    let board = boards(USB_BOARD);
+    flash_replaying_board(USB_BOARD, transcript, extra)
+}
+
+fn flash_replaying_board(board: &str, transcript: &str, extra: &[&str]) -> Output {
+    let board = boards(board);
     let transcript = transcript_path(transcript);
     let mut arguments = vec![
         "flash",
@@ -1487,4 +1491,263 @@ fn replays_the_simavr_recordings() {
             transcript.display()
         );
     }
+}
+
+const DETECT: &str = "esp32-s3-detect.toml";
+
+fn scratch() -> tempfile::TempDir {
+    tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap()
+}
+
+#[test]
+fn check_previews_a_flash_size() {
+    let layout = fixture(DETECT);
+    let output = run(&[
+        "layout",
+        "check",
+        path_text(&layout),
+        "--flash-size",
+        "8 MiB",
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let document = document(&output);
+    let report = &document["report"];
+    assert_eq!(report["flash_size"], 0x800000);
+    assert_eq!(report["minimum_flash_size"], 0x400000);
+    let storage = report["partitions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["name"] == "storage")
+        .unwrap();
+    assert_eq!(storage["size"], 0x4e0000);
+    assert_eq!(storage["minimum_size"], 0);
+    assert_eq!(storage["growth"], 0x4e0000);
+    assert_eq!(storage["grows_with_flash"], true);
+
+    let output = run(&[
+        "layout",
+        "check",
+        path_text(&layout),
+        "--flash-size",
+        "8 MiB",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    let first = stdout.lines().next().unwrap();
+    assert!(first.contains("minimum 4 MiB (0x400000)"), "{stdout}");
+    let header = stdout.lines().nth(1).unwrap();
+    assert!(
+        header.contains("minimum") && header.contains("growth"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn check_of_a_fixed_layout_keeps_its_columns() {
+    let layout = fixture(ESP32);
+    let output = run(&["layout", "check", path_text(&layout)]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    let header = stdout.lines().nth(1).unwrap();
+    let columns: Vec<&str> = header.split_whitespace().collect();
+    assert_eq!(
+        columns,
+        ["name", "role", "offset", "end", "size", "image", "headroom"]
+    );
+    assert!(!stdout.contains("moves with the flash size"), "{stdout}");
+}
+
+#[test]
+fn check_lists_moving_partitions() {
+    let layout = fixture("growing.toml");
+    let output = run(&["layout", "check", path_text(&layout)]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    assert!(
+        stdout.ends_with("moves with the flash size: \"log\"\n"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn check_with_a_flash_size_checks_images_at_the_minimum() {
+    let directory = scratch();
+    let layout = fixture(DETECT);
+    let image = directory.path().join("storage.bin");
+    // Fits the storage partition on 8 MiB (0x4e0000 bytes), not on the minimum flash.
+    fs::write(&image, vec![0u8; 0x200000]).unwrap();
+    let argument = format!("storage={}", image.display());
+    for flash_size in [None, Some("8 MiB")] {
+        let mut arguments = vec!["layout", "check", path_text(&layout), "--image", &argument];
+        if let Some(size) = flash_size {
+            arguments.extend(["--flash-size", size]);
+        }
+        let output = run(&arguments);
+        assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+    }
+}
+
+#[test]
+fn write_for_a_flash_size_equals_the_fixed_table() {
+    let directory = scratch();
+    let grown = directory.path().join("grown.bin");
+    let fixed = directory.path().join("fixed.bin");
+    let detect = fixture(DETECT);
+    let output = run(&[
+        "layout",
+        "write",
+        path_text(&detect),
+        "--format",
+        "espressif",
+        "--flash-size",
+        "8 MiB",
+        "--output",
+        path_text(&grown),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let eight = fixture(ESP32);
+    let output = run(&[
+        "layout",
+        "write",
+        path_text(&eight),
+        "--format",
+        "espressif",
+        "--output",
+        path_text(&fixed),
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(fs::read(&grown).unwrap(), fs::read(&fixed).unwrap());
+}
+
+#[test]
+fn flash_size_errors_exit_1() {
+    let directory = scratch();
+    let out = directory.path().join("out.rs");
+    let detect = fixture(DETECT);
+    let fixed = fixture(ESP32);
+    let cases: [(&[&str], &[&str]); 4] = [
+        (
+            &[
+                "layout",
+                "check",
+                path_text(&fixed),
+                "--flash-size",
+                "8 MiB",
+            ],
+            &["fixed flash size of 0x800000"],
+        ),
+        (
+            &[
+                "layout",
+                "check",
+                path_text(&detect),
+                "--flash-size",
+                "2MiB",
+            ],
+            &["0x200000", "0x400000"],
+        ),
+        (
+            &["layout", "check", path_text(&detect), "--flash-size", "8MB"],
+            &["bad --flash-size", "8 MiB"],
+        ),
+        (
+            &[
+                "layout",
+                "write",
+                path_text(&detect),
+                "--format",
+                "constants",
+                "--flash-size",
+                "8 MiB",
+                "--output",
+                path_text(&out),
+            ],
+            &["minimum flash"],
+        ),
+    ];
+    for (arguments, expected) in cases {
+        let output = run(arguments);
+        assert_eq!(output.status.code(), Some(1), "{arguments:?}");
+        let stderr = text(&output.stderr);
+        for needle in expected {
+            assert!(stderr.contains(needle), "{arguments:?}: {stderr}");
+        }
+        let mut with_json = arguments.to_vec();
+        with_json.push("--json");
+        let output = run(&with_json);
+        assert_eq!(output.status.code(), Some(1), "{with_json:?}");
+        assert_eq!(document(&output)["ok"], false, "{with_json:?}");
+    }
+}
+
+#[test]
+fn flash_warns_when_partitions_grew() {
+    let output = flash_replaying_board("esp32-s3-detect.json", "flash-esp32s3-usb.transcript", &[]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("warning: the chip has 0x800000 bytes of flash"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("\"storage\" from 0xe0000 to 0x4e0000 bytes"),
+        "{stderr}"
+    );
+    let output = flash_replaying_board(
+        "esp32-s3-detect.json",
+        "flash-esp32s3-usb.transcript",
+        &["--json"],
+    );
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(
+        document(&output)["report"]["warnings"][0]["kind"],
+        "partitions-grew"
+    );
+}
+
+#[test]
+fn image_build_for_a_flash_size() {
+    let directory = scratch();
+    let board = boards("esp32-s3-detect.json");
+    let minimum = directory.path().join("minimum.bin");
+    let output = run(&[
+        "image",
+        "build",
+        "--board",
+        path_text(&board),
+        "--output",
+        path_text(&minimum),
+        "--fill",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(fs::metadata(&minimum).unwrap().len(), 0x400000);
+
+    let grown = directory.path().join("grown.bin");
+    let output = run(&[
+        "image",
+        "build",
+        "--board",
+        path_text(&board),
+        "--output",
+        path_text(&grown),
+        "--fill",
+        "--flash-size",
+        "8 MiB",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(fs::metadata(&grown).unwrap().len(), 0x800000);
+
+    let output = run(&[
+        "image",
+        "build",
+        "--board",
+        path_text(&board),
+        "--output",
+        path_text(&grown),
+        "--flash-size",
+        "2 MiB",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
 }

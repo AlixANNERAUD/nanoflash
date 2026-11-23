@@ -22,7 +22,8 @@ use crate::manifest::{Board, Manifest, Protocol};
 use crate::transport::{DeviceFilter, PortProvider, SerialPort};
 pub use intel_hex::{IntelHexError, IntelHexImage, decode_intel_hex, is_intel_hex};
 pub use prepare::{
-    ImagePlacement, Prepared, PreparedErase, PreparedImage, Warning, image_build, prepare,
+    ImagePlacement, Prepared, PreparedErase, PreparedImage, Warning, image_build,
+    image_build_for_flash, prepare,
 };
 pub use select::{Selection, protocol_for_identity, select};
 

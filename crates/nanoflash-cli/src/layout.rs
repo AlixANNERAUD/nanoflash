@@ -7,17 +7,26 @@ use nanoflash::error::Error;
 use nanoflash::flash::{IntelHexError, Warning, decode_intel_hex, is_intel_hex, prepare};
 use nanoflash::layout::{ImageSize, Layout, LayoutErrors, ResolvedLayout};
 use nanoflash::manifest::{Board, Manifest};
+use nanoflash::quantity;
 use nanoflash::table::{TableError, espressif, linker, mbr};
 use std::fs;
 use std::path::Path;
 
-pub fn load(path: &Path) -> Result<ResolvedLayout, Failure> {
+/// Read the layout at `path` and resolve it, for `flash_size` when given (a layout whose flash
+/// size is "detect"), else for its own flash size (the minimum of a "detect" layout).
+pub fn load(path: &Path, flash_size: Option<&str>) -> Result<ResolvedLayout, Failure> {
+    let flash_size = flash_size
+        .map(|text| {
+            quantity::parse(text)
+                .map_err(|error| Failure::Input(format!("bad --flash-size: {error}")))
+        })
+        .transpose()?;
     let text = fs::read_to_string(path)
         .map_err(|error| Failure::Input(format!("cannot read {}: {error}", path.display())))?;
     let layout = Layout::from_toml(&text)
         .map_err(|error| Failure::Input(format!("{}: {error}", path.display())))?;
     layout
-        .resolve()
+        .resolve_for(flash_size)
         .map_err(|LayoutErrors(errors)| Failure::Layout(errors))
 }
 
@@ -182,8 +191,11 @@ pub fn check(
     images: &[String],
     manifest: Option<ManifestChoice<'_>>,
     json: bool,
+    flash_size: Option<&str>,
 ) -> Result<String, Failure> {
-    let resolved = load(layout)?;
+    // Images are always checked against the layout on its minimum flash, the sizes `flash`
+    // enforces; `--flash-size` only changes the offsets, sizes and headroom that are shown.
+    let resolved = load(layout, None)?;
     let mut warnings = None;
     let sizes = match &manifest {
         Some(choice) => {
@@ -196,9 +208,14 @@ pub fn check(
             .map(|argument| image_size(argument, &resolved))
             .collect::<Result<Vec<_>, _>>()?,
     };
-    let report = resolved
+    let mut report = resolved
         .report(&sizes)
         .map_err(|LayoutErrors(errors)| Failure::Layout(errors))?;
+    if flash_size.is_some() {
+        report = load(layout, flash_size)?
+            .report(&sizes)
+            .map_err(|LayoutErrors(errors)| Failure::Layout(errors))?;
+    }
     if !json {
         output::print_warnings(warnings.as_deref().unwrap_or(&[]));
     }
@@ -214,8 +231,9 @@ pub fn write(
     format: Format,
     destination: &Path,
     json: bool,
+    flash_size: Option<&str>,
 ) -> Result<String, Failure> {
-    let resolved = load(layout)?;
+    let resolved = load(layout, flash_size)?;
     let bytes: Vec<u8> = match format {
         Format::Espressif => espressif::write(&resolved),
         Format::Mbr => mbr::write(&resolved).map(|table| table.to_vec()),

@@ -111,6 +111,21 @@ Pass `--image application=firmware.bin` to see the headroom of a partition, and 
 one JSON document. `nanoflash layout write <layout> --format espressif|mbr|linker|constants
 --output <file>` writes a table, linker regions or constants.
 
+A layout with `size = "detect"` is checked for its minimum flash size. To preview a larger chip,
+pass `--flash-size` (to `layout check` and `layout write`; a fixed layout refuses it, and so does
+a size below the minimum). The report then shows the minimum and the growth of the partitions
+that grow, and lists the partitions that move with the flash size. Images are still checked
+against the partition sizes on the minimum flash, as `flash` does, so `--flash-size` changes
+only the offsets, sizes and headroom shown:
+
+```console
+$ nanoflash layout check layouts/esp32-s3-detect.toml --flash-size "8 MiB"
+flash 8 MiB (0x800000), minimum 4 MiB (0x400000), unallocated 60 KiB
+name             role             offset    end       size      minimum  growth     image  headroom
+...
+storage          storage          0x320000  0x800000  4992 KiB  0 B      +4992 KiB  -      -
+```
+
 ## Board manifest
 
 A manifest lists the boards a project supports, how to reset them and what to write, in TOML or
@@ -245,7 +260,10 @@ flashed esp32-s3-devkitc-detect (esp32-s3, 8 MiB)
 
 `nanoflash image build` merges the images of a board into one flash image, `0xFF` between
 them, and `nanoflash layout check <layout> --manifest <manifest>` shows the headroom of the
-images a manifest writes.
+images a manifest writes. For a layout with `size = "detect"`, `image build` builds for the
+minimum flash size (a merged image cannot follow the chip), and `--fill` pads to it; pass
+`--flash-size "16 MiB"` to build for another size: the partition table is generated for it, the
+images go where their partitions then are, and `--fill` pads to it.
 
 ## Use the layout in a firmware
 

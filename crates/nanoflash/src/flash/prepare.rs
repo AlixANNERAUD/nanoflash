@@ -864,12 +864,30 @@ pub(crate) fn place_for_flash(
 /// The board is the one named `board_identifier`, or the only one of the manifest. The image ends
 /// at the highest image, or at the flash size of the layout with `fill`. It never goes past the
 /// flash of the layout, nor past what the protocol can address (4 GiB for Espressif).
+///
+/// A layout whose flash size is `detect` is built for its minimum flash size, since a merged image
+/// cannot follow the chip; [`image_build_for_flash`] builds it for another flash size.
 pub async fn image_build<S: ImageSource>(
     manifest: &Manifest,
     board_identifier: Option<&str>,
     source: &mut S,
     verifier: &mut dyn ImageVerifier,
     fill: bool,
+) -> Result<Vec<u8>, Error> {
+    image_build_for_flash(manifest, board_identifier, source, verifier, fill, None).await
+}
+
+/// [`image_build`] for a flash of `flash_size` bytes: the layout is resolved for that size (only
+/// a layout whose flash size is `detect`, and not below its minimum), the images are placed
+/// where their partitions then are, the partition table is generated for it, and `fill` pads to
+/// it. `None` builds for the flash size of the layout, the minimum of a `detect` layout.
+pub async fn image_build_for_flash<S: ImageSource>(
+    manifest: &Manifest,
+    board_identifier: Option<&str>,
+    source: &mut S,
+    verifier: &mut dyn ImageVerifier,
+    fill: bool,
+    flash_size: Option<u64>,
 ) -> Result<Vec<u8>, Error> {
     let identifiers = || {
         manifest
@@ -893,7 +911,13 @@ pub async fn image_build<S: ImageSource>(
             });
         }
     };
-    let prepared = prepare(board, source, verifier).await?;
+    let mut prepared = prepare(board, source, verifier).await?;
+    if let Some(flash_size) = flash_size {
+        if prepared.layout.is_none() {
+            return Err(Error::UnknownFlashSize);
+        }
+        prepared = place_for_flash(prepared, board, flash_size)?.0;
+    }
     let mut end = prepared.images.iter().fold(0u64, |end, image| {
         end.max(
             image

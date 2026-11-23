@@ -169,30 +169,64 @@ fn headroom(entry: &PartitionReport) -> String {
     }
 }
 
-/// The table printed by `check`.
+/// The table printed by `check`: the minimum and growth columns only when a partition has a
+/// minimum size, and a last line for the partitions that move with the flash size.
 pub fn report_table(report: &Report) -> String {
     let mut text = format!(
-        "flash {} ({:#x}), unallocated {}\n",
+        "flash {} ({:#x})",
         quantity::format(report.flash_size),
-        report.flash_size,
+        report.flash_size
+    );
+    if let Some(minimum) = report.minimum_flash_size {
+        let _ = write!(
+            text,
+            ", minimum {} ({minimum:#x})",
+            quantity::format(minimum)
+        );
+    }
+    let _ = writeln!(
+        text,
+        ", unallocated {}",
         quantity::format(report.unallocated)
     );
-    let mut rows =
-        vec![["name", "role", "offset", "end", "size", "image", "headroom"].map(String::from)];
+    let growing = report
+        .partitions
+        .iter()
+        .any(|entry| entry.minimum_size.is_some());
+    let mut header: Vec<&str> = vec!["name", "role", "offset", "end", "size"];
+    if growing {
+        header.extend(["minimum", "growth"]);
+    }
+    header.extend(["image", "headroom"]);
+    let mut rows = vec![header.into_iter().map(String::from).collect::<Vec<_>>()];
     for entry in &report.partitions {
-        rows.push([
+        let mut row = vec![
             entry.name.clone(),
             role_name(entry.role),
             format!("{:#x}", entry.offset),
             format!("{:#x}", entry.end),
             quantity::format(entry.size),
+        ];
+        if growing {
+            row.push(
+                entry
+                    .minimum_size
+                    .map_or_else(|| "-".into(), quantity::format),
+            );
+            row.push(entry.growth.map_or_else(
+                || "-".into(),
+                |bytes| format!("+{}", quantity::format(bytes)),
+            ));
+        }
+        row.push(
             entry
                 .image_size
                 .map_or_else(|| "-".into(), quantity::format),
-            headroom(entry),
-        ]);
+        );
+        row.push(headroom(entry));
+        rows.push(row);
     }
-    let mut widths = [0usize; 7];
+    let mut widths = vec![0usize; rows.first().map_or(0, Vec::len)];
     for row in &rows {
         for (width, cell) in widths.iter_mut().zip(row) {
             *width = (*width).max(cell.chars().count());
@@ -201,11 +235,20 @@ pub fn report_table(report: &Report) -> String {
     for row in &rows {
         let line = row
             .iter()
-            .zip(widths)
+            .zip(&widths)
             .map(|(cell, width)| format!("{cell:<width$}"))
             .collect::<Vec<_>>()
             .join("  ");
         let _ = writeln!(text, "{}", line.trim_end());
+    }
+    let moving: Vec<String> = report
+        .partitions
+        .iter()
+        .filter(|entry| entry.moves_with_flash)
+        .map(|entry| format!("\"{}\"", entry.name))
+        .collect();
+    if !moving.is_empty() {
+        let _ = writeln!(text, "moves with the flash size: {}", moving.join(", "));
     }
     text
 }
