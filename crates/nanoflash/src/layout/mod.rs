@@ -184,6 +184,22 @@ pub enum Role {
     Custom,
 }
 
+impl Role {
+    /// The role as a layout file writes it (without the slot of an update).
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Role::Bootloader => "bootloader",
+            Role::PartitionTable => "partition-table",
+            Role::Firmware => "firmware",
+            Role::Update { .. } => "update",
+            Role::Storage => "storage",
+            Role::CrashRecord => "crash-record",
+            Role::Custom => "custom",
+        }
+    }
+}
+
 /// The size of a partition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -483,12 +499,12 @@ fn deserialize_size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<RawSiz
 
         fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<RawSize, A::Error> {
             let mut minimum: Option<u64> = None;
-            let mut grow: Option<i128> = None;
+            let mut grow: Option<i64> = None;
             let mut maximum: Option<u64> = None;
             while let Some(key) = map.next_key::<String>()? {
                 match key.as_str() {
                     "minimum" => minimum = Some(map.next_value::<Quantity>()?.0),
-                    "grow" => grow = Some(map.next_value::<i128>()?),
+                    "grow" => grow = Some(map.next_value::<i64>()?),
                     "maximum" => maximum = Some(map.next_value::<Quantity>()?.0),
                     other => {
                         return Err(de::Error::unknown_field(

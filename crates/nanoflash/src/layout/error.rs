@@ -276,7 +276,7 @@ impl fmt::Display for LayoutError {
             Self::RoleCannotGrow { partition, role } => write!(
                 formatter,
                 "partition \"{partition}\" has role {} and cannot grow: give it a fixed size",
-                role_name(*role)
+                role.name()
             ),
             Self::InvalidGrowth {
                 partition,
@@ -326,19 +326,6 @@ impl fmt::Display for LayoutError {
 }
 
 impl core::error::Error for LayoutError {}
-
-/// The role as a layout file writes it.
-fn role_name(role: Role) -> &'static str {
-    match role {
-        Role::Bootloader => "bootloader",
-        Role::PartitionTable => "partition-table",
-        Role::Firmware => "firmware",
-        Role::Update { .. } => "update",
-        Role::Storage => "storage",
-        Role::CrashRecord => "crash-record",
-        Role::Custom => "custom",
-    }
-}
 
 /// Every problem found in a layout.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

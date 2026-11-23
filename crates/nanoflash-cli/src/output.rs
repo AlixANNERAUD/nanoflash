@@ -152,13 +152,8 @@ pub fn written_json(output: &str, bytes: usize) -> String {
 
 fn role_name(role: Role) -> String {
     match role {
-        Role::Bootloader => "bootloader".into(),
-        Role::PartitionTable => "partition-table".into(),
-        Role::Firmware => "firmware".into(),
         Role::Update { slot } => format!("update {slot}"),
-        Role::Storage => "storage".into(),
-        Role::CrashRecord => "crash-record".into(),
-        Role::Custom => "custom".into(),
+        other => other.name().into(),
     }
 }
 
