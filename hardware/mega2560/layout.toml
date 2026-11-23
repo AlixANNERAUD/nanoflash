@@ -1,4 +1,4 @@
-# Arduino Mega 2560 (ATmega2560): its bootloader never erases the last 16 KiB below the 8 KiB boot section, so the application ends at 0x3C000 and the bootloader partition starts there.
+# Arduino Mega 2560 (ATmega2560): its bootloader never erases above 0x3BFFF (0x3C000..0x3FFFF, of which 0x3E000..0x3FFFF is the boot section itself), so the application ends at 0x3C000 and the bootloader partition starts there.
 [flash]
 size = "256 KiB"
 base-address = 0x0

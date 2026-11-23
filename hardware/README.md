@@ -231,11 +231,13 @@ What a flash does:
 - Mega 2560 (STK500v2): the same pulse, then `CMD_SIGN_ON`, signature check, page writes
   (`CMD_PROGRAM_FLASH_ISP`), read-back and leave.
 - Leonardo (AVR109): a 1200-baud touch makes the sketch reset into Caterina, which shows up as a
-  new serial port within 8 seconds (nanoflash waits for it); then signature, block writes,
+  new serial port; nanoflash waits up to 15 seconds for it (Caterina itself stays in the
+  bootloader for only 8 seconds). Then the `S` identifier, signature (`s`), block writes,
   read-back, and `E` to leave.
 
-Limits of the Mega 2560: its bootloader never erases `0x3C000..0x3DFFF`, so the application ends at
-`0x3C000` (`hardware/mega2560/layout.toml`), and it erases pages in order, so images must start at
+Limits of the Mega 2560: its bootloader never erases above `0x3BFFF` (`0x3C000..0x3FFFF`, of which
+`0x3E000..0x3FFFF` is the boot section itself), so the application ends at `0x3C000`
+(`hardware/mega2560/layout.toml`), and it erases pages in order, so images must start at
 `0x0` and be contiguous.
 
 When the bootloader does not answer, press the reset button just before flashing (the Uno's
