@@ -1,12 +1,15 @@
 //! The errors of connecting to a board and writing it, and their classes.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::fmt;
 
 use serde::Serialize;
 
-use crate::manifest::Protocol;
-use crate::transport::TransportError;
+use crate::layout::LayoutError;
+use crate::manifest::{ManifestError, Protocol};
+use crate::table::TableError;
+use crate::transport::{TransportError, UsbIdentity};
 
 /// What can go wrong while connecting to a board and writing it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -70,6 +73,160 @@ pub enum Error {
         /// The value.
         value: u64,
     },
+    /// The manifest could not be read.
+    Manifest {
+        /// What is wrong with it.
+        error: ManifestError,
+    },
+    /// The layout of a board has errors.
+    Layout {
+        /// Every problem found.
+        errors: Vec<LayoutError>,
+    },
+    /// The layout file of a board could not be read or parsed.
+    LayoutFile {
+        /// The path, as written in the manifest.
+        path: String,
+        /// What went wrong.
+        message: String,
+    },
+    /// The partition table cannot be written for the layout.
+    Table {
+        /// What the writer cannot express.
+        error: TableError,
+    },
+    /// An image file could not be read.
+    ImageSource {
+        /// The path, as written in the manifest.
+        path: String,
+        /// What went wrong.
+        message: String,
+    },
+    /// An image does not have the SHA-256 digest the manifest gives.
+    ChecksumMismatch {
+        /// The path, as written in the manifest.
+        path: String,
+        /// The digest of the manifest, in lowercase hexadecimal.
+        expected: String,
+        /// The digest of the file, in lowercase hexadecimal.
+        actual: String,
+    },
+    /// The verifier refused an image.
+    ImageRejected {
+        /// The path, as written in the manifest.
+        path: String,
+        /// Why.
+        reason: String,
+    },
+    /// An image goes to a partition and the board has no layout.
+    ImageNeedsLayout {
+        /// The board.
+        board: String,
+        /// The partition.
+        partition: String,
+    },
+    /// An image or an erase entry names a partition the layout does not define.
+    UnknownPartition {
+        /// The board.
+        board: String,
+        /// The partition.
+        partition: String,
+    },
+    /// An image starts at an offset the flash cannot erase from.
+    MisalignedImage {
+        /// The image.
+        label: String,
+        /// Its offset.
+        offset: u64,
+        /// The multiple the offset must be of.
+        required: u64,
+    },
+    /// Two images share flash sectors.
+    OverlappingImages {
+        /// The image that comes first by offset.
+        first: String,
+        /// The image that comes second by offset.
+        second: String,
+        /// The end of the first image, rounded up to a whole erase sector.
+        first_end: u64,
+        /// The offset of the second image.
+        second_offset: u64,
+    },
+    /// An image does not fit in its partition.
+    ImageTooLarge {
+        /// The image.
+        label: String,
+        /// The partition.
+        partition: String,
+        /// The size of the image.
+        image_size: u64,
+        /// The size of the partition.
+        partition_size: u64,
+    },
+    /// An image ends after the end of the flash.
+    ImageOutsideFlash {
+        /// The image.
+        label: String,
+        /// Its exclusive end.
+        end: u64,
+        /// The flash size of the layout.
+        flash_size: u64,
+    },
+    /// The requested board is not in the manifest.
+    UnknownBoard {
+        /// The requested identifier.
+        identifier: String,
+        /// The identifiers of the manifest.
+        known: Vec<String>,
+    },
+    /// No board of the manifest suits the device.
+    NoMatchingBoard {
+        /// The USB identity of the device, when it has one.
+        identity: Option<UsbIdentity>,
+    },
+    /// The candidate boards speak several protocols.
+    SeveralProtocols {
+        /// The protocols.
+        protocols: Vec<Protocol>,
+    },
+    /// Several boards have the detected chip.
+    SeveralBoards {
+        /// The chip.
+        chip: String,
+        /// The identifiers of the boards.
+        boards: Vec<String>,
+    },
+    /// The manifest has several boards and none was chosen.
+    BoardRequired {
+        /// The identifiers of the boards.
+        boards: Vec<String>,
+    },
+    /// The protocol of the device cannot be told from its USB identity and none was given.
+    ProtocolRequired {
+        /// The USB identity of the device, when it has one.
+        identity: Option<UsbIdentity>,
+    },
+    /// The protocol was not compiled in.
+    ProtocolNotEnabled {
+        /// The protocol.
+        protocol: Protocol,
+    },
+    /// The size of the flash is needed and neither the layout nor the chip gave it.
+    UnknownFlashSize,
+    /// The flash of the chip is smaller than the layout.
+    FlashTooSmall {
+        /// The flash size of the layout.
+        layout: u64,
+        /// The flash size the chip reported.
+        detected: u64,
+    },
+    /// The chip found is not the one of the selected board.
+    WrongChip {
+        /// The chip found.
+        detected: String,
+        /// The chips of the candidate boards.
+        expected: Vec<String>,
+    },
     /// The flash does not hold what was written.
     VerificationFailed {
         /// The flash offset of the image.
@@ -100,7 +257,30 @@ impl Error {
     /// Who can fix this error.
     pub fn class(&self) -> ErrorClass {
         match self {
-            Error::UnsupportedReset { .. } | Error::OutOfRange { .. } => ErrorClass::Input,
+            Error::UnsupportedReset { .. }
+            | Error::OutOfRange { .. }
+            | Error::Manifest { .. }
+            | Error::Layout { .. }
+            | Error::LayoutFile { .. }
+            | Error::Table { .. }
+            | Error::ImageSource { .. }
+            | Error::ChecksumMismatch { .. }
+            | Error::ImageRejected { .. }
+            | Error::ImageNeedsLayout { .. }
+            | Error::UnknownPartition { .. }
+            | Error::MisalignedImage { .. }
+            | Error::OverlappingImages { .. }
+            | Error::ImageTooLarge { .. }
+            | Error::ImageOutsideFlash { .. }
+            | Error::UnknownBoard { .. }
+            | Error::NoMatchingBoard { .. }
+            | Error::SeveralProtocols { .. }
+            | Error::SeveralBoards { .. }
+            | Error::BoardRequired { .. }
+            | Error::ProtocolRequired { .. }
+            | Error::ProtocolNotEnabled { .. }
+            | Error::UnknownFlashSize
+            | Error::FlashTooSmall { .. } => ErrorClass::Input,
             Error::Transport { .. }
             | Error::NoResponse { .. }
             | Error::NoSync { .. }
@@ -108,7 +288,8 @@ impl Error {
             | Error::Rom { .. }
             | Error::InvalidResponse { .. }
             | Error::UnknownChip { .. }
-            | Error::UnsupportedChip { .. } => ErrorClass::Device,
+            | Error::UnsupportedChip { .. }
+            | Error::WrongChip { .. } => ErrorClass::Device,
             Error::VerificationFailed { .. } => ErrorClass::Verification,
         }
     }
@@ -159,6 +340,146 @@ impl fmt::Display for Error {
             Error::OutOfRange { what, value } => write!(
                 formatter,
                 "the {what} 0x{value:x} is beyond what the protocol can address"
+            ),
+            Error::Manifest { error } => write!(formatter, "{error}"),
+            Error::Layout { errors } => {
+                for (index, error) in errors.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str("\n")?;
+                    }
+                    write!(formatter, "{error}")?;
+                }
+                Ok(())
+            }
+            Error::LayoutFile { path, message } => write!(
+                formatter,
+                "the layout file \"{path}\" could not be read: {message}: check the \"layout\" path of the board in the manifest"
+            ),
+            Error::Table { error } => write!(
+                formatter,
+                "the partition table cannot be written for the layout: {error}"
+            ),
+            Error::ImageSource { path, message } => write!(
+                formatter,
+                "the image \"{path}\" could not be read: {message}: check the path in the manifest"
+            ),
+            Error::ChecksumMismatch {
+                path,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "the image \"{path}\" has the SHA-256 digest {actual} instead of {expected}: rebuild the image or update the \"sha256\" of the manifest"
+            ),
+            Error::ImageRejected { path, reason } => {
+                write!(formatter, "the image \"{path}\" was rejected: {reason}")
+            }
+            Error::ImageNeedsLayout { board, partition } => write!(
+                formatter,
+                "the board \"{board}\" has a manifest image or erase entry for the partition \"{partition}\" and no layout: add a \"layout\" to the board, or use an \"offset\""
+            ),
+            Error::UnknownPartition { board, partition } => write!(
+                formatter,
+                "the board \"{board}\" has a manifest image or erase entry for the partition \"{partition}\", which its layout does not define"
+            ),
+            Error::MisalignedImage {
+                label,
+                offset,
+                required,
+            } => write!(
+                formatter,
+                "the image \"{label}\" starts at offset 0x{offset:x}, which is not a multiple of 0x{required:x}: the ROM loader erases whole sectors of 0x{required:x} bytes, so it would erase the bytes before the image; move the image to a multiple of 0x{required:x}"
+            ),
+            Error::OverlappingImages {
+                first,
+                second,
+                first_end,
+                second_offset,
+            } => write!(
+                formatter,
+                "the image \"{first}\" ends at 0x{first_end:x} once rounded up to whole erase sectors, past the start of the image \"{second}\" at 0x{second_offset:x}: move one of the images"
+            ),
+            Error::ImageTooLarge {
+                label,
+                partition,
+                image_size,
+                partition_size,
+            } => write!(
+                formatter,
+                "the image \"{label}\" of 0x{image_size:x} bytes does not fit in the partition \"{partition}\" of 0x{partition_size:x} bytes: enlarge the partition in the layout or shrink the image"
+            ),
+            Error::ImageOutsideFlash {
+                label,
+                end,
+                flash_size,
+            } => write!(
+                formatter,
+                "the image \"{label}\" ends at 0x{end:x}, past the end of the 0x{flash_size:x} bytes of flash of the layout: move the image or enlarge the flash in the layout"
+            ),
+            Error::UnknownBoard { identifier, known } => write!(
+                formatter,
+                "the manifest has no board \"{identifier}\": the boards are {}",
+                known.join(", ")
+            ),
+            Error::NoMatchingBoard { identity } => {
+                match identity {
+                    Some(identity) => write!(
+                        formatter,
+                        "no board of the manifest matches the device {:04x}:{:04x}",
+                        identity.vendor, identity.product
+                    )?,
+                    None => formatter.write_str(
+                        "no board of the manifest suits a device without a USB identity",
+                    )?,
+                }
+                formatter.write_str(": pass --board-identifier, or list the device in the manifest")
+            }
+            Error::SeveralProtocols { protocols } => {
+                formatter.write_str("the candidate boards speak several protocols (")?;
+                for (index, protocol) in protocols.iter().enumerate() {
+                    if index > 0 {
+                        formatter.write_str(", ")?;
+                    }
+                    write!(formatter, "{protocol}")?;
+                }
+                formatter.write_str("): pass --board-identifier")
+            }
+            Error::SeveralBoards { chip, boards } => write!(
+                formatter,
+                "several boards have the chip {chip} ({}): pass --board-identifier",
+                boards.join(", ")
+            ),
+            Error::BoardRequired { boards } => write!(
+                formatter,
+                "the manifest has several boards ({}): pass --board-identifier",
+                boards.join(", ")
+            ),
+            Error::ProtocolRequired { identity } => {
+                match identity {
+                    Some(identity) => write!(
+                        formatter,
+                        "the protocol of the device {:04x}:{:04x} is unknown",
+                        identity.vendor, identity.product
+                    )?,
+                    None => formatter.write_str("the protocol of the device is unknown")?,
+                }
+                formatter.write_str(": pass --protocol")
+            }
+            Error::ProtocolNotEnabled { protocol } => write!(
+                formatter,
+                "the {protocol} protocol is not enabled in this build of nanoflash"
+            ),
+            Error::UnknownFlashSize => formatter.write_str(
+                "the size of the flash is unknown: add a layout to the board, or connect to a chip that reports it",
+            ),
+            Error::FlashTooSmall { layout, detected } => write!(
+                formatter,
+                "the layout needs 0x{layout:x} bytes of flash and the chip has 0x{detected:x}: use a layout that fits, or a board with more flash"
+            ),
+            Error::WrongChip { detected, expected } => write!(
+                formatter,
+                "the chip found is {detected} and the selected boards have {}: pass --board-identifier of the right board, or connect the right board",
+                expected.join(", ")
             ),
             Error::VerificationFailed {
                 offset,

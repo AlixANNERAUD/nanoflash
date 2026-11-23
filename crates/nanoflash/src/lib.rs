@@ -15,6 +15,8 @@ pub mod backend;
 pub mod error;
 #[cfg(feature = "espressif")]
 pub mod espressif;
+#[cfg(feature = "flash")]
+pub mod flash;
 pub mod layout;
 pub mod manifest;
 #[cfg(feature = "native")]
