@@ -21,6 +21,8 @@ json = ["dep:serde_json"]
 table-espressif = ["dep:md-5"]
 table-mbr = []
 table-linker = []
+# The Espressif ROM loader protocol and chip table.
+espressif = ["table-espressif", "dep:miniz_oxide"]
 # Replay and record serial sessions from transcripts.
 testing = []
 # The serial transport of the host, over the `serialport` crate (needs the standard library).
@@ -31,6 +33,7 @@ build = ["toml", "table-linker"]
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 md-5 = { version = "0.11", optional = true, default-features = false }
+miniz_oxide = { version = "0.8", optional = true, default-features = false, features = ["with-alloc"] }
 serialport = { version = "4.10", optional = true, default-features = false }
 serde_json = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde"] }

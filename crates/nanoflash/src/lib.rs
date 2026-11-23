@@ -9,6 +9,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "espressif")]
+pub mod espressif;
 pub mod layout;
 pub mod manifest;
 #[cfg(feature = "native")]
