@@ -943,7 +943,7 @@ mod tests {
     fn erase_all_stops_at_the_bootloader_of_the_layout() {
         // A Nano: Optiboot reports 0x7E00, but the layout keeps 2 KiB for the bootloader.
         let layout =
-            crate::layout::Layout::from_toml(include_str!("../../../../hardware/nano/layout.toml"))
+            crate::layout::Layout::from_toml(include_str!("../../tests/layouts/nano.toml"))
                 .unwrap()
                 .resolve()
                 .unwrap();

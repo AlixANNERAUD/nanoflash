@@ -1,0 +1,17 @@
+# Arduino Nano (ATmega328P): 2 KiB kept for the bootloader (a new Nano's Optiboot uses 512 bytes, the old bootloader 2 KiB), 30 KiB for the application.
+[flash]
+size = "32 KiB"
+base-address = 0x0
+alignment = 0x80
+
+[[partition]]
+name = "application"
+role = "firmware"
+offset = 0x0
+size = 0x7800
+
+[[partition]]
+name = "bootloader"
+role = "bootloader"
+offset = 0x7800
+size = 0x800

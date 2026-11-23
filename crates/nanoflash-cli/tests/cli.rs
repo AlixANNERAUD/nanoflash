@@ -1372,6 +1372,18 @@ fn the_avr_board_files_check() {
     }
 }
 
+#[test]
+fn the_library_layout_fixtures_are_the_board_files() {
+    // The library's tests cannot read hardware/, which is not part of its package: they use these
+    // copies.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../hardware");
+    for name in ["uno", "nano"] {
+        let board = fs::read_to_string(root.join(name).join("layout.toml")).unwrap();
+        let copy = fs::read_to_string(fixture(&format!("{name}.toml"))).unwrap();
+        assert_eq!(copy, board, "{name}");
+    }
+}
+
 // The Arduino STK500 bootloaders emulated by simavr, recorded by hardware/simavr/run.sh.
 
 #[test]
