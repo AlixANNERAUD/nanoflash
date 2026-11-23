@@ -1,7 +1,8 @@
 # Hardware in the loop
 
-Three checks run the flashing path against something other than a transcript: Espressif's QEMU
-and arduino/BOSSA's SAM-BA emulator (no board needed), and real boards attached to a machine.
+Four checks run the flashing path against something other than a transcript: Espressif's QEMU,
+arduino/BOSSA's SAM-BA emulator and Arduino's AVR bootloaders in simavr (no board needed), and
+real boards attached to a machine.
 
 ## QEMU
 
@@ -65,6 +66,55 @@ not change, first check whether the emulator or bossac changed. To move to a new
 `BOSSA_COMMIT` (and the commit named in the first line of the copied transcript), run the task,
 read the new `tests/samba.py` for changed commands, then copy
 `target/samba-emulator/nano33ble.transcript` over the recorded transcript, keeping its first
+comment line.
+
+## simavr
+
+`mise run test-simavr` runs `hardware/simavr/run.sh` on Linux with curl and a C compiler. It
+flashes three of Arduino's STK500 bootloaders, run unmodified by simavr 1.6. The script
+
+1. downloads `optiboot_atmega328.hex` (the Uno's Optiboot), `ATmegaBOOT_168_atmega328.hex` (the
+   old Nano bootloader) and `stk500boot_v2_mega2560.hex` (the Mega 2560's wiring bootloader) from
+   https://github.com/arduino/ArduinoCore-avr at the commit pinned in `ARDUINO_AVR_COMMIT` into
+   `target/simavr/` (or `$SIMAVR_DIRECTORY`),
+2. finds simavr's headers and static libraries through pkg-config (`libsimavr-dev` installed),
+   or else, on Debian or Ubuntu without root, fetches the package with `apt-get download
+   libsimavr-dev` and unpacks it into `target/simavr/root`; it stops with `install
+   libsimavr-dev (Debian, Ubuntu)` when neither works,
+3. builds `hardware/simavr/harness.c` against them into `target/simavr/harness`. The harness
+   loads the bootloader at the top of a blank flash, runs it at 16 MHz and no faster than wall
+   time (Optiboot's one-second watchdog would otherwise expire between two commands), puts UART0
+   on a pseudo-terminal under `/dev/pts` (not simavr's `/tmp/simavr-uart0` link), presses the
+   reset button while the application is blank (Optiboot otherwise jumps to it), and writes the
+   flash to a file when the bootloader starts the application,
+4. for each scenario, flashes `hardware/simavr/<board>.toml` (the AVR fixture application, the
+   board's layout, no reset, no USB identity) through the pseudo-terminal and records the
+   traffic, waits for the application to start, compares the flash below the bootloader with
+   `nanoflash image build --fill`, and replays the recording with `--replay`:
+   - `optiboot`: an ATmega328P with Optiboot, `uno.toml`, `0x7E00` bytes,
+   - `atmegaboot`: an ATmega328P with ATmegaBOOT, `nano.toml` with `--baud-rate 57600` (simavr
+     ignores the host's baud rate, so this checks the explicit rate and the 2 KiB bootloader),
+     `0x7800` bytes,
+   - `mega2560`: an ATmega2560 with the wiring bootloader, `mega2560.toml`, `0x3E000` bytes,
+5. prints `<name>: flashed, flash content identical, transcript replayed` for each.
+
+The emulator cannot check the DTR reset pulse (a pseudo-terminal has none), the fallback from
+115200 to 57600 baud (any rate works) nor Caterina (USB): the transcripts of
+`crates/nanoflash/tests/transcripts/avr/` and the boards cover those.
+
+`crates/nanoflash/tests/transcripts/avr/recorded/simavr-{optiboot,atmegaboot,mega2560}.transcript`
+are copies of the recordings, replayed by `cargo test`.
+
+simavr (GPL-3.0-or-later) and the bootloaders (GPL) are only downloaded or installed and run:
+none of their code is in this repository, the harness is written from simavr's public headers,
+and the harness binary, which links simavr statically, is never distributed.
+
+The `simavr` job of `.github/workflows/ci.yml` installs `libsimavr-dev` with apt and runs this.
+It is allowed to fail: the images come from GitHub and simavr is not the chip. If it fails while
+nanoflash did not change, first check whether simavr (the package version) or the pinned images
+changed. To move to a newer ArduinoCore-avr, update `ARDUINO_AVR_COMMIT` (and the commit named in
+the first line of each recorded transcript), delete `target/simavr/*.hex`, run the task, and
+copy `target/simavr/<name>.transcript` over the recorded transcripts, keeping their first
 comment line.
 
 ## Boards

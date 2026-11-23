@@ -145,3 +145,20 @@ jobs:
         with:
           cache-key-suffix: samba-emulator
       - run: mise run test-samba-emulator
+
+  # Flashes Optiboot, ATmegaBOOT and the Mega 2560's wiring bootloader emulated by simavr. Not
+  # required: the bootloaders are downloaded from GitHub, and simavr is not the chip.
+  simavr:
+    name: simavr (Arduino STK500 bootloaders)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: simavr
+      - run: sudo apt-get update
+      - run: sudo apt-get install -y --no-install-recommends libsimavr-dev
+      - run: mise run test-simavr

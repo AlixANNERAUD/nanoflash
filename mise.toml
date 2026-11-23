@@ -192,3 +192,7 @@ run = "cargo test -p nanoflash-cli --test hardware -- --ignored --nocapture"
 [tasks.test-samba-emulator]
 description = "Flash arduino/BOSSA's emulated SAM-BA bootloader with nanoflash and bossac (Linux or macOS; needs git, python3, make and a C++ compiler)"
 run = "hardware/samba-emulator/run.sh"
+
+[tasks.test-simavr]
+description = "Flash Optiboot, ATmegaBOOT and the Mega 2560 bootloader emulated by simavr (Linux; needs a C compiler and libsimavr-dev, or apt-get download)"
+run = "hardware/simavr/run.sh"

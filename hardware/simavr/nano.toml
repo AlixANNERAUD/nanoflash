@@ -1,0 +1,13 @@
+# Flashed into the old Nano bootloader (ATmegaBOOT) emulated by simavr by hardware/simavr/run.sh:
+# no reset (a pseudo-terminal has no DTR) and no USB identity.
+[[board]]
+identifier = "arduino-nano-simavr"
+name = "Arduino Nano (simavr)"
+protocol = "stk500v1"
+chip = "atmega328p"
+layout = "../nano/layout.toml"
+reset = "none"
+
+[[board.image]]
+partition = "application"
+path = "../../crates/nanoflash/tests/images/avr-application.hex"

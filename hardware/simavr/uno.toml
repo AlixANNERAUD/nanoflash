@@ -1,0 +1,13 @@
+# Flashed into Optiboot emulated by simavr by hardware/simavr/run.sh: no reset (a pseudo-terminal
+# has no DTR) and no USB identity.
+[[board]]
+identifier = "arduino-uno-r3-simavr"
+name = "Arduino Uno R3 (simavr)"
+protocol = "stk500v1"
+chip = "atmega328p"
+layout = "../uno/layout.toml"
+reset = "none"
+
+[[board.image]]
+partition = "application"
+path = "../../crates/nanoflash/tests/images/avr-application.hex"

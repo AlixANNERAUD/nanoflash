@@ -1368,3 +1368,46 @@ fn the_avr_board_files_check() {
         assert_eq!(size, Some(application), "{name}");
     }
 }
+
+// The Arduino STK500 bootloaders emulated by simavr, recorded by hardware/simavr/run.sh.
+
+#[test]
+fn replays_the_simavr_recordings() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let recordings = [
+        ("uno.toml", "simavr-optiboot.transcript", None),
+        ("nano.toml", "simavr-atmegaboot.transcript", Some("57600")),
+        ("mega2560.toml", "simavr-mega2560.transcript", None),
+    ];
+    for (board, transcript, baud_rate) in recordings {
+        let board = repository.join("hardware/simavr").join(board);
+        let transcript = avr_transcript("recorded").join(transcript);
+        let mut arguments = vec![
+            "flash",
+            "--board",
+            path_text(&board),
+            "--replay",
+            path_text(&transcript),
+            "--json",
+        ];
+        if let Some(rate) = baud_rate {
+            arguments.extend_from_slice(&["--baud-rate", rate]);
+        }
+        let output = run(&arguments);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}: {}",
+            transcript.display(),
+            text(&output.stderr)
+        );
+        let document = document(&output);
+        assert_eq!(document["ok"], true, "{}", transcript.display());
+        assert_eq!(
+            document["report"]["verified"],
+            true,
+            "{}",
+            transcript.display()
+        );
+    }
+}

@@ -1,0 +1,13 @@
+# Flashed into the Mega 2560's wiring bootloader emulated by simavr by hardware/simavr/run.sh: no
+# reset (a pseudo-terminal has no DTR) and no USB identity.
+[[board]]
+identifier = "arduino-mega-2560-simavr"
+name = "Arduino Mega 2560 (simavr)"
+protocol = "stk500v2"
+chip = "atmega2560"
+layout = "../mega2560/layout.toml"
+reset = "none"
+
+[[board.image]]
+partition = "application"
+path = "../../crates/nanoflash/tests/images/avr-application.hex"
