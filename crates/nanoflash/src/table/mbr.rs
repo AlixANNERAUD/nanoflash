@@ -116,6 +116,7 @@ mod tests {
     use alloc::string::ToString;
     use alloc::vec;
     use alloc::vec::Vec;
+    #[cfg(feature = "toml")]
     use std::io::Cursor;
 
     fn partition(name: &str, role: Role, offset: Option<u64>, size: u64) -> Partition {
@@ -157,6 +158,7 @@ mod tests {
         partition("partition-table", Role::PartitionTable, Some(0), 512)
     }
 
+    #[cfg(feature = "toml")]
     fn fixture() -> ResolvedLayout {
         Layout::from_toml(include_str!("../../tests/layouts/sd-card.toml"))
             .unwrap()
@@ -164,6 +166,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(feature = "toml")]
     #[test]
     fn sd_card_fixture_round_trips_through_mbrman() {
         let layout = fixture();
@@ -185,6 +188,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "toml")]
     #[test]
     fn signature_and_chs() {
         let sector = write(&fixture()).unwrap();

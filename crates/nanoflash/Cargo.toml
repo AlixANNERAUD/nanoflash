@@ -35,3 +35,7 @@ esp-idf-part = "0.6"
 mbrman = "0.7"
 proptest = "1"
 serde_json = "1"
+
+[[test]]
+name = "external_parsers"
+required-features = ["toml", "table-espressif", "table-mbr"]

@@ -25,6 +25,24 @@ run = [
   "cargo test --workspace --all-features",
 ]
 
+[tasks.features]
+description = "Test the library with no feature, and with each table writer alone"
+env.RUSTFLAGS = "-D warnings"
+run = [
+  "cargo test -p nanoflash --no-default-features",
+  "cargo test -p nanoflash --no-default-features --features table-mbr",
+  "cargo test -p nanoflash --no-default-features --features table-espressif",
+  "cargo test -p nanoflash --no-default-features --features table-linker",
+]
+
+[tasks.msrv]
+description = "Build the workspace with the minimum supported Rust version (rust-version in Cargo.toml)"
+env.RUSTFLAGS = "-D warnings"
+run = [
+  "mise x rust@1.85 -- cargo build --workspace --locked",
+  "mise x rust@1.85 -- cargo build --workspace --locked --all-features",
+]
+
 [tasks.cross]
 description = "Build the library for Cortex-M4F and WebAssembly with every no_std feature"
 env.RUSTFLAGS = "-D warnings"

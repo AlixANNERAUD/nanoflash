@@ -48,6 +48,25 @@ jobs:
           cache-key-suffix: test
       - run: mise run test
 
+  features:
+    name: Features alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: features
+      - run: mise run features
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: mise run msrv
+
   cross:
     name: Cross (Cortex-M4F and WebAssembly)
     runs-on: ubuntu-latest
