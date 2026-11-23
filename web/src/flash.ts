@@ -150,8 +150,12 @@ function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Asks the user for a port. Call it before any other `await` of a click handler. */
-function requestPort(filters: readonly SerialPortFilter[]): Promise<SerialPortLike> {
+/**
+ * Asks the user for a port. Call it before any other `await` of a click handler. A closed
+ * chooser rejects with `no-port-chosen`; a chooser the browser refused to show, with
+ * `port-request-refused`.
+ */
+export function requestPort(filters: readonly SerialPortFilter[]): Promise<SerialPortLike> {
   const serial = (globalThis.navigator as { serial?: { requestPort(options: object): Promise<unknown> } } | undefined)
     ?.serial;
   if (serial === undefined) {
@@ -167,7 +171,16 @@ function requestPort(filters: readonly SerialPortFilter[]): Promise<SerialPortLi
     .requestPort(filters.length === 0 ? {} : { filters })
     .then((port) => port as SerialPortLike)
     .catch((error: unknown) => {
-      throw new NanoflashError("not-granted", "device", `no port was granted: ${describe(error)}`, {}, { raw: error });
+      if ((error as { name?: unknown } | null)?.name === "NotFoundError") {
+        throw new NanoflashError("no-port-chosen", "input", "no port was chosen", {}, { raw: error });
+      }
+      throw new NanoflashError(
+        "port-request-refused",
+        "input",
+        `the browser did not show the port chooser (${describe(error)}): a page in an iframe needs allow="serial", and a permissions policy may block Web Serial`,
+        {},
+        { raw: error },
+      );
     });
 }
 

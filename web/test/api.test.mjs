@@ -125,6 +125,27 @@ test("requests the port before any await of Prepared.flash", async () => {
   finish();
 });
 
+test("a refused chooser is port-request-refused, a closed one no-port-chosen", async () => {
+  restoreNavigator = installNavigator([], {
+    onRequestPort: () => {
+      throw new DOMException('Access to the feature "serial" is disallowed by permissions policy.', "SecurityError");
+    },
+  });
+  const prepared = await prepare(`${BASE}/esp32-s3-usb.json`);
+  const refused = await rejection(prepared.flash());
+  assert.ok(refused instanceof NanoflashError);
+  assert.equal(refused.kind, "port-request-refused");
+  assert.equal(refused.errorClass, "input");
+  assert.match(refused.message, /allow="serial"/);
+  assert.match(refused.message, /permissions policy/);
+  assert.equal(refused.raw.name, "SecurityError");
+  restoreNavigator();
+  restoreNavigator = installNavigator([]);
+  const closed = await rejection(prepared.flash());
+  assert.equal(closed.kind, "no-port-chosen");
+  assert.equal(closed.errorClass, "input");
+});
+
 test("uses the port of the options without asking", async () => {
   const { port, finish } = mockPort(transcript("flash-esp32s3-usb"));
   restoreNavigator = installNavigator([], {

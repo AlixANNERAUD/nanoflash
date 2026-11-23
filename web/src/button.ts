@@ -1,5 +1,5 @@
 import { NanoflashError } from "./errors.js";
-import { prepare } from "./flash.js";
+import { prepare, requestPort } from "./flash.js";
 import type { Prepared } from "./flash.js";
 import { isSupported } from "./convert.js";
 import type { FlashReport, ProgressEvent, SerialPortLike } from "./types.js";
@@ -25,8 +25,7 @@ p { margin: 0.5em 0 0; }
 const WORKING = ["connecting", "erasing", "writing", "verifying", "resetting"];
 
 function chooserClosed(error: unknown): boolean {
-  const raw = error instanceof NanoflashError ? error.raw : error;
-  return typeof raw === "object" && raw !== null && (raw as { name?: unknown }).name === "NotFoundError";
+  return error instanceof NanoflashError && error.kind === "no-port-chosen";
 }
 
 /** An install button for a manifest: `<nanoflash-button manifest="firmware/manifest.json">`. */
@@ -150,15 +149,12 @@ export class NanoflashButton extends HTMLElement {
 
   #installWithBootloader(): void {
     const prepared = this.#prepared;
-    const serial = (navigator as { serial?: { requestPort(options: object): Promise<unknown> } }).serial;
-    if (prepared === undefined || serial === undefined) return;
+    if (prepared === undefined) return;
     this.#bootloader.disabled = true;
-    const filters = prepared.bootloaderFilters;
-    const chosen = serial.requestPort(filters.length === 0 ? {} : { filters });
-    void chosen.then(
+    void requestPort(prepared.bootloaderFilters).then(
       (port) => {
         this.#bootloader.disabled = false;
-        this.#run(prepared.flash(this.#options(port as SerialPortLike)));
+        this.#run(prepared.flash(this.#options(port)));
       },
       (error: unknown) => {
         this.#bootloader.disabled = false;

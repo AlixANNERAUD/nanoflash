@@ -159,6 +159,24 @@ test("a closed chooser returns to ready", async () => {
   assert.equal(failures.length, 0);
 });
 
+test("a chooser the browser refused shows the error", async () => {
+  restoreNavigator = installNavigator([], {
+    onRequestPort: () => {
+      throw new DOMException('Access to the feature "serial" is disallowed by permissions policy.', "SecurityError");
+    },
+  });
+  mount("esp32-s3-usb.json");
+  const failures = events(element, "nanoflash-error");
+  await waitFor("ready");
+  part("button").click();
+  await waitFor("error");
+  assert.match(part("message").textContent, /allow="serial"/);
+  assert.equal(part("bootloader-button").hidden, true);
+  assert.equal(part("button").disabled, false);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].detail.kind, "port-request-refused");
+});
+
 test("asks for the bootloader port when it was never granted", async () => {
   const lost = mockPort(transcript("connect-reopen"));
   const good = mockPort(transcript("flash-esp32s3-usb"));
