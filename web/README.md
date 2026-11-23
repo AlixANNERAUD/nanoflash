@@ -97,12 +97,13 @@ keeps the grant, so the next flash finds the bootloader by itself. A board alrea
 bootloader (double tap on reset) is flashed as it is.
 
 The Leonardo, Micro and Pro Micro (AVR109) do the same: the touch, then Caterina on its own USB
-identity (`2341:8036` becomes `2341:0036` on a Leonardo). Caterina goes back to the sketch after
-8 s, before `flash` gives up: for the first grant, press the reset button of the board once and
-choose its port while the LED pulses. The Uno, Nano, Pro Mini and Mega 2560 keep their port: a
-pulse on DTR resets them into their bootloader, through the USB serial chip of the board or a
-serial bridge. A manifest may name the STK500 protocols by their `boards.txt` names, `arduino`
-(`stk500v1`) and `wiring` (`stk500v2`).
+identity (`2341:8036` becomes `2341:0036` on a Leonardo). Caterina goes back to the sketch 8 s
+after the touch, so `flash` waits 5 s for it before it fails with `not-granted`: for the first
+grant, press the reset button of the board once and choose its port while the LED pulses; the
+component's bootloader-permission text says so when the manifest has an `avr109` board. The
+Uno, Nano, Pro Mini and Mega 2560 keep their port: a pulse on DTR resets them into their
+bootloader, through the USB serial chip of the board or a serial bridge. A manifest may name the
+STK500 protocols by their `boards.txt` names, `arduino` (`stk500v1`) and `wiring` (`stk500v2`).
 
 ## Layouts
 

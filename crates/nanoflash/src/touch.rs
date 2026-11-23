@@ -25,8 +25,22 @@ const SPARKFUN_PRODUCTS: [(u16, u16); 2] = [(0x9206, 0x9205), (0x9204, 0x9203)];
 const SKETCH_PRODUCT_BIT: u16 = 0x8000;
 /// The baud rate the sketch reads as a request to start the bootloader.
 const TOUCH_BAUD_RATE: u32 = 1200;
-/// How long the bootloader's USB device may take to appear after the touch.
-pub(crate) const REOPEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long a SAM-BA bootloader's USB device may take to appear after the touch: it stays until
+/// it is flashed.
+const SAMBA_REOPEN_TIMEOUT: Duration = Duration::from_secs(15);
+/// How long Caterina's (AVR109) may take: it enumerates a second or two after the touch, and
+/// goes back to the sketch 8 s after it started, so a longer wait would only find it gone. In
+/// the browser, a first grant fails after this wait (`not-granted`) while Caterina still runs,
+/// and a press of the reset button restarts it for the user to choose its port.
+const AVR109_REOPEN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How long the bootloader of `protocol` may take to appear after the touch.
+pub(crate) fn reopen_timeout(protocol: Protocol) -> Duration {
+    match protocol {
+        Protocol::Avr109 => AVR109_REOPEN_TIMEOUT,
+        _ => SAMBA_REOPEN_TIMEOUT,
+    }
+}
 
 /// The vendors whose products clear bit 15 in the bootloader, for `protocol`: SAM-BA keeps to
 /// Arduino's, AVR109 adds Arduino SRL's.
@@ -134,7 +148,10 @@ pub(crate) async fn enter_bootloader<P: PortProvider>(
     }
     // The port must be closed before the bootloader's device can be opened.
     drop(port.take());
-    match provider.open(&filter, baud_rate, REOPEN_TIMEOUT).await {
+    match provider
+        .open(&filter, baud_rate, reopen_timeout(protocol))
+        .await
+    {
         Ok(opened) => {
             *port = Some(opened);
             Ok(())

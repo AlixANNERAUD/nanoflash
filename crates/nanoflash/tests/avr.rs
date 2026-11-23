@@ -9,9 +9,10 @@ use nanoflash::backend::{Backend, ChipInformation, ProgressEvent, Region, Segmen
 use nanoflash::flash::{FlashOptions, FlashReport, Hooks, decode_intel_hex, detect, flash};
 use nanoflash::manifest::{Manifest, Protocol, ResetSequence, ResetStep};
 use nanoflash::testing::{
-    Event, HostToken, MemorySource, RecordingProvider, ReplayProvider, Transcript, record, replay,
+    Event, HostToken, MemorySource, RecordingProvider, ReplayPort, ReplayProvider, Transcript,
+    record, replay,
 };
-use nanoflash::transport::{Duration, UsbIdentity};
+use nanoflash::transport::{DeviceFilter, Duration, PortProvider, TransportError, UsbIdentity};
 use nanoflash::{Error, ErrorClass};
 use pollster::block_on;
 
@@ -330,6 +331,45 @@ fn connects_to_a_leonardo_after_the_touch() {
     );
     assert!(messages.is_empty(), "{messages:?}");
     provider.finish().unwrap();
+}
+
+/// A provider that keeps the baud rate and timeout of every `open`.
+struct Opens(ReplayProvider, Vec<(u32, Duration)>);
+
+impl PortProvider for Opens {
+    type Port = ReplayPort;
+
+    async fn open(
+        &mut self,
+        filter: &DeviceFilter,
+        baud_rate: u32,
+        timeout: Duration,
+    ) -> Result<ReplayPort, TransportError> {
+        self.1.push((baud_rate, timeout));
+        self.0.open(filter, baud_rate, timeout).await
+    }
+}
+
+#[test]
+fn caterina_is_waited_for_less_than_it_stays() {
+    // Caterina goes back to the sketch 8 s after it starts: waiting 15 s for its port, as for a
+    // SAM-BA bootloader, would outlive it.
+    let (port, provider) = replay(Transcript::parse(&transcript("connect-leonardo")).unwrap());
+    let mut provider = Opens(provider, Vec::new());
+    let result = {
+        let mut backend = AvrBackend::new(
+            Protocol::Avr109,
+            port,
+            &mut provider,
+            None,
+            AvrOptions::default(),
+        )
+        .unwrap();
+        block_on(backend.connect(&mut ()))
+    };
+    assert_eq!(result.unwrap().usb, identity(0x2341, 0x0036));
+    assert_eq!(provider.1, [(57_600, Duration::from_secs(5))]);
+    provider.0.finish().unwrap();
 }
 
 #[test]

@@ -231,7 +231,7 @@ What a flash does:
 - Mega 2560 (STK500v2): the same pulse, then `CMD_SIGN_ON`, signature check, page writes
   (`CMD_PROGRAM_FLASH_ISP`), read-back and leave.
 - Leonardo (AVR109): a 1200-baud touch makes the sketch reset into Caterina, which shows up as a
-  new serial port; nanoflash waits up to 15 seconds for it (Caterina itself stays in the
+  new serial port; nanoflash waits up to 5 seconds for it (Caterina itself stays in the
   bootloader for only 8 seconds). Then the `S` identifier, signature (`s`), block writes,
   read-back, and `E` to leave.
 

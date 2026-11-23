@@ -218,6 +218,8 @@ test("asks for the Nano 33 BLE bootloader port", async () => {
   await waitFor("bootloader-permission", 30000);
   sketch.finish();
   assert.match(part("message").textContent, /2341:005a/);
+  // SAM-BA bootloaders stay until flashed: no hint about catching them.
+  assert.doesNotMatch(part("message").textContent, /reset button/);
   assert.equal(part("bootloader-button").hidden, false);
   part("bootloader-button").click();
   await waitFor("done");
@@ -229,8 +231,9 @@ test("asks for the Nano 33 BLE bootloader port", async () => {
 });
 
 test("asks for the Leonardo bootloader port", async () => {
-  // Waits the 15 s the backend gives Caterina to appear before it says the page has no
-  // permission for it.
+  // Waits the 5 s the backend gives Caterina to appear before it says the page has no permission
+  // for it: Caterina goes back to the sketch 8 s after the touch, so the page asks while it still
+  // runs, and tells how to restart it.
   const [before, after] = transcript("flash-leonardo", "avr").split("! reopen 2341:0036\n");
   const sketch = mockPort(before);
   const bootloader = mockPort(`! identity 2341:0036\n${after}`);
@@ -244,9 +247,13 @@ test("asks for the Leonardo bootloader port", async () => {
   mount("leonardo.json");
   await waitFor("ready");
   part("button").click();
-  await waitFor("bootloader-permission", 30000);
+  await waitFor("bootloader-permission", 8000);
   sketch.finish();
   assert.match(part("message").textContent, /2341:0036/);
+  assert.match(
+    part("message").textContent,
+    /\nPress the board's reset button once, then choose its port while the LED pulses \(the bootloader stays for 8 seconds\)\.$/,
+  );
   assert.equal(part("bootloader-button").hidden, false);
   part("bootloader-button").click();
   await waitFor("done");

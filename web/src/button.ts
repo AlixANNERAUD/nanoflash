@@ -24,6 +24,13 @@ p { margin: 0.5em 0 0; white-space: pre-line; }
 
 const WORKING = ["connecting", "erasing", "writing", "verifying", "resetting"];
 
+/**
+ * How to catch Caterina (AVR109) for a first grant: it goes back to the sketch 8 s after the
+ * touch, before the bootloader button can be used.
+ */
+const CATERINA =
+  "press the board's reset button once, then choose its port while the LED pulses (the bootloader stays for 8 seconds).";
+
 /** What the done state says: the board, whether it was verified, and every warning. */
 function summary(report: FlashReport): string {
   const unverified = report.warnings.find(
@@ -198,12 +205,22 @@ export class NanoflashButton extends HTMLElement {
         if (chooserClosed(error)) {
           this.#render("ready", "");
         } else if (error instanceof NanoflashError && error.kind === "not-granted") {
-          this.#render("bootloader-permission", error.message);
+          this.#render("bootloader-permission", this.#permission(error.message));
         } else {
           this.#fail(error);
         }
       },
     );
+  }
+
+  /** What the bootloader-permission state says: `message`, and on AVR109 boards how to catch Caterina. */
+  #permission(message: string): string {
+    const protocols = this.#prepared?.protocols ?? [];
+    if (!protocols.includes("avr109")) return message;
+    const hint = protocols.every((protocol) => protocol === "avr109")
+      ? `${CATERINA.charAt(0).toUpperCase()}${CATERINA.slice(1)}`
+      : `On a Leonardo, Micro or Pro Micro, ${CATERINA}`;
+    return `${message}\n${hint}`;
   }
 
   #fail(error: unknown): void {
