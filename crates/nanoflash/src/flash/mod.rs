@@ -3,7 +3,7 @@
 //! writing, verifying and resetting.
 
 mod intel_hex;
-mod prepare;
+pub(crate) mod prepare;
 mod select;
 
 use alloc::format;

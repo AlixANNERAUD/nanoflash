@@ -13,7 +13,7 @@ the headroom of every partition, and writes the table each family needs. See `RE
 
 | Crate | Role |
 | --- | --- |
-| `nanoflash` (`crates/nanoflash`) | The library, `no_std` with `alloc`. Features: `toml`, `json`, `table-espressif`, `table-mbr`, `table-linker`, `flash`, `espressif`, `samba`, `testing`, `native`, `build`, `web`. |
+| `nanoflash` (`crates/nanoflash`) | The library, `no_std` with `alloc`. Features: `toml`, `json`, `table-espressif`, `table-mbr`, `table-linker`, `flash`, `espressif`, `samba`, `avr`, `testing`, `native`, `build`, `web`. |
 | `nanoflash-cli` (`crates/nanoflash-cli`) | The `nanoflash` command: `layout check`, `layout write`, `flash`, `detect`, `image build`. |
 | `nanoflash-web` (`crates/nanoflash-web`) | The WebAssembly modules of the browser package (`publish = false`): `core` (layouts), and one module per backend feature (`espressif`, `samba`) that adds `flash` and `detect`. |
 
@@ -33,6 +33,7 @@ Modules of the library:
 | `flash` | Board selection, image preparation and checks, the flash and detect orchestration, `image_build` (`flash`). |
 | `espressif` | The ROM loader backend: SLIP, commands, chip table, resets, writes (`espressif`). |
 | `samba` | The SAM-BA backend of Arduino's bootloaders (Nano 33 BLE, SAMD21 boards): the 1200-baud touch, the ASCII commands with Arduino's `X`, `Y` and `Z`, the chip families, writes and CRC-16 checks (`samba`). |
+| `avr` | The AVR backend of Arduino's boards: the chip table and the commands of the STK500v1 (Optiboot, ATmegaBOOT), STK500v2 (Mega 2560) and AVR109 (Caterina) bootloaders (`avr`). |
 | `native` | The host serial port over `serialport` (`native`, needs `std`). |
 | `web` | The serial port of the browser over Web Serial, and the provider that finds a device again among the granted ports (`web`, `no_std`, through `wasm-bindgen` and `js-sys`, without `web-sys`). |
 | `testing` | Transcript replay and recording, `MemorySource` (`testing`). |

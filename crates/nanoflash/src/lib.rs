@@ -9,6 +9,8 @@
 
 extern crate alloc;
 
+#[cfg(feature = "avr")]
+pub mod avr;
 #[cfg(feature = "flash")]
 pub mod backend;
 #[cfg(feature = "flash")]

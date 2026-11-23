@@ -20,7 +20,7 @@ use crate::table::espressif::{TABLE_SIZE, write};
 /// in are erased whole. The Espressif ROM loader erases sectors of 4 KiB; the nRF52840 programs
 /// and erases whole 4 KiB pages, which the 256-byte rows of the SAMD21 divide. The AVR
 /// bootloaders write whole pages: the largest page of the chips of each protocol.
-fn erase_unit(protocol: Protocol) -> u64 {
+pub(crate) fn erase_unit(protocol: Protocol) -> u64 {
     match protocol {
         Protocol::Espressif | Protocol::Samba => 0x1000,
         Protocol::Stk500v1 | Protocol::Avr109 => 0x80,
@@ -1004,20 +1004,8 @@ mod tests {
         assert!(prepare_with(&v2, &mut source).is_ok());
     }
 
-    /// The erase units of the AVR protocols are the largest page of their chips: 128 bytes for
-    /// the ATmega328P and the ATmega32U4, 256 bytes for the ATmega2560. The check against every
-    /// chip's page moves to `avr/chip.rs` with the chip table (the `avr` module does not exist
-    /// yet, and this module's tests are the ones that run without it).
     #[test]
-    fn erase_units_cover_the_pages_of_the_avr_chips() {
-        for (protocol, page) in [
-            (Protocol::Stk500v1, 0x80_u64),
-            (Protocol::Avr109, 0x80),
-            (Protocol::Stk500v2, 0x100),
-        ] {
-            assert_eq!(erase_unit(protocol), page, "{protocol}");
-            assert!(erase_unit(protocol).is_power_of_two());
-        }
+    fn avr_addresses_reach_the_word_limit() {
         assert_eq!(address_limit(Protocol::Stk500v1), 1 << 17);
         assert_eq!(address_limit(Protocol::Avr109), 1 << 17);
         assert_eq!(address_limit(Protocol::Stk500v2), 1 << 32);
