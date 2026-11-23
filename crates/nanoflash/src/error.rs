@@ -229,6 +229,8 @@ pub enum Error {
     },
     /// The flash does not hold what was written.
     VerificationFailed {
+        /// The image.
+        label: String,
         /// The flash offset of the image.
         offset: u64,
         /// The number of bytes checked.
@@ -482,13 +484,14 @@ impl fmt::Display for Error {
                 expected.join(", ")
             ),
             Error::VerificationFailed {
+                label,
                 offset,
                 size,
                 expected,
                 actual,
             } => write!(
                 formatter,
-                "the 0x{size:x} bytes of flash at 0x{offset:x} have the MD5 digest {actual} instead of {expected}: flash again, and check the power supply and the flash size of the board if it fails again"
+                "the image \"{label}\" at 0x{offset:x} (0x{size:x} bytes) does not read back as written: the board computed the MD5 digest {actual} instead of {expected}: flash again, and check the power supply and the flash size of the board if it fails again"
             ),
         }
     }

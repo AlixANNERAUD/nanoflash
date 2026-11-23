@@ -39,6 +39,7 @@ fn scaled_timeout(seconds_per_megabyte: u64, size: u32) -> Duration {
 
 /// A segment checked against what the protocol can carry.
 struct Checked<'a> {
+    label: &'a str,
     offset: u32,
     data: &'a [u8],
     /// The length of the data padded to a multiple of four bytes.
@@ -76,6 +77,7 @@ fn check<'a>(segment: &Segment<'a>) -> Result<Checked<'a>, Error> {
         .checked_next_multiple_of(SECTOR_SIZE)
         .ok_or_else(too_large)?;
     Ok(Checked {
+        label: segment.label,
         offset,
         data: segment.data,
         padded_length,
@@ -179,6 +181,7 @@ impl<P: PortProvider> EspressifBackend<'_, P> {
         let expected = Md5::digest(segment.padded());
         if expected.as_slice() != actual {
             return Err(Error::VerificationFailed {
+                label: segment.label.into(),
                 offset: u64::from(segment.offset),
                 size: u64::from(segment.padded_length),
                 expected: hexadecimal(&expected),

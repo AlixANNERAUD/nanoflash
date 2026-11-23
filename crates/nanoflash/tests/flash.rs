@@ -178,24 +178,18 @@ fn a_failed_verification_names_the_image() {
         &FlashOptions::default(),
         &mut progress,
     );
-    assert!(matches!(
-        result,
-        Err(Error::VerificationFailed {
-            offset: 0x20000,
-            ..
-        })
-    ));
+    let error = result.unwrap_err();
+    assert!(
+        matches!(
+            &error,
+            Error::VerificationFailed { label, offset: 0x20000, .. } if label == "application"
+        ),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("\"application\""), "{error}");
     // The board is still reset into its application.
     provider.finish().unwrap();
     assert_eq!(progress.stages.last(), Some(&Stage::Resetting));
-    assert!(
-        progress
-            .messages
-            .iter()
-            .any(|message| message.contains("\"application\"") && message.contains("0x20000")),
-        "{:?}",
-        progress.messages
-    );
 }
 
 #[test]
@@ -217,6 +211,36 @@ fn layout_larger_than_flash_stops_before_writing() {
     );
     provider.finish().unwrap();
     assert_eq!(progress.stages, [Stage::Connecting, Stage::Resetting]);
+}
+
+#[test]
+fn a_failed_reset_after_an_error_is_reported() {
+    // The transcript ends before the reset into the application, which then fails.
+    let full = transcript("flash-too-small");
+    let lines: Vec<&str> = full.lines().collect();
+    let text: String = lines[..lines.len() - 5]
+        .iter()
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let mut progress = Recorder::default();
+    let (result, _provider) = run_flash(
+        &manifest(),
+        &text,
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    assert!(
+        matches!(result, Err(Error::FlashTooSmall { .. })),
+        "{result:?}"
+    );
+    assert!(
+        progress.messages.iter().any(|message| message
+            .starts_with("could not reset into the application: ")
+            && message.ends_with("; press the board's reset button")),
+        "{:?}",
+        progress.messages
+    );
 }
 
 #[test]

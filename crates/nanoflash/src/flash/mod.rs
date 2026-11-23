@@ -195,8 +195,12 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
             Ok(flashed)
         }
         Err(error) => {
-            // The error is what the caller needs; a failed reset adds nothing to it.
-            let _ = reset(&mut backend, progress).await;
+            // The first error is the one to fix; the failed reset is only told.
+            if let Err(reset_error) = reset(&mut backend, progress).await {
+                progress.message(&format!(
+                    "could not reset into the application: {reset_error}; press the board's reset button"
+                ));
+            }
             Err(error)
         }
     }
@@ -248,18 +252,7 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
         .collect();
     backend.write(&segments, progress).await?;
     if options.verify {
-        if let Err(error) = backend.verify(&segments, progress).await {
-            if let Error::VerificationFailed { offset, .. } = &error {
-                // The error carries the offset; the label is only known here.
-                if let Some(segment) = segments.iter().find(|segment| segment.offset == *offset) {
-                    progress.message(&format!(
-                        "the image \"{}\" at 0x{offset:x} does not read back as written",
-                        segment.label
-                    ));
-                }
-            }
-            return Err(error);
-        }
+        backend.verify(&segments, progress).await?;
     }
     Ok(FlashReport {
         board: board.identifier.clone(),

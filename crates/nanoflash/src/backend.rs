@@ -128,8 +128,9 @@ pub trait Backend {
 /// How every backend connects.
 #[derive(Debug, Clone, Default)]
 pub struct BackendOptions {
-    /// The baud rate to switch to after connecting; `None` lets the backend choose (460800
-    /// through an Espressif UART bridge).
+    /// The baud rate to switch to after connecting; `None` lets the backend choose. The
+    /// Espressif backend then uses 460800 through a USB-to-UART bridge, and 115200 on
+    /// USB-Serial-JTAG and the ESP32-C2, which keep 115200 whatever is requested.
     pub baud_rate: Option<u32>,
 }
 

@@ -619,6 +619,7 @@ fn md5_mismatch_is_a_verification_failure() {
     assert_eq!(
         error,
         Error::VerificationFailed {
+            label: "bootloader".into(),
             offset: 0,
             size: 0x1000,
             expected: expected.into(),
@@ -630,6 +631,7 @@ fn md5_mismatch_is_a_verification_failure() {
     assert!(message.contains(expected), "{message}");
     assert!(message.contains(&actual), "{message}");
     assert!(message.contains("0x0"), "{message}");
+    assert!(message.contains("\"bootloader\""), "{message}");
 }
 
 #[test]
