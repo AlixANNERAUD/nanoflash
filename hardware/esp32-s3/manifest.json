@@ -1,0 +1,18 @@
+{
+  "board": [
+    {
+      "identifier": "esp32-s3-devkitc-1",
+      "name": "ESP32-S3-DevKitC-1",
+      "protocol": "espressif",
+      "chip": "esp32-s3",
+      "layout": "layout.toml",
+      "reset": "espressif-usb-serial-jtag",
+      "application-devices": [{ "vendor": "0x303a", "product": "0x1001" }],
+      "bootloader-devices": [{ "vendor": "0x303a", "product": "0x1001" }],
+      "image": [
+        { "partition": "bootloader", "path": "firmware/bootloader.bin" },
+        { "partition": "application", "path": "firmware/hello_world.bin" }
+      ]
+    }
+  ]
+}

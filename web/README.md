@@ -90,8 +90,28 @@ needs it fails at once with kind `module-broken` (class `device`). Reload the pa
 
 ## Component
 
-`nanoflash/button` registers a `<nanoflash-button>` element that wraps this API. Importing
-`nanoflash` does not register it.
+`nanoflash/button` registers a `<nanoflash-button>` element that wraps this API (no dependency).
+Importing `nanoflash` does not register it.
+
+```html
+<script type="module">import "nanoflash/button";</script>
+<nanoflash-button manifest="firmware/manifest.json" label="Install"></nanoflash-button>
+```
+
+The manifest is ours or an esp-web-tools one, in JSON. Attributes: `manifest`, `label` (default
+`Install`) and `erase-all` (erase the whole flash first; without it, the element offers a check
+box when the manifest asks for it). The element asks for the port inside the click, shows the
+progress, the result and the errors (a broken module asks to reload the page), and in a browser
+without Web Serial it says so and points to the `nanoflash` command line. When the board comes back
+in its bootloader under another USB identity, it shows a second button, "Select the board in
+bootloader mode", which asks for that port.
+
+`data-state` on the element is one of `unsupported`, `loading`, `ready`, `connecting`, `erasing`,
+`writing`, `verifying`, `resetting`, `done`, `error` and `bootloader-permission`. Events
+(bubbling, composed): `nanoflash-progress` (detail: the progress event), `nanoflash-done` (the
+report) and `nanoflash-error` (the error). Style it with `--nanoflash-button-background`,
+`--nanoflash-button-color`, `--nanoflash-button-radius`, `--nanoflash-progress-color`,
+`--nanoflash-font`, and the parts `button`, `erase`, `progress`, `message` and `bootloader-button`.
 
 ## Bundlers
 

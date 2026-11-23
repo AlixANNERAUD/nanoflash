@@ -19,3 +19,4 @@ export type {
   SerialPortFilter,
   SerialPortLike,
 } from "./types.js";
+export type { NanoflashButton } from "./button.js";

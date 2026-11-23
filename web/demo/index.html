@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>nanoflash demo</title>
+    <style>
+      body { font-family: system-ui, sans-serif; margin: 2rem auto; max-width: 40rem; padding: 0 1rem; }
+      nanoflash-button { --nanoflash-button-background: #1f6feb; }
+      nanoflash-button::part(message) { color: #444; }
+      pre { background: #f4f4f4; padding: 1rem; overflow: auto; min-height: 6rem; }
+    </style>
+  </head>
+  <body>
+    <h1>nanoflash</h1>
+    <p>Flash the board described by a manifest, over Web Serial (Chrome or Edge).</p>
+    <nanoflash-button id="button"></nanoflash-button>
+    <pre id="log"></pre>
+    <script type="module">
+      import "../dist/button.js";
+
+      const manifest = new URLSearchParams(location.search).get("manifest") ?? "../../hardware/esp32-s3/manifest.json";
+      const button = document.getElementById("button");
+      const log = document.getElementById("log");
+      for (const name of ["nanoflash-progress", "nanoflash-done", "nanoflash-error"]) {
+        button.addEventListener(name, (event) => {
+          const detail = event.detail instanceof Error ? event.detail.message : JSON.stringify(event.detail);
+          log.textContent += `${name} ${detail}\n`;
+        });
+      }
+      button.setAttribute("manifest", manifest);
+    </script>
+  </body>
+</html>

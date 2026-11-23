@@ -145,6 +145,17 @@ run = [
   "npm --prefix web test",
 ]
 
+[tasks.web-demo]
+description = "Build the web package and serve the demo page at http://localhost:8000/web/demo/ (open it in Chrome or Edge)"
+depends = ["web-wasm"]
+tools = { node = "22" }
+run = [
+  "npm --prefix web ci",
+  "npm --prefix web run build",
+  "echo 'Open http://localhost:8000/web/demo/?manifest=/hardware/esp32-s3/manifest.json'",
+  "python3 -m http.server 8000",
+]
+
 [tasks.web]
 description = "Build the WebAssembly modules, check their size and run the tests of the web package"
 depends = ["web-size", "web-test"]

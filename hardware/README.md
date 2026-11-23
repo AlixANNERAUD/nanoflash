@@ -73,6 +73,8 @@ the runner on the machine that has the boards, and build the firmware and write
 The browser package (`web/`) is checked by hand against a board:
 
 1. Build the firmware as above.
-2. `mise run web-demo`, then open the URL it prints in Chrome or Edge.
+2. `mise run web-demo` serves the repository root on port 8000 and prints
+   `http://localhost:8000/web/demo/?manifest=/hardware/esp32-s3/manifest.json` (the manifest
+   `hardware/esp32-s3/manifest.json` is the JSON twin of `manifest.toml`); open it in Chrome or Edge.
 3. Press Install, pick the `USB JTAG/serial debug unit` port, and wait for `done`.
 4. Confirm `Hello world!` with `nanoflash detect --port <port>` and a serial terminal.
