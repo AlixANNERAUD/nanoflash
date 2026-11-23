@@ -130,6 +130,12 @@ nanoglia flashes its Nano 33 BLE in `hardware/tools/nanoglia_hardware/board.py`:
 | `bossac -d --port=<name> -U -i -e -w -v <bin> -R` | `nanoflash flash --board <manifest> --port <port> --json` |
 | `bossac -U -R` (`leave_bootloader`) | `nanoflash detect --port <bootloader port> --protocol samba` |
 
+`-i` is bossac's device information print: the output of `flash` and `detect` already names the
+chip and the flash. `-e` sends `X` from the application start, which erases nothing on the Nano 33
+BLE's bootloader (the writes erase the pages, as the emulator shows); `nanoflash flash` does the
+same by default. `--erase-all` is the stricter equivalent: it clears the whole application area
+with `0xFF` pages (slower), for when stale bytes after the image must go.
+
 The touch, the wait for the bootloader and the reset happen inside `flash`; the port may be the
 runner's, the sketch's or the bootloader's. Exit code 2 replaces "No device found", and exit code
 3 a failed verification.
