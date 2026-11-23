@@ -20,6 +20,12 @@ use crate::transport::{
 /// How often the provider looks for a device that has not appeared yet.
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How long one write may wait for the device to accept data.
+const WRITE_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// How many writes in a row may make no progress before the port is given up on.
+const WRITE_STALLS: u32 = 5;
+
 /// A serial port of the host.
 pub struct NativeSerialPort {
     port: Box<dyn serialport::SerialPort>,
@@ -100,6 +106,14 @@ pub fn list_ports() -> Result<Vec<PortInformation>, TransportError> {
 impl NativeSerialPort {
     /// Opens the port at `path` with 8 data bits, no parity and one stop bit.
     pub fn open(path: &str, baud_rate: u32) -> Result<NativeSerialPort, TransportError> {
+        NativeSerialPort::open_with_identity(path, baud_rate, identity_by_path(path))
+    }
+
+    fn open_with_identity(
+        path: &str,
+        baud_rate: u32,
+        identity: Option<UsbIdentity>,
+    ) -> Result<NativeSerialPort, TransportError> {
         let timeout = Duration::from_millis(100);
         let port = serialport::new(path, baud_rate)
             .timeout(timeout)
@@ -108,9 +122,29 @@ impl NativeSerialPort {
         Ok(NativeSerialPort {
             port,
             path: path.to_string(),
-            identity: identity_by_path(path),
+            identity,
             timeout,
         })
+    }
+
+    #[cfg(all(test, unix))]
+    fn from_port(port: Box<dyn serialport::SerialPort>, path: &str) -> NativeSerialPort {
+        NativeSerialPort {
+            port,
+            path: path.to_string(),
+            identity: None,
+            timeout: Duration::from_millis(100),
+        }
+    }
+
+    fn set_timeout(&mut self, timeout: Duration) -> Result<(), TransportError> {
+        if timeout != self.timeout {
+            self.port
+                .set_timeout(timeout)
+                .map_err(|error| serial_error(&self.path, &error))?;
+            self.timeout = timeout;
+        }
+        Ok(())
     }
 
     /// The path the port was opened with.
@@ -121,14 +155,18 @@ impl NativeSerialPort {
 
 /// Looks the identity up by path, after resolving links such as `/dev/serial/by-id/...`.
 fn identity_by_path(path: &str) -> Option<UsbIdentity> {
-    let wanted = std::fs::canonicalize(path).ok()?;
     let ports = serialport::available_ports().ok()?;
+    let wanted = std::fs::canonicalize(path).ok();
     ports.into_iter().find_map(|port| {
         let SerialPortType::UsbPort(usb) = &port.port_type else {
             return None;
         };
-        let candidate = std::fs::canonicalize(&port.port_name).ok()?;
-        (candidate == wanted).then(|| identity_of(usb))
+        // Names such as `COM3` cannot be canonicalized: compare them as written.
+        let same = match (&wanted, std::fs::canonicalize(&port.port_name)) {
+            (Some(wanted), Ok(candidate)) => *wanted == candidate,
+            _ => port.port_name == path,
+        };
+        same.then(|| identity_of(usb))
     })
 }
 
@@ -138,23 +176,53 @@ impl SerialPort for NativeSerialPort {
         buffer: &mut [u8],
         timeout: Duration,
     ) -> Result<usize, TransportError> {
-        if timeout != self.timeout {
-            self.port
-                .set_timeout(timeout)
-                .map_err(|error| serial_error(&self.path, &error))?;
-            self.timeout = timeout;
-        }
-        match self.port.read(buffer) {
-            Ok(count) => Ok(count),
-            Err(error) if error.kind() == ErrorKind::TimedOut => Ok(0),
-            Err(error) => Err(io_error(&self.path, &error)),
+        self.set_timeout(timeout)?;
+        // An interrupted call is retried, bounded like a stalled write.
+        let mut interruptions = 0;
+        loop {
+            match self.port.read(buffer) {
+                Ok(count) => return Ok(count),
+                Err(error) if error.kind() == ErrorKind::TimedOut => return Ok(0),
+                Err(error) if error.kind() == ErrorKind::Interrupted => {
+                    interruptions += 1;
+                    if interruptions >= WRITE_STALLS {
+                        return Err(io_error(&self.path, &error));
+                    }
+                }
+                Err(error) => return Err(io_error(&self.path, &error)),
+            }
         }
     }
 
     async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
+        // The timeout of the last read must not cut a large write short.
+        self.set_timeout(WRITE_TIMEOUT)?;
+        let mut rest = data;
+        let mut stalls = 0;
+        while !rest.is_empty() {
+            match self.port.write(rest) {
+                Ok(0) => {
+                    return Err(TransportError::Io {
+                        message: std::format!("{}: the port accepted no data", self.path),
+                    });
+                }
+                Ok(count) => {
+                    rest = rest.get(count..).unwrap_or_default();
+                    stalls = 0;
+                }
+                Err(error)
+                    if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::Interrupted) =>
+                {
+                    stalls += 1;
+                    if stalls >= WRITE_STALLS {
+                        return Err(io_error(&self.path, &error));
+                    }
+                }
+                Err(error) => return Err(io_error(&self.path, &error)),
+            }
+        }
         self.port
-            .write_all(data)
-            .and_then(|()| self.port.flush())
+            .flush()
             .map_err(|error| io_error(&self.path, &error))
     }
 
@@ -196,7 +264,8 @@ impl PortProvider for NativePortProvider {
         baud_rate: u32,
         timeout: Duration,
     ) -> Result<NativeSerialPort, TransportError> {
-        let deadline = Instant::now() + timeout;
+        // A timeout too large for the clock means no deadline.
+        let deadline = Instant::now().checked_add(timeout);
         loop {
             // Listing and opening errors are retried: the device may still be appearing.
             if let Ok(ports) = list_ports() {
@@ -208,18 +277,28 @@ impl PortProvider for NativePortProvider {
                     if !selected {
                         continue;
                     }
-                    if let Ok(opened) = NativeSerialPort::open(&port.path, baud_rate) {
+                    if let Ok(opened) = NativeSerialPort::open_with_identity(
+                        &port.path,
+                        baud_rate,
+                        port.identity.clone(),
+                    ) {
                         return Ok(opened);
                     }
                 }
             }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(TransportError::NotFound {
-                    filter: filter.to_string(),
-                });
-            }
-            std::thread::sleep(POLL_INTERVAL.min(deadline - now));
+            let pause = match deadline {
+                Some(deadline) => {
+                    let now = Instant::now();
+                    if now >= deadline {
+                        return Err(TransportError::NotFound {
+                            filter: filter.to_string(),
+                        });
+                    }
+                    POLL_INTERVAL.min(deadline - now)
+                }
+                None => POLL_INTERVAL,
+            };
+            std::thread::sleep(pause);
         }
     }
 }
@@ -256,5 +335,41 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pseudo_terminal_pair_round_trips() {
+        let (master, slave) = serialport::TTYPort::pair().expect("a pty pair");
+        let mut a = NativeSerialPort::from_port(Box::new(master), "master");
+        let mut b = NativeSerialPort::from_port(Box::new(slave), "slave");
+        pollster::block_on(async {
+            a.write(&[1, 2, 3]).await.expect("write");
+            let mut buffer = [0u8; 8];
+            let mut received = 0;
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while received < 3 && Instant::now() < deadline {
+                received += b
+                    .read(&mut buffer[received..], Duration::from_millis(100))
+                    .await
+                    .expect("read");
+            }
+            assert_eq!(&buffer[..received], &[1, 2, 3]);
+            assert_eq!(b.read(&mut buffer, Duration::from_millis(50)).await, Ok(0));
+            // A large write after a short read timeout is not cut short.
+            let big = std::vec![7u8; 4096];
+            let writer = std::thread::spawn(move || pollster::block_on(a.write(&big)).map(|()| a));
+            let mut total = 0;
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while total < 4096 && Instant::now() < deadline {
+                total += b
+                    .read(&mut buffer, Duration::from_millis(50))
+                    .await
+                    .expect("read");
+            }
+            assert_eq!(total, 4096);
+            assert!(writer.join().expect("writer").is_ok());
+            assert_eq!(b.identity(), None);
+        });
     }
 }
