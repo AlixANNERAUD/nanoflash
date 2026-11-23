@@ -1,6 +1,7 @@
 use super::Chip;
 use super::command::*;
 use super::slip;
+use crate::error::rom_error;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::fmt::Write;
@@ -162,4 +163,59 @@ fn detects_chips() {
     assert_eq!(Chip::Esp32C6.spi_registers().miso_length, 0x6000_3028);
     assert_eq!(Chip::Esp32S3.watchdog().unwrap().write_protect, 0x6000_80B0);
     assert!(Chip::Esp32C6.watchdog().is_none());
+}
+
+#[test]
+fn plans_the_baud_rate() {
+    use super::{BaudRatePlan, plan_baud_rate};
+    // A UART bridge switches to 460800 baud unless told otherwise.
+    assert_eq!(
+        plan_baud_rate(None, Chip::Esp32, false),
+        BaudRatePlan::Change(460_800)
+    );
+    assert_eq!(
+        plan_baud_rate(Some(921_600), Chip::Esp32, false),
+        BaudRatePlan::Change(921_600)
+    );
+    assert_eq!(
+        plan_baud_rate(Some(115_200), Chip::Esp32, false),
+        BaudRatePlan::Keep
+    );
+    // USB-Serial-JTAG and the ESP32-C2 stay at 115200 baud, and say so when asked for more.
+    assert_eq!(
+        plan_baud_rate(None, Chip::Esp32S3, true),
+        BaudRatePlan::Keep
+    );
+    assert_eq!(
+        plan_baud_rate(None, Chip::Esp32C2, false),
+        BaudRatePlan::Keep
+    );
+    assert!(matches!(
+        plan_baud_rate(Some(460_800), Chip::Esp32C2, false),
+        BaudRatePlan::Refuse(460_800, reason) if reason.contains("ESP32-C2")
+    ));
+    assert!(matches!(
+        plan_baud_rate(Some(460_800), Chip::Esp32S3, true),
+        BaudRatePlan::Refuse(460_800, reason) if reason.contains("USB-Serial-JTAG")
+    ));
+}
+
+#[test]
+fn reads_the_boot_mode_from_the_boot_log() {
+    use super::wrong_boot_mode;
+    assert_eq!(
+        wrong_boot_mode(b"\x00rst:0x1 (POWERON),boot:0x8 (SPI_FAST_FLASH_BOOT)\r\n").as_deref(),
+        Some("0x8")
+    );
+    assert_eq!(
+        wrong_boot_mode(b"boot:0x13 (SPI_FAST_FLASH_BOOT)").as_deref(),
+        Some("0x13")
+    );
+    assert_eq!(
+        wrong_boot_mode(b"boot:0x3 (DOWNLOAD_BOOT)\r\nwaiting for download\r\n"),
+        None
+    );
+    assert_eq!(wrong_boot_mode(b"boot:0x"), None);
+    assert_eq!(wrong_boot_mode(b"boot:0xzz"), None);
+    assert_eq!(wrong_boot_mode(b""), None);
 }

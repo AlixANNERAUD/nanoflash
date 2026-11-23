@@ -9,6 +9,10 @@
 
 extern crate alloc;
 
+#[cfg(feature = "flash")]
+pub mod backend;
+#[cfg(feature = "flash")]
+pub mod error;
 #[cfg(feature = "espressif")]
 pub mod espressif;
 pub mod layout;
@@ -25,6 +29,9 @@ pub mod table;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod transport;
+
+#[cfg(feature = "flash")]
+pub use error::{Error, ErrorClass};
 
 #[cfg(feature = "build")]
 pub mod build;

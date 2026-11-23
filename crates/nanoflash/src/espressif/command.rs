@@ -70,6 +70,8 @@ pub(crate) fn words(values: &[u32]) -> Vec<u8> {
 
 /// The payload of `FLASH_BEGIN` and `FLASH_DEFL_BEGIN`; the fifth word is the ROM loader's
 /// encryption flag, absent on the ESP32.
+// Writing and verifying, which come with the `Backend` implementation, use it.
+#[allow(dead_code)]
 pub(crate) fn begin_data(
     size: u32,
     blocks: u32,
@@ -85,6 +87,8 @@ pub(crate) fn begin_data(
 }
 
 /// The payload of a data block and its checksum (XOR of the data seeded with `0xEF`).
+// Writing and verifying, which come with the `Backend` implementation, use it.
+#[allow(dead_code)]
 pub(crate) fn block(data: &[u8], sequence: u32) -> (Vec<u8>, u32) {
     let length = u32::try_from(data.len()).unwrap_or(u32::MAX);
     let mut payload = words(&[length, sequence, 0, 0]);
@@ -129,30 +133,9 @@ pub(crate) fn parse_response(frame: &[u8]) -> Option<Response> {
     })
 }
 
-/// The meaning of a ROM loader error code.
-pub(crate) fn rom_error(code: u8) -> &'static str {
-    match code {
-        0x05 => "the message is malformed",
-        0x06 => "the command failed",
-        0x07 => "bad checksum",
-        0x08 => "flash write failed (read-back mismatch)",
-        0x09 => "flash read failed",
-        0x0A => "bad flash read length",
-        0x0B => "decompression failed",
-        0x0C => "decompressed data has a bad Adler-32 checksum",
-        0x0D => "bad decompression parameter",
-        0x0E => "bad RAM binary size",
-        0x0F => "bad RAM binary address",
-        0x64 => "invalid parameter",
-        0x65 => "invalid format",
-        0x66 => "description too long",
-        0x67 => "bad encoding description",
-        0x69 => "insufficient storage",
-        _ => "unknown error",
-    }
-}
-
 /// Parses the 32 hexadecimal digits of an `SPI_FLASH_MD5` answer.
+// Writing and verifying, which come with the `Backend` implementation, use it.
+#[allow(dead_code)]
 pub(crate) fn parse_md5(data: &[u8]) -> Option<[u8; 16]> {
     if data.len() != 32 {
         return None;

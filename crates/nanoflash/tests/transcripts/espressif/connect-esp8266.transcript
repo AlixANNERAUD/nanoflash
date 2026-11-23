@@ -1,0 +1,15 @@
+# An ESP8266 through a UART bridge: it ignores GET_SECURITY_INFO and its magic value names it
+! signals dtr=0 rts=0
+! signals dtr=1 rts=1
+! signals dtr=0 rts=1
+! sleep 100
+! signals dtr=1 rts=0
+! sleep 50
+! signals dtr=0 rts=0
+> c0 00 08 24 00 00 00 00 00 07 07 12 20 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 55 c0
+< c0 01 08 04 00 00 00 00 00 00 00 00 00 c0
+! timeout
+> c0 00 14 00 00 00 00 00 00 c0
+! timeout
+> c0 00 0a 04 00 00 00 00 00 00 10 00 40 c0
+< c0 01 0a 04 00 01 c1 f0 ff 00 00 00 00 c0

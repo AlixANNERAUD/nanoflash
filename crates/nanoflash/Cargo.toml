@@ -21,8 +21,10 @@ json = ["dep:serde_json"]
 table-espressif = ["dep:md-5"]
 table-mbr = []
 table-linker = []
-# The Espressif ROM loader protocol and chip table.
-espressif = ["table-espressif", "dep:miniz_oxide"]
+# The backend interface, its errors and progress events, shared by every protocol.
+flash = ["toml", "table-espressif", "dep:sha2"]
+# The Espressif ROM loader backend.
+espressif = ["table-espressif", "flash", "dep:miniz_oxide"]
 # Replay and record serial sessions from transcripts.
 testing = []
 # The serial transport of the host, over the `serialport` crate (needs the standard library).
@@ -34,6 +36,7 @@ build = ["toml", "table-linker"]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 md-5 = { version = "0.11", optional = true, default-features = false }
 miniz_oxide = { version = "0.8", optional = true, default-features = false, features = ["with-alloc"] }
+sha2 = { version = "0.10", optional = true, default-features = false }
 serialport = { version = "4.10", optional = true, default-features = false }
 serde_json = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde"] }
@@ -51,6 +54,10 @@ serde_json = "1"
 [[test]]
 name = "external_parsers"
 required-features = ["toml", "table-espressif", "table-mbr"]
+
+[[test]]
+name = "espressif"
+required-features = ["espressif", "testing"]
 
 [[test]]
 name = "native_pty"

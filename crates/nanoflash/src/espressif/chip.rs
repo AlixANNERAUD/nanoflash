@@ -88,6 +88,8 @@ impl Chip {
     }
 
     /// Whether `FLASH_BEGIN` and `FLASH_DEFL_BEGIN` carry a fifth (encryption) word.
+    // Writing, which comes with the `Backend` implementation, uses it.
+    #[allow(dead_code)]
     pub(crate) const fn has_encryption_word(self) -> bool {
         !matches!(self, Chip::Esp32)
     }
