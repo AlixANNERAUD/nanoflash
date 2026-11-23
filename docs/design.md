@@ -255,6 +255,26 @@ pub const FLASH_SIZE: u32 = 0x800000;
 It prints `cargo:rerun-if-changed` for the layout and fails the build with the same errors as
 `layout check`. Optionally it writes `memory.x` through the `linker` writer.
 
+In a layout that detects the flash size, the constants and regions state what holds on every
+device, so both writers need the layout resolved for its minimum flash and refuse another
+(`TableError::NotAtMinimum`); `build` resolves the minimum itself. Only the values written decide
+between `u32` and `u64`.
+
+- **R7 Constants.** `FLASH_SIZE` becomes `FLASH_MINIMUM_SIZE`. A partition that grows with the
+  flash gets `MINIMUM_SIZE` instead of `SIZE`: its size on the minimum flash, the least it has on
+  any device, since shares never shrink when the flash grows. That is the size the author's
+  layout gives it on the minimum flash, so it is at least the declared minimum of the layout (the
+  `minimum_size` of the report is the declared minimum, `MINIMUM_SIZE` the size on the minimum
+  flash). A partition that moves with the flash gets no `OFFSET` and no `ADDRESS`, so a firmware
+  that uses them fails to compile instead of writing at the wrong place. A partition that does
+  both has `MINIMUM_SIZE` and no `OFFSET`: moving wins for placement, growing for size. Others
+  keep `SIZE`, so the constants of a fixed layout are unchanged.
+- **R8 Linker regions.** A partition that grows with the flash keeps a region of its size on the
+  minimum flash, preceded by a comment: every byte of that region belongs to the partition on
+  every device, and the linker never places anything past it. A partition that moves with the
+  flash gets no region, a comment says so: no fixed `ORIGIN` is right on every device, and a
+  missing region fails the link loudly. This holds for a partition that also grows.
+
 ### Transports
 
 ```rust

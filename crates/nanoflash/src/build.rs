@@ -153,6 +153,17 @@ mod tests {
     }
 
     #[test]
+    fn generate_into_writes_minimum_sizes() {
+        let directory = scratch("minimum");
+        let generated = generate_into(&fixture("growing.toml"), &directory).unwrap();
+        let constants = fs::read_to_string(&generated.constants).unwrap();
+        assert!(constants.contains("MINIMUM_SIZE"), "{constants}");
+        assert!(constants.contains("FLASH_MINIMUM_SIZE"), "{constants}");
+        assert!(!constants.contains("FLASH_SIZE: "), "{constants}");
+        fs::remove_dir_all(&directory).unwrap();
+    }
+
+    #[test]
     fn generate_reports_layout_errors() {
         let directory = scratch("overlap");
         let layout = directory.join("layout.toml");

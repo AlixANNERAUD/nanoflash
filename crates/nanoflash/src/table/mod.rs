@@ -144,6 +144,16 @@ pub enum TableError {
         /// The second partition.
         second: String,
     },
+    /// A writer that describes what a firmware can count on with any flash was given a layout
+    /// resolved for a larger flash.
+    NotAtMinimum {
+        /// The writer, such as `linker`.
+        writer: &'static str,
+        /// The flash size the layout was resolved for.
+        flash_size: u64,
+        /// The minimum flash size of the layout.
+        minimum_flash_size: u64,
+    },
 }
 
 impl fmt::Display for TableError {
@@ -254,6 +264,14 @@ impl fmt::Display for TableError {
             } => write!(
                 formatter,
                 "the {writer} writer cannot place partitions \"{first}\" and \"{second}\": both are the factory application"
+            ),
+            TableError::NotAtMinimum {
+                writer,
+                flash_size,
+                minimum_flash_size,
+            } => write!(
+                formatter,
+                "the {writer} writer describes what a firmware can count on with any flash, so it needs the layout resolved for its minimum flash of {minimum_flash_size:#x} bytes, not for {flash_size:#x}"
             ),
         }
     }

@@ -249,6 +249,7 @@ fn main() {
 
 ```rust
 // src/main.rs: FLASH_SIZE, and a module per partition with OFFSET, SIZE and ADDRESS
+// (see below for layouts that detect the flash size)
 include!(concat!(env!("OUT_DIR"), "/nanoflash_layout.rs"));
 ```
 
@@ -259,6 +260,22 @@ include it:
 ```
 INCLUDE nanoflash_memory.x
 ```
+
+With `size = "detect"`, the files describe what the firmware can count on with any flash, so they
+are written for the minimum flash of the layout (the build script does it, and the writers refuse
+a layout resolved for a larger flash):
+
+- `FLASH_MINIMUM_SIZE` replaces `FLASH_SIZE`.
+- A partition that grows with the flash (a `remaining` or `{ grow }` size in the last segment)
+  has `MINIMUM_SIZE` instead of `SIZE`: its size on the minimum flash, which is the least it has
+  on any device. It is at least the `minimum` its layout declares, and more when the minimum
+  flash leaves it room (the report of `layout check` shows the declared minimum, the constants
+  the size on the minimum flash). Its linker region has that length.
+- A partition that moves with the flash (it comes after a growing partition and has no fixed
+  offset) has no `OFFSET` and no `ADDRESS`, and no linker region, because no value is right on
+  every device. A firmware that uses them fails to compile or to link instead of writing at the
+  wrong place. A partition that does both has `MINIMUM_SIZE` only.
+- The other partitions keep `OFFSET`, `SIZE` and `ADDRESS`.
 
 ## Browser support
 
