@@ -11,6 +11,12 @@ extern crate alloc;
 
 pub mod layout;
 pub mod quantity;
+#[cfg(any(
+    feature = "table-espressif",
+    feature = "table-mbr",
+    feature = "table-linker"
+))]
+pub mod table;
 
 #[cfg(test)]
 extern crate std;
