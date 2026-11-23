@@ -1,4 +1,4 @@
-import { camelize } from "./convert.js";
+import { camelize, isRecord } from "./convert.js";
 
 /** Who is to act: fix the input, the device, or the firmware that did not verify. */
 export type ErrorClass = "input" | "device" | "verification";
@@ -35,10 +35,6 @@ export class NanoflashError extends Error {
     this.during = options.during;
     this.raw = options.raw;
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !(value instanceof Error);
 }
 
 /** Whether `error` is a trap of a WebAssembly module, which leaves the module unusable. */

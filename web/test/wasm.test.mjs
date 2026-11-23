@@ -241,7 +241,8 @@ test("refuses unknown options", async () => {
 });
 
 test("checks a layout with the core module", async () => {
-  const { checkLayout, writeLayout, parseManifest } = await loadModule("core");
+  const core = await loadModule("core");
+  const { checkLayout, writeLayout } = core;
   const text = repositoryFile(`${TESTS}/layouts/esp32-s3-8mb.toml`);
   const report = checkLayout(
     text,
@@ -256,13 +257,14 @@ test("checks a layout with the core module", async () => {
   assert.equal(table.length, 0xc00);
   const constants = new TextDecoder().decode(writeLayout(text, "constants", "esp32-s3-8mb.toml"));
   assert.match(constants, /pub mod application \{/);
-  const manifest = parseManifest(repositoryFile(`${TESTS}/boards/esp32-s3-usb.json`));
-  assert.equal(manifest.boards[0].identifier, "esp32-s3-devkitc");
-  assert.equal("flash" in (await loadModule("core")), false);
+  // The package reads manifests itself: no module exports a manifest reader.
+  assert.equal("parseManifest" in core, false);
+  assert.equal("parseManifest" in (await loadModule("espressif")), false);
+  assert.equal("flash" in core, false);
 });
 
 test("layout errors cross as objects with a kind, a message and a class", async () => {
-  const { checkLayout, writeLayout, parseManifest } = await loadModule("core");
+  const { checkLayout, writeLayout } = await loadModule("core");
   const text = repositoryFile(`${TESTS}/layouts/esp32-s3-8mb.toml`);
 
   const parse = (() => {
@@ -298,15 +300,4 @@ test("layout errors cross as objects with a kind, a message and a class", async 
   })();
   assert.equal(format.kind, "invalid-argument");
   assert.match(format.message, /uf2/);
-
-  const manifest = (() => {
-    try {
-      parseManifest("{}");
-    } catch (error) {
-      return error;
-    }
-  })();
-  assert.equal(manifest.kind, "manifest");
-  assert.equal(manifest.class, "input");
-  assert.equal(typeof manifest.message, "string");
 });

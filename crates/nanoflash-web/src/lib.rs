@@ -1,6 +1,6 @@
 //! The WebAssembly modules of the nanoflash web package.
 //!
-//! Every module exports `checkLayout`, `writeLayout` and `parseManifest`; with the feature of a
+//! Every module exports `checkLayout` and `writeLayout`; with the feature of a
 //! backend (`espressif`), it also exports `flash` and `detect`, which run that backend over Web
 //! Serial. Values cross as plain JavaScript objects in the serde form of the library (snake_case
 //! fields, kebab-case `kind`). A failure is thrown as the serde form of a [`nanoflash::Error`]
@@ -13,7 +13,6 @@
 use js_sys::JSON;
 use nanoflash::Error;
 use nanoflash::layout::{ImageSize, Layout, LayoutErrors, ResolvedLayout};
-use nanoflash::manifest::Manifest;
 use nanoflash::table::{espressif, linker, mbr};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -102,13 +101,6 @@ pub fn write_layout(text: &str, format: &str, name: &str) -> Result<Vec<u8>, JsV
         _ => linker::rust_constants(&resolved).map(String::into_bytes),
     }
     .map_err(|error| failure(&Error::Table { error }))
-}
-
-/// Reads a board manifest (JSON, ours or esp-web-tools; TOML is accepted too).
-#[wasm_bindgen(js_name = parseManifest)]
-pub fn parse_manifest(text: &str) -> Result<JsValue, JsValue> {
-    let manifest = Manifest::parse(text).map_err(|error| failure(&Error::Manifest { error }))?;
-    Ok(serialized(&manifest))
 }
 
 #[cfg(feature = "espressif")]

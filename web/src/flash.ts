@@ -1,5 +1,5 @@
 import { assertUsable, guard, loadBackend } from "./backend.js";
-import { camelize } from "./convert.js";
+import { camelize, isRecord } from "./convert.js";
 import { NanoflashError } from "./errors.js";
 import type {
   ChipInformation,
@@ -24,12 +24,6 @@ export interface Prepared {
   /** Whether to offer to erase the whole flash. */
   readonly promptErase: boolean;
   flash(options?: FlashOptions): Promise<FlashReport>;
-}
-
-type Json = Record<string, unknown>;
-
-function isJson(value: unknown): value is Json {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function manifestError(message: string): NanoflashError {
@@ -66,7 +60,7 @@ function parseDevices(board: string, field: string, value: unknown): SerialPortF
   if (value === undefined) return [];
   if (!Array.isArray(value)) throw manifestError(`"${field}" of the board "${board}" must be a list`);
   return value.map((device: unknown) => {
-    if (!isJson(device) || device["vendor"] === undefined) {
+    if (!isRecord(device) || device["vendor"] === undefined) {
       throw manifestError(`every entry of "${field}" of the board "${board}" needs a "vendor"`);
     }
     const where = `the "${field}" of the board "${board}"`;
@@ -108,7 +102,7 @@ interface Reading {
 }
 
 function read(value: unknown): Reading {
-  if (isJson(value) && Array.isArray(value["builds"])) {
+  if (isRecord(value) && Array.isArray(value["builds"])) {
     return {
       protocols: ["espressif"],
       filters: [],
@@ -117,7 +111,7 @@ function read(value: unknown): Reading {
       boards: [],
     };
   }
-  if (!isJson(value) || !Array.isArray(value["board"]) || value["board"].length === 0) {
+  if (!isRecord(value) || !Array.isArray(value["board"]) || value["board"].length === 0) {
     throw manifestError(
       'the manifest lists no board: add a "board" array (or "builds", for an esp-web-tools manifest)',
     );
@@ -128,7 +122,7 @@ function read(value: unknown): Reading {
   const bootloader: SerialPortFilter[] = [];
   let everyBoardHasDevices = true;
   for (const board of value["board"] as unknown[]) {
-    if (!isJson(board)) throw manifestError('every "board" of the manifest must be a table');
+    if (!isRecord(board)) throw manifestError('every "board" of the manifest must be a table');
     const identifier = board["identifier"];
     const protocol = board["protocol"];
     if (typeof identifier !== "string") throw manifestError('every board needs an "identifier"');
@@ -147,7 +141,7 @@ function read(value: unknown): Reading {
       devices: [...own, ...boot],
       suitsBridge:
         own.length + boot.length === 0 &&
-        (reset === undefined || reset === null || reset === "espressif-classic" || reset === "none" || isJson(reset)),
+        (reset === undefined || reset === null || reset === "espressif-classic" || reset === "none" || isRecord(reset)),
     });
     if (own.length + boot.length === 0) everyBoardHasDevices = false;
     application.push(...own);
@@ -247,7 +241,7 @@ function progressHandler(options: {
   onMessage?: ((text: string) => void) | undefined;
 }): (event: unknown) => void {
   return (event) => {
-    if (!isJson(event)) return;
+    if (!isRecord(event)) return;
     if (typeof event["stage"] === "string") options.onProgress?.(event as unknown as ProgressEvent);
     else if (typeof event["message"] === "string") options.onMessage?.(event["message"]);
   };

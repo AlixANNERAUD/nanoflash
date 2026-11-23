@@ -5,6 +5,10 @@ rust = { version = "stable", components = "rustfmt,clippy,llvm-tools", targets =
 mr-boxington = "latest"
 "aqua:taiki-e/cargo-llvm-cov" = "latest"
 
+[vars]
+# The WebAssembly modules of the web package: core, then one per backend feature of nanoflash-web.
+web_modules = "core espressif"
+
 [tasks.fmt]
 description = "Check formatting"
 run = "cargo fmt --all --check"
@@ -100,14 +104,18 @@ run = [
     exit 1
   fi
   ''',
-  "cargo build -p nanoflash-web --target wasm32-unknown-unknown --profile wasm --no-default-features",
-  "wasm-bindgen --target web --remove-name-section --remove-producers-section --out-dir web/src/wasm --out-name nanoflash_core target/wasm32-unknown-unknown/wasm/nanoflash_web.wasm",
-  # Without inlining functions that have one caller, which makes the gzip of the espressif
-  # module about 26 KB larger (254089 bytes against 227368 with wasm-opt 133).
-  "wasm-opt -Oz --one-caller-inline-max-function-size=0 web/src/wasm/nanoflash_core_bg.wasm -o web/src/wasm/nanoflash_core_bg.wasm",
-  "cargo build -p nanoflash-web --target wasm32-unknown-unknown --profile wasm --features espressif",
-  "wasm-bindgen --target web --remove-name-section --remove-producers-section --out-dir web/src/wasm --out-name nanoflash_espressif target/wasm32-unknown-unknown/wasm/nanoflash_web.wasm",
-  "wasm-opt -Oz --one-caller-inline-max-function-size=0 web/src/wasm/nanoflash_espressif_bg.wasm -o web/src/wasm/nanoflash_espressif_bg.wasm",
+  # The core module has no backend; each other module is named after the feature of its backend.
+  # Without inlining functions that have one caller, the gzip of the espressif module is about
+  # 26 KB larger (254089 bytes against 227368 with wasm-opt 133).
+  '''
+  set -e
+  for module in {{vars.web_modules}}; do
+    if [ "$module" = core ]; then features=""; else features="--features $module"; fi
+    cargo build -p nanoflash-web --target wasm32-unknown-unknown --profile wasm --no-default-features $features
+    wasm-bindgen --target web --remove-name-section --remove-producers-section --out-dir web/src/wasm --out-name "nanoflash_$module" target/wasm32-unknown-unknown/wasm/nanoflash_web.wasm
+    wasm-opt -Oz --one-caller-inline-max-function-size=0 "web/src/wasm/nanoflash_${module}_bg.wasm" -o "web/src/wasm/nanoflash_${module}_bg.wasm"
+  done
+  ''',
 ]
 
 [tasks.web-size]
@@ -115,7 +123,7 @@ description = "Check that every WebAssembly module of the web package is at most
 depends = ["web-wasm"]
 run = """
 status=0
-for module in core espressif; do
+for module in {{vars.web_modules}}; do
   file=web/src/wasm/nanoflash_${module}_bg.wasm
   if [ ! -s "$file" ]; then
     echo "$file is missing or empty: run mise run web-wasm" >&2
