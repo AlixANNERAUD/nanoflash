@@ -431,6 +431,34 @@ test("checks a layout", async () => {
   assert.equal(checked?.imageSize, 1024);
 });
 
+test("checks a layout for a flash size", async () => {
+  const text = repositoryFile(`${TESTS}/layouts/esp32-s3-detect.toml`);
+  const report = await checkLayout(text, [], "layout.toml", { flashSize: 8 * 1024 * 1024 });
+  assert.equal(report.flashSize, 8 * 1024 * 1024);
+  assert.equal(report.minimumFlashSize, 4 * 1024 * 1024);
+  const storage = report.partitions.find((partition) => partition.name === "storage");
+  assert.equal(storage?.growsWithFlash, true);
+  assert.equal(storage?.movesWithFlash, false);
+  assert.equal(storage?.minimumSize, 0);
+  assert.equal(storage?.growth, 0x4e0000);
+  const application = report.partitions.find((partition) => partition.name === "application");
+  assert.equal(application?.growsWithFlash, false);
+  assert.equal(application?.minimumSize, null);
+  const minimum = await checkLayout(text);
+  assert.equal(minimum.flashSize, 4 * 1024 * 1024);
+  const text8 = await checkLayout(text, [], "layout.toml", { flashSize: "8 MiB" });
+  assert.deepEqual(text8, report);
+  const fixed = repositoryFile(`${TESTS}/layouts/esp32-s3-8mb.toml`);
+  assert.deepEqual(
+    await writeLayout(text, "espressif", "layout.toml", { flashSize: "8 MiB" }),
+    await writeLayout(fixed, "espressif"),
+  );
+  const error = await rejection(checkLayout(text, [], "layout.toml", { flashSize: "8MB" }));
+  assert.ok(error instanceof NanoflashError);
+  assert.equal(error.kind, "invalid-argument");
+  assert.equal(error.errorClass, "input");
+});
+
 test("a layout error is a NanoflashError", async () => {
   const error = await rejection(checkLayout("this is not toml ="));
   assert.ok(error instanceof NanoflashError);

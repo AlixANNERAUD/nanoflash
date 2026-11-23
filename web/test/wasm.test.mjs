@@ -575,6 +575,83 @@ test("checks a layout with the core module", async () => {
   assert.equal("flash" in core, false);
 });
 
+test("checks a detect layout for a flash size", async () => {
+  const { checkLayout, writeLayout } = await loadModule("core");
+  const text = repositoryFile(`${TESTS}/layouts/esp32-s3-detect.toml`);
+  const name = "esp32-s3-detect.toml";
+  const grown = checkLayout(text, "[]", name, "8 MiB");
+  assert.equal(grown.flash_size, 8388608);
+  assert.equal(grown.minimum_flash_size, 4194304);
+  const storage = grown.partitions.find((partition) => partition.name === "storage");
+  assert.equal(storage.size, 0x4e0000);
+  assert.equal(storage.minimum_size, 0);
+  assert.equal(storage.growth, 0x4e0000);
+  assert.equal(storage.grows_with_flash, true);
+  assert.equal(storage.moves_with_flash, false);
+  const minimum = checkLayout(text, "[]", name, undefined);
+  assert.equal(minimum.flash_size, 4194304);
+  assert.equal(minimum.minimum_flash_size, 4194304);
+  // The headroom is shown for the flash size, but images are checked against the minimum.
+  const image = (size) => JSON.stringify([{ partition: "storage", size }]);
+  const withImage = checkLayout(text, image(0x10000), name, "8 MiB");
+  assert.equal(
+    withImage.partitions.find((partition) => partition.name === "storage").headroom,
+    0x4d0000,
+  );
+  assert.throws(() => checkLayout(text, image(0x100000), name, "8 MiB"), (error) => {
+    assert.equal(error.kind, "layout");
+    assert.match(error.message, /storage/);
+    return true;
+  });
+  const fixed = repositoryFile(`${TESTS}/layouts/esp32-s3-8mb.toml`);
+  assert.deepEqual(
+    writeLayout(text, "espressif", name, "8 MiB"),
+    writeLayout(fixed, "espressif", "esp32-s3-8mb.toml"),
+  );
+  for (const call of [
+    () => checkLayout(text, "[]", name, "8MB"),
+    () => writeLayout(text, "espressif", name, "8MB"),
+  ]) {
+    assert.throws(call, (error) => {
+      assert.equal(error.kind, "invalid-argument");
+      assert.equal(error.class, "input");
+      assert.match(error.message, /^the flash size "8MB" is invalid: invalid size or offset "8MB"/);
+      return true;
+    });
+  }
+  assert.throws(() => checkLayout(fixed, "[]", "esp32-s3-8mb.toml", "16 MiB"), (error) => {
+    assert.equal(error.kind, "layout");
+    return true;
+  });
+});
+
+test("flashes a detect board for the flash of the chip", async () => {
+  const { flash } = await loadModule("espressif");
+  const { port, finish } = mockPort(transcript("flash-esp32s3-usb"));
+  const messages = [];
+  const report = await flash(
+    repositoryFile(`${TESTS}/boards/esp32-s3-detect.json`),
+    port,
+    FLASH_OPTIONS,
+    (path) => boardFile(path),
+    (event) => {
+      if ("message" in event) messages.push(event.message);
+    },
+  );
+  assert.equal(report.board, "esp32-s3-devkitc-detect");
+  assert.equal(report.verified, true);
+  const [grew] = report.warnings;
+  assert.equal(grew.kind, "partitions-grew");
+  assert.equal(grew.flash_size, 8388608);
+  assert.equal(grew.minimum_flash_size, 4194304);
+  assert.equal(grew.protocol, "espressif");
+  assert.deepEqual(grew.partitions, [{ name: "storage", size_at_minimum: 0xe0000, size: 0x4e0000 }]);
+  assert.match(grew.message, /storage/);
+  assert.ok(messages.includes(grew.message), `${JSON.stringify(messages)}`);
+  finish();
+  assert.equal(port.isOpen, false);
+});
+
 test("layout errors cross as objects with a kind, a message and a class", async () => {
   const { checkLayout, writeLayout } = await loadModule("core");
   const text = repositoryFile(`${TESTS}/layouts/esp32-s3-8mb.toml`);

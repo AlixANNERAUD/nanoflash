@@ -71,7 +71,30 @@ export type FlashWarning =
    * The bootloader (SAMD21) erased from the lowest image, `from`, to the end of flash, `to`;
    * `partitions` are those of the layout in that range that no image is written to.
    */
-  | { kind: "erases-to-end"; from: number; to: number; partitions: string[]; message: string };
+  | { kind: "erases-to-end"; from: number; to: number; partitions: string[]; message: string }
+  /**
+   * The chip has `flashSize` bytes of flash, more than the `minimumFlashSize` of its layout
+   * (`size = "detect"`): `partitions` grew from their size on the minimum flash. On `espressif`,
+   * the bootloader image must be built for this flash size or with flash size detection.
+   */
+  | {
+      kind: "partitions-grew";
+      flashSize: number;
+      minimumFlashSize: number;
+      partitions: { name: string; sizeAtMinimum: number; size: number }[];
+      protocol: Protocol;
+      message: string;
+    }
+  /** As `partitions-grew`: `partitions` start at another offset than on the minimum flash. */
+  | {
+      kind: "partitions-moved";
+      flashSize: number;
+      minimumFlashSize: number;
+      partitions: { name: string; offsetAtMinimum: number; offset: number }[];
+      message: string;
+    }
+  /** The chip did not tell its flash size: the layout stays resolved for its minimum. */
+  | { kind: "flash-size-not-detected"; minimumFlashSize: number; message: string };
 
 /** What `flash` did. */
 export interface FlashReport {
@@ -89,6 +112,17 @@ export interface PartitionReport {
   offset: number;
   end: number;
   size: number;
+  /**
+   * The minimum size the layout declares, for a partition that grows with the flash (`0` for
+   * `remaining`); its size on the minimum flash may be larger.
+   */
+  minimumSize: number | null;
+  /** The bytes above `minimumSize`, for a partition that grows with the flash. */
+  growth: number | null;
+  /** Whether its size depends on the flash of the chip (a layout with `size = "detect"`). */
+  growsWithFlash: boolean;
+  /** Whether its offset depends on the flash of the chip. */
+  movesWithFlash: boolean;
   imageSize: number | null;
   headroom: number | null;
   headroomPercent: number | null;
@@ -97,8 +131,16 @@ export interface PartitionReport {
 /** The space used and left in every partition of a layout. */
 export interface LayoutReport {
   flashSize: number;
+  /** The minimum flash size of a layout with `size = "detect"`, else `null`. */
+  minimumFlashSize: number | null;
   unallocated: number;
   partitions: PartitionReport[];
+}
+
+/** How `checkLayout` and `writeLayout` resolve a layout. */
+export interface LayoutOptions {
+  /** The flash size to resolve a layout with size = "detect" for, such as 16777216 or "16 MiB"; its minimum by default. */
+  flashSize?: number | string;
 }
 
 /** What `writeLayout` writes. */

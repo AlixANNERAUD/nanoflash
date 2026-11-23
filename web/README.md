@@ -54,6 +54,21 @@ which asks for the port before its first `await`.
 `FlashOptions` are `port`, `boardIdentifier`, `eraseAll`, `verify` (default `true`), `baudRate`,
 `onProgress` and `onMessage`. Paths in the manifest are resolved against the manifest URL.
 
+`FlashReport` has `board`, `chip`, `images`, `verified` and `warnings`, each with a `kind` and the
+`message` to show, which `onMessage` also receives for the three about the flash size. A layout
+with `size = "detect"` is resolved again for the flash the chip reports, before anything is
+erased:
+
+- `partitions-grew`: the chip has `flashSize` bytes, more than `minimumFlashSize`; `partitions`
+  lists each partition that grew, with `sizeAtMinimum` and `size`. With `protocol` `espressif`,
+  the bootloader image must be built for this flash size or with flash size detection.
+- `partitions-moved`: likewise, with `offsetAtMinimum` and `offset` for each partition that moved.
+- `flash-size-not-detected`: the chip did not tell its flash size (secure download mode, unknown
+  flash chip), so the layout stays resolved for its `minimumFlashSize`.
+
+The other kinds are `partition-table-differs`, `partition-table-not-checked`,
+`not-verified-in-secure-download-mode` and `erases-to-end`.
+
 A manifest may mix protocols. Then the USB identity of the chosen port, matched against the
 `application-devices` and `bootloader-devices` of each board, picks the boards and so the module
 to load (with none listed, the boards a serial bridge suits); a port that suits no board fails
@@ -113,6 +128,26 @@ import { checkLayout, writeLayout } from "nanoflash";
 const text = await (await fetch("/layouts/esp32-s3-8mb.toml")).text();
 const report = await checkLayout(text, [{ partition: "application", size: 1_048_576 }]);
 const table: Uint8Array = await writeLayout(text, "espressif"); // or "mbr", "linker", "constants"
+```
+
+`LayoutReport` has `flashSize`, `minimumFlashSize` (for a layout with `size = "detect"`, else
+`null`), `unallocated` and `partitions`. Each `PartitionReport` has `name`, `role`, `offset`,
+`end`, `size`, `imageSize`, `headroom`, `headroomPercent`, and for a `detect` layout
+`growsWithFlash` and `movesWithFlash` (its size or offset depends on the chip), `minimumSize` (the
+minimum the layout declares, `0` for `remaining`) and `growth` (the bytes above it).
+
+`LayoutOptions` is the last argument of both functions. `flashSize`, a number of bytes or a text
+such as `"16 MiB"`, resolves a layout with `size = "detect"` for that flash instead of its
+minimum; on a layout with a fixed size it is a `layout` error, and a size that does not parse is
+an `invalid-argument` error. `checkLayout` still checks the images against the partitions on the
+minimum flash, the sizes `flash` enforces before it knows the chip; `flashSize` only changes the
+offsets, sizes and headroom shown. The linker regions and Rust constants describe what a firmware
+can count on with any flash: for a size above the minimum, `writeLayout` fails with a `table`
+error.
+
+```ts
+const report = await checkLayout(text, [], "layout.toml", { flashSize: "16 MiB" });
+const table = await writeLayout(text, "espressif", "layout.toml", { flashSize: 16_777_216 });
 ```
 
 ## Errors

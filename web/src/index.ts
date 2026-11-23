@@ -12,6 +12,7 @@ export type {
   FlashReport,
   FlashWarning,
   LayoutFormat,
+  LayoutOptions,
   LayoutReport,
   ModuleName,
   PartitionReport,

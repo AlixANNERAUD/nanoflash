@@ -12,7 +12,8 @@
 
 use js_sys::JSON;
 use nanoflash::Error;
-use nanoflash::layout::{ImageSize, Layout, LayoutErrors, ResolvedLayout};
+use nanoflash::layout::{ImageSize, Layout, LayoutErrors};
+use nanoflash::quantity;
 use nanoflash::table::{espressif, linker, mbr};
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -54,46 +55,81 @@ fn invalid_argument(message: String) -> JsValue {
     to_js(&Value::Object(fields))
 }
 
-/// Reads and resolves the layout file `text`, named `name` in messages.
-fn resolve(text: &str, name: &str) -> Result<ResolvedLayout, JsValue> {
-    let layout = Layout::from_toml(text).map_err(|error| {
+/// The flash size `text` (`"16777216"`, `"16 MiB"`), when given.
+fn flash_size(text: Option<String>) -> Result<Option<u64>, JsValue> {
+    text.map(|text| {
+        quantity::parse(&text).map_err(|error| {
+            invalid_argument(format!("the flash size \"{text}\" is invalid: {error}"))
+        })
+    })
+    .transpose()
+}
+
+/// Reads the layout file `text`, named `name` in messages.
+fn read(text: &str, name: &str) -> Result<Layout, JsValue> {
+    Layout::from_toml(text).map_err(|error| {
         failure(&Error::LayoutFile {
             path: name.into(),
             message: error.message,
         })
-    })?;
-    layout
-        .resolve()
-        .map_err(|LayoutErrors(errors)| failure(&Error::Layout { errors }))
+    })
+}
+
+/// A layout error as the JavaScript value thrown.
+fn layout_failure(LayoutErrors(errors): LayoutErrors) -> JsValue {
+    failure(&Error::Layout { errors })
 }
 
 /// Checks the layout file `text` (TOML), named `name` in messages, with the sizes of the images
 /// in `images` (JSON `[{ "partition": "application", "size": 1024 }]`); returns the report of
-/// every partition.
+/// every partition. `flash_size` resolves a layout with `size = "detect"` for that flash; the
+/// images are still checked against its minimum, the size `flash` enforces.
 #[wasm_bindgen(js_name = checkLayout)]
-pub fn check_layout(text: &str, images: &str, name: &str) -> Result<JsValue, JsValue> {
-    let resolved = resolve(text, name)?;
+pub fn check_layout(
+    text: &str,
+    images: &str,
+    name: &str,
+    flash_size: Option<String>,
+) -> Result<JsValue, JsValue> {
+    let flash_size = self::flash_size(flash_size)?;
+    let layout = read(text, name)?;
     let images: Vec<ImageSize> = serde_json::from_str(images).map_err(|error| {
         invalid_argument(format!(
             "the image sizes are not a JSON array of {{\"partition\", \"size\"}}: {error}"
         ))
     })?;
-    let report = resolved
-        .report(&images)
-        .map_err(|LayoutErrors(errors)| failure(&Error::Layout { errors }))?;
-    Ok(serialized(&report))
+    let report = |size| {
+        layout
+            .resolve_for(size)
+            .and_then(|resolved| resolved.report(&images))
+            .map_err(layout_failure)
+    };
+    let mut checked = report(None)?;
+    if flash_size.is_some() {
+        checked = report(flash_size)?;
+    }
+    Ok(serialized(&checked))
 }
 
 /// Writes what `format` names for the layout file `text` (TOML), named `name` in messages: the
 /// `espressif` or `mbr` partition table, the `linker` memory regions or the Rust `constants`.
+/// `flash_size` resolves a layout with `size = "detect"` for that flash.
 #[wasm_bindgen(js_name = writeLayout)]
-pub fn write_layout(text: &str, format: &str, name: &str) -> Result<Vec<u8>, JsValue> {
+pub fn write_layout(
+    text: &str,
+    format: &str,
+    name: &str,
+    flash_size: Option<String>,
+) -> Result<Vec<u8>, JsValue> {
     if !matches!(format, "espressif" | "mbr" | "linker" | "constants") {
         return Err(invalid_argument(format!(
             "unknown layout output \"{format}\": expected espressif, mbr, linker or constants"
         )));
     }
-    let resolved = resolve(text, name)?;
+    let flash_size = self::flash_size(flash_size)?;
+    let resolved = read(text, name)?
+        .resolve_for(flash_size)
+        .map_err(layout_failure)?;
     match format {
         "espressif" => espressif::write(&resolved),
         "mbr" => mbr::write(&resolved).map(|table| table.to_vec()),
