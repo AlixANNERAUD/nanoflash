@@ -319,6 +319,8 @@ pub enum Error {
     },
     /// The size of the flash is needed and neither the layout nor the chip gave it.
     UnknownFlashSize,
+    /// A flash size was given for a board whose layout does not have `size = "detect"`.
+    FlashSizeNeedsDetectLayout,
     /// The flash of the chip is smaller than the layout.
     FlashTooSmall {
         /// The flash size of the layout.
@@ -500,6 +502,7 @@ impl Error {
             | Error::ProtocolRequired { .. }
             | Error::ProtocolNotEnabled { .. }
             | Error::UnknownFlashSize
+            | Error::FlashSizeNeedsDetectLayout
             | Error::FlashTooSmall { .. }
             | Error::UnknownBootloaderDevice { .. }
             | Error::BelowWritableFlash { .. }
@@ -848,6 +851,9 @@ impl fmt::Display for Error {
             ),
             Error::UnknownFlashSize => formatter.write_str(
                 "the size of the flash is unknown: add a layout to the board, or connect to a chip that reports it",
+            ),
+            Error::FlashSizeNeedsDetectLayout => formatter.write_str(
+                "a flash size needs a board with a layout that has size = \"detect\" and a minimum: this board has no layout, so drop the flash size or add such a layout",
             ),
             Error::FlashTooSmall { layout, detected } => write!(
                 formatter,

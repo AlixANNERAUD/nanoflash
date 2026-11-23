@@ -914,7 +914,7 @@ pub async fn image_build_for_flash<S: ImageSource>(
     let mut prepared = prepare(board, source, verifier).await?;
     if let Some(flash_size) = flash_size {
         if prepared.layout.is_none() {
-            return Err(Error::UnknownFlashSize);
+            return Err(Error::FlashSizeNeedsDetectLayout);
         }
         prepared = place_for_flash(prepared, board, flash_size)?.0;
     }
@@ -1578,6 +1578,18 @@ mod tests {
             ))
             .unwrap_err(),
             Error::UnknownFlashSize
+        );
+        assert_eq!(
+            block_on(image_build_for_flash(
+                &no_layout,
+                None,
+                &mut fixture_source(),
+                &mut (),
+                true,
+                Some(0x80_0000)
+            ))
+            .unwrap_err(),
+            Error::FlashSizeNeedsDetectLayout
         );
         let several = Manifest {
             boards: alloc::vec![manifest.boards[0].clone(), {
