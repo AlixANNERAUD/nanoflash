@@ -179,8 +179,8 @@ enum Port {
     Replay(ReplayPort),
 }
 
-/// Opens the ports of a replayed transcript.
-struct Provider(ReplayProvider);
+/// Opens the ports of a replayed transcript, keeping the baud rate and timeout of each open.
+struct Provider(ReplayProvider, Vec<(u32, Duration)>);
 
 impl SerialPort for Port {
     async fn read(
@@ -238,6 +238,7 @@ impl PortProvider for Provider {
         baud_rate: u32,
         timeout: Duration,
     ) -> Result<Port, TransportError> {
+        self.1.push((baud_rate, timeout));
         self.0
             .open(filter, baud_rate, timeout)
             .await
@@ -250,7 +251,7 @@ fn a_sketch_that_leaves_during_the_touch_is_reopened() {
     let text = transcript("connect-nano33ble-bootloader")
         .replace("! identity 2341:005a\n", "! reopen 2341:005a\n");
     let (_, provider) = replay(Transcript::parse(&text).unwrap());
-    let mut provider = Provider(provider);
+    let mut provider = Provider(provider, Vec::new());
     let result = {
         let mut backend = match SambaBackend::new(Port::Leaving, &mut provider, None, nano33ble()) {
             Ok(backend) => backend,
@@ -259,7 +260,26 @@ fn a_sketch_that_leaves_during_the_touch_is_reopened() {
         block_on(backend.connect(&mut ()))
     };
     assert_eq!(result.unwrap().usb, identity(0x2341, 0x005a));
+    // The bootloader's port is opened at 115200 baud, and may take 15 s to appear.
+    assert_eq!(provider.1, [(115_200, Duration::from_secs(15))]);
     provider.0.finish().unwrap();
+}
+
+#[test]
+fn a_vendor_only_filter_keeps_the_touch() {
+    // `{ vendor = 0x2341 }` also matches the sketch: only filters with a product tell a
+    // bootloader, and this one is still the device waited for after the touch.
+    let options = SambaOptions {
+        bootloader_devices: vec![DeviceFilter {
+            vendor: 0x2341,
+            product: None,
+            serial_number: None,
+        }],
+        baud_rate: None,
+    };
+    let connection = connect_text(&transcript("connect-nano33ble"), None, options);
+    assert_eq!(connection.result.unwrap().usb, identity(0x2341, 0x005a));
+    connection.provider.finish().unwrap();
 }
 
 #[test]
@@ -343,6 +363,20 @@ fn silent_port_gives_no_bootloader() {
         Error::NoBootloader { waited_for: None }
     );
     provider.finish().unwrap();
+}
+
+#[test]
+fn a_late_binary_mode_reply_is_no_version() {
+    // The `\n\r` of N# arrives after its 100 ms and is read as the answer to V#: an empty
+    // line, so the next attempt drains the version line and asks again.
+    let text = transcript("connect-nano33ble-bootloader").replace(
+        "> \"N#\"\n< \"\\n\\r\"\n> \"V#\"\n",
+        "> \"N#\"\n> \"V#\"\n< \"\\n\\r\"\n< \"Arduino Bootloader (SAM-BA extended) 2.0 [Arduino:IKXYZ]\\n\\r\"\n> \"N#\"\n< \"\\n\\r\"\n> \"V#\"\n",
+    );
+    assert_eq!(text.matches("> \"V#\"").count(), 2, "{text}");
+    let connection = connect_text(&text, None, nano33ble());
+    assert_eq!(connection.result.unwrap().chip, "nrf52840");
+    connection.provider.finish().unwrap();
 }
 
 #[test]

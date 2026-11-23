@@ -182,8 +182,8 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
     }
 
     /// Touches the sketch and opens the bootloader's port, unless the port is the bootloader's
-    /// already: `none` reset, no USB identity (an emulator), a listed bootloader identity, or an
-    /// Arduino product without bit 15.
+    /// already: `none` reset, no USB identity (an emulator), a listed bootloader identity with a
+    /// product (a vendor alone also matches the sketch), or an Arduino product without bit 15.
     async fn enter_bootloader(&mut self) -> Result<(), Error> {
         let identity = self.port()?.identity();
         let Some(identity) = identity else {
@@ -194,7 +194,7 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
                 .options
                 .bootloader_devices
                 .iter()
-                .any(|filter| filter.matches(&identity))
+                .any(|filter| filter.product.is_some() && filter.matches(&identity))
             || (identity.vendor == ARDUINO_VENDOR && identity.product & SKETCH_PRODUCT_BIT == 0);
         if in_bootloader {
             return Ok(());
@@ -202,8 +202,12 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
         let filter = bootloader_filter(&identity, &self.options.bootloader_devices)?;
         match self.touch().await {
             // The sketch already left for the bootloader.
-            Ok(()) | Err(TransportError::Disconnected) => {}
-            Err(error) => return Err(error.into()),
+            Ok(())
+            | Err(Error::Transport {
+                error: TransportError::Disconnected,
+                ..
+            }) => {}
+            Err(error) => return Err(error),
         }
         // The port must be closed before the bootloader's device can be opened.
         drop(self.port.take());
@@ -224,11 +228,19 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
     }
 
     /// Asks the sketch to start the bootloader: 1200 baud with DTR cleared, or the custom steps.
-    async fn touch(&mut self) -> Result<(), TransportError> {
+    async fn touch(&mut self) -> Result<(), Error> {
         let Some(port) = self.port.as_mut() else {
-            return Err(TransportError::Disconnected);
+            return Err(disconnected());
         };
         match &self.reset {
+            ResetSequence::Touch1200 => {
+                port.set_baud_rate(TOUCH_BAUD_RATE).await?;
+                port.set_signals(Signals {
+                    dtr: false,
+                    rts: false,
+                })
+                .await?;
+            }
             ResetSequence::Custom(steps) => {
                 for step in steps {
                     port.set_signals(Signals {
@@ -241,13 +253,16 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
                     }
                 }
             }
-            _ => {
-                port.set_baud_rate(TOUCH_BAUD_RATE).await?;
-                port.set_signals(Signals {
-                    dtr: false,
-                    rts: false,
-                })
-                .await?;
+            // The board sits in its bootloader already.
+            ResetSequence::None => {}
+            // Refused by `new`.
+            sequence @ (ResetSequence::Uf2Touch1200
+            | ResetSequence::EspressifClassic
+            | ResetSequence::EspressifUsbSerialJtag) => {
+                return Err(Error::UnsupportedReset {
+                    protocol: Protocol::Samba,
+                    reset: sequence.name().into(),
+                });
             }
         }
         Ok(())
@@ -294,7 +309,8 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
     }
 
     /// Switches to binary mode and reads the version line, three times at most; `None` when no
-    /// attempt got a line ending in `\n\r`.
+    /// attempt got a non-empty line ending in `\n\r`. An empty line is the late answer to `N#`:
+    /// the next attempt's drain takes the version line behind it.
     async fn version(&mut self) -> Result<Option<Vec<u8>>, Error> {
         for _ in 0..ATTEMPTS {
             self.drain().await?;
@@ -302,7 +318,7 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             self.read_line(QUIET_TIMEOUT, LINE_BUDGET).await?;
             self.port()?.write(command::VERSION).await?;
             let reply = self.read_line(COMMAND_TIMEOUT, LINE_BUDGET).await?;
-            if reply.ends_with(LINE_END) {
+            if reply.ends_with(LINE_END) && !command::line(&reply).is_empty() {
                 return Ok(Some(reply));
             }
         }
