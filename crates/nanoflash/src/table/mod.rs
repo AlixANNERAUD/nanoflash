@@ -1,7 +1,9 @@
-//! Writers of the partition table each family needs.
+//! Writers of the partition table each family needs, and of the linker script and constants.
 
 #[cfg(feature = "table-espressif")]
 pub mod espressif;
+#[cfg(feature = "table-linker")]
+pub mod linker;
 #[cfg(feature = "table-mbr")]
 pub mod mbr;
 

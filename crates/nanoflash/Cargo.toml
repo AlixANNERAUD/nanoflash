@@ -20,7 +20,7 @@ table-espressif = ["dep:md-5"]
 table-mbr = []
 table-linker = []
 # Constants and linker scripts for the `build.rs` of a firmware (needs the standard library).
-build = []
+build = ["toml", "table-linker"]
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }

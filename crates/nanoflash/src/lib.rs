@@ -18,5 +18,8 @@ pub mod quantity;
 ))]
 pub mod table;
 
-#[cfg(test)]
+#[cfg(feature = "build")]
+pub mod build;
+
+#[cfg(any(test, feature = "build"))]
 extern crate std;
