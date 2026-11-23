@@ -81,6 +81,15 @@ transcripts, and `hardware/README.md` describes the boards in the loop.
 - Never use em or en dashes in any text; use hyphens or commas.
 - Conventional commits; no co-author lines.
 - Features only add; never gate code on the absence of a feature. `default = []`.
+- Layouts with `size = "detect"`: fixed offsets ascend in file order (only the last segment
+  depends on the flash). Offline outputs (`layout check`, constants, linker regions, `build`,
+  `image build` without `--flash-size`) resolve at the minimum, and the constants and linker
+  writers refuse any other size (`NotAtMinimum`). Before connecting, inputs are checked at the
+  minimum (image sizes included). After `connect`, and before any check against the chip or any
+  erase, the layout is resolved again for the reported flash, partition-named images and erase
+  entries are placed again, the table is regenerated and every plan check runs again. Anything
+  tied to an offset (offset images and erases, Intel HEX, a manifest table image) never sits on
+  a partition that moves.
 - Every error message names the partitions and addresses involved; addresses print as `0x`
   hexadecimal.
 
