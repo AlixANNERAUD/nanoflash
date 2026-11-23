@@ -51,16 +51,53 @@ pub enum TableError {
         /// The partition.
         partition: String,
     },
-    /// An offset is not a multiple of what the table requires.
+    /// An offset or a size is not a multiple of what the table requires.
     Misaligned {
         /// The writer, such as `espressif`.
         writer: &'static str,
         /// The partition.
         partition: String,
-        /// Its offset.
-        offset: u64,
+        /// What is misaligned, `offset` or `size`.
+        what: &'static str,
+        /// Its value.
+        value: u64,
         /// The required alignment.
         required: u64,
+    },
+    /// An entry starts inside the first sector, which the table itself occupies.
+    CoversFirstSector {
+        /// The writer, such as `mbr`.
+        writer: &'static str,
+        /// The partition.
+        partition: String,
+        /// Its offset.
+        offset: u64,
+        /// The first offset an entry may use.
+        minimum: u64,
+    },
+    /// A partition has a size the table does not allow.
+    WrongSize {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
+        /// The partition.
+        partition: String,
+        /// Its size.
+        size: u64,
+        /// The size the table requires.
+        required: u64,
+        /// What the partition is, such as `otadata`.
+        what: &'static str,
+    },
+    /// Two partitions turn into the same identifier.
+    NameCollision {
+        /// The writer, such as `linker`.
+        writer: &'static str,
+        /// The first partition.
+        first: String,
+        /// The second partition.
+        second: String,
+        /// The identifier both turn into.
+        identifier: String,
     },
     /// An offset, size or number does not fit the field of the table.
     OutOfRange {
@@ -84,6 +121,8 @@ pub enum TableError {
         writer: &'static str,
         /// What is missing.
         role: &'static str,
+        /// The partition that needs it, when one does.
+        required_by: Option<String>,
     },
     /// The partition meant to hold the table is too small for it.
     TableDoesNotFit {
@@ -138,11 +177,40 @@ impl fmt::Display for TableError {
             TableError::Misaligned {
                 partition,
                 writer,
-                offset,
+                what,
+                value,
                 required,
             } => write!(
                 formatter,
-                "the {writer} writer cannot place partition \"{partition}\": offset {offset:#x} is not a multiple of {required}"
+                "the {writer} writer cannot place partition \"{partition}\": {what} {value:#x} is not a multiple of {required:#x}"
+            ),
+            TableError::CoversFirstSector {
+                writer,
+                partition,
+                offset,
+                minimum,
+            } => write!(
+                formatter,
+                "the {writer} writer cannot place partition \"{partition}\": its offset {offset:#x} is below {minimum:#x}, so it covers the first sector, which holds the table"
+            ),
+            TableError::WrongSize {
+                writer,
+                partition,
+                size,
+                required,
+                what,
+            } => write!(
+                formatter,
+                "the {writer} writer cannot place partition \"{partition}\": {what} must be exactly {required:#x} bytes but it is {size:#x}"
+            ),
+            TableError::NameCollision {
+                writer,
+                first,
+                second,
+                identifier,
+            } => write!(
+                formatter,
+                "the {writer} writer cannot place partitions \"{first}\" and \"{second}\": both become \"{identifier}\""
             ),
             TableError::OutOfRange { partition, writer } => write!(
                 formatter,
@@ -156,10 +224,20 @@ impl fmt::Display for TableError {
                 formatter,
                 "the {writer} writer holds at most {maximum} partitions but the layout has {count}"
             ),
-            TableError::MissingPartition { writer, role } => write!(
-                formatter,
-                "the {writer} writer needs a partition for {role}, and the layout has none"
-            ),
+            TableError::MissingPartition {
+                writer,
+                role,
+                required_by,
+            } => {
+                write!(
+                    formatter,
+                    "the {writer} writer needs a partition for {role}, and the layout has none"
+                )?;
+                if let Some(partition) = required_by {
+                    write!(formatter, " (required by partition \"{partition}\")")?;
+                }
+                Ok(())
+            }
             TableError::TableDoesNotFit {
                 partition,
                 writer,

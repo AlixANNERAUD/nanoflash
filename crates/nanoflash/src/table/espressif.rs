@@ -13,6 +13,8 @@ const WRITER: &str = "espressif";
 const MAXIMUM_ENTRIES: usize = 95;
 const LABEL_SIZE: usize = 16;
 const APP_ALIGNMENT: u64 = 0x10000;
+const SECTOR_ALIGNMENT: u64 = 0x1000;
+const OTA_DATA_SIZE: u64 = 0x2000;
 const APP: u8 = 0x00;
 const DATA: u8 = 0x01;
 const FACTORY: u8 = 0x00;
@@ -31,6 +33,7 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
         .ok_or(TableError::MissingPartition {
             writer: WRITER,
             role: "partition-table",
+            required_by: None,
         })?;
     if table.size < TABLE_SIZE as u64 {
         return Err(TableError::TableDoesNotFit {
@@ -67,15 +70,32 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
     for partition in partitions {
         let name = partition.definition.name.as_str();
         let (kind, subtype) = types(&partition.definition)?;
+        let misaligned = |what, value, required| TableError::Misaligned {
+            writer: WRITER,
+            partition: name.into(),
+            what,
+            value,
+            required,
+        };
         if kind == APP && partition.offset % APP_ALIGNMENT != 0 {
-            return Err(TableError::Misaligned {
-                writer: WRITER,
-                partition: name.into(),
-                offset: partition.offset,
-                required: APP_ALIGNMENT,
-            });
+            return Err(misaligned("offset", partition.offset, APP_ALIGNMENT));
+        }
+        if partition.offset % SECTOR_ALIGNMENT != 0 {
+            return Err(misaligned("offset", partition.offset, SECTOR_ALIGNMENT));
+        }
+        if kind == APP && partition.size % SECTOR_ALIGNMENT != 0 {
+            return Err(misaligned("size", partition.size, SECTOR_ALIGNMENT));
         }
         if kind == DATA && subtype == OTA_DATA {
+            if partition.size != OTA_DATA_SIZE {
+                return Err(TableError::WrongSize {
+                    writer: WRITER,
+                    partition: name.into(),
+                    size: partition.size,
+                    required: OTA_DATA_SIZE,
+                    what: "the otadata partition",
+                });
+            }
             has_otadata = true;
         }
         if matches!(partition.definition.role, Role::Update { .. }) && first_update.is_none() {
@@ -108,10 +128,13 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
         bytes.extend_from_slice(&label);
         bytes.extend_from_slice(&flags.to_le_bytes());
     }
-    if first_update.is_some() && !has_otadata {
+    if let Some(update) = first_update
+        && !has_otadata
+    {
         return Err(TableError::MissingPartition {
             writer: WRITER,
             role: "otadata (data/ota)",
+            required_by: Some(update.into()),
         });
     }
 
@@ -503,8 +526,15 @@ mod tests {
             write(&layout).unwrap_err(),
             TableError::MissingPartition {
                 writer: "espressif",
-                role: "otadata (data/ota)"
+                role: "otadata (data/ota)",
+                required_by: Some("ota-0".into())
             }
+        );
+        assert!(
+            write(&layout)
+                .unwrap_err()
+                .to_string()
+                .contains("required by partition \"ota-0\"")
         );
     }
 
@@ -534,10 +564,77 @@ mod tests {
             TableError::Misaligned {
                 writer: "espressif",
                 partition: "app".into(),
-                offset: 0x11000,
+                what: "offset",
+                value: 0x11000,
                 required: 0x10000
             }
         );
+    }
+
+    #[test]
+    fn app_size_must_be_a_multiple_of_4k() {
+        let layout = resolve(vec![
+            table_partition(),
+            partition("app", Role::Firmware, Some(0x10000), 0x101800),
+        ]);
+        let error = write(&layout).unwrap_err();
+        assert_eq!(
+            error,
+            TableError::Misaligned {
+                writer: "espressif",
+                partition: "app".into(),
+                what: "size",
+                value: 0x101800,
+                required: 0x1000
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("size 0x101800 is not a multiple of 0x1000"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn every_offset_must_be_a_multiple_of_4k() {
+        let mut blob = with_espressif(
+            partition("blob", Role::Custom, Some(0x113200), 0x200),
+            Some("data"),
+            Some("nvs"),
+        );
+        blob.alignment = Some(512);
+        let layout = resolve(vec![table_partition(), blob]);
+        assert_eq!(
+            write(&layout).unwrap_err(),
+            TableError::Misaligned {
+                writer: "espressif",
+                partition: "blob".into(),
+                what: "offset",
+                value: 0x113200,
+                required: 0x1000
+            }
+        );
+    }
+
+    #[test]
+    fn otadata_must_be_8k() {
+        let layout = resolve(vec![
+            table_partition(),
+            partition("otadata", Role::Custom, Some(0x9000), 0x1000).with_ota(),
+        ]);
+        let error = write(&layout).unwrap_err();
+        assert_eq!(
+            error,
+            TableError::WrongSize {
+                writer: "espressif",
+                partition: "otadata".into(),
+                size: 0x1000,
+                required: 0x2000,
+                what: "the otadata partition"
+            }
+        );
+        assert!(error.to_string().contains("0x2000"), "{error}");
     }
 
     #[test]
@@ -571,7 +668,8 @@ mod tests {
             write(&resolve(vec![app.clone()])).unwrap_err(),
             TableError::MissingPartition {
                 writer: "espressif",
-                role: "partition-table"
+                role: "partition-table",
+                required_by: None
             }
         );
         let small = partition("partition-table", Role::PartitionTable, Some(0x8000), 0x800);

@@ -46,17 +46,26 @@ pub fn write(layout: &ResolvedLayout) -> Result<[u8; TABLE_SIZE], TableError> {
         .zip(bytes[ENTRIES_START..].chunks_exact_mut(ENTRY_SIZE))
     {
         let name = partition.definition.name.as_str();
-        let misaligned = || TableError::Misaligned {
+        let misaligned = |what, value| TableError::Misaligned {
             partition: name.into(),
             writer: WRITER,
-            offset: partition.offset,
+            what,
+            value,
             required: SECTOR,
         };
-        if partition.offset < SECTOR
-            || partition.offset % SECTOR != 0
-            || partition.size % SECTOR != 0
-        {
-            return Err(misaligned());
+        if partition.offset % SECTOR != 0 {
+            return Err(misaligned("offset", partition.offset));
+        }
+        if partition.offset < SECTOR {
+            return Err(TableError::CoversFirstSector {
+                partition: name.into(),
+                writer: WRITER,
+                offset: partition.offset,
+                minimum: SECTOR,
+            });
+        }
+        if partition.size % SECTOR != 0 {
+            return Err(misaligned("size", partition.size));
         }
         let out_of_range = || TableError::OutOfRange {
             partition: name.into(),
@@ -265,11 +274,16 @@ mod tests {
             TableError::Misaligned {
                 partition: "blob".into(),
                 writer: "mbr",
-                offset: 0x100100,
+                what: "offset",
+                value: 0x100100,
                 required: 512
             }
         );
-        assert!(error.to_string().contains("0x100100"), "{error}");
+        let message = error.to_string();
+        assert!(
+            message.contains("offset 0x100100 is not a multiple of 0x200"),
+            "{message}"
+        );
     }
 
     #[test]
@@ -285,10 +299,22 @@ mod tests {
                 ),
             ],
         );
-        assert!(matches!(
-            write(&layout).unwrap_err(),
-            TableError::Misaligned { required: 512, .. }
-        ));
+        let error = write(&layout).unwrap_err();
+        assert_eq!(
+            error,
+            TableError::Misaligned {
+                partition: "blob".into(),
+                writer: "mbr",
+                what: "size",
+                value: 0x100100,
+                required: 512
+            }
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("size 0x100100 is not a multiple of 0x200"),
+            "{message}"
+        );
         let layout = resolve(
             256,
             vec![typed(
@@ -297,14 +323,20 @@ mod tests {
                 false,
             )],
         );
+        let error = write(&layout).unwrap_err();
         assert_eq!(
-            write(&layout).unwrap_err(),
-            TableError::Misaligned {
+            error,
+            TableError::CoversFirstSector {
                 partition: "early".into(),
                 writer: "mbr",
                 offset: 0,
-                required: 512
+                minimum: 512
             }
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("offset 0x0 is below 0x200") && message.contains("first sector"),
+            "{message}"
         );
     }
 
