@@ -92,7 +92,7 @@ description = "Everything to run before pushing"
 depends = ["fmt", "clippy", "test", "cross"]
 
 [tasks.test-qemu]
-description = "Flash Espressif's QEMU (ESP32 and ESP32-C3) in download mode and replay the traffic (x86-64 Linux, needs socat)"
+description = "Flash Espressif's QEMU (ESP32 and ESP32-C3) in download mode and replay the traffic (x86-64 or AArch64 Linux, needs libslirp)"
 run = [
   "hardware/qemu/run.sh esp32",
   "hardware/qemu/run.sh esp32c3",

@@ -6,14 +6,15 @@ Two checks run the flashing path against something other than a transcript: Espr
 ## QEMU
 
 `mise run test-qemu` runs `hardware/qemu/run.sh esp32` and `hardware/qemu/run.sh esp32c3` on an
-x86-64 Linux machine with `socat` installed. For each chip the script
+x86-64 or AArch64 Linux machine with libslirp (Debian: `libslirp0`). For each chip the script
 
 1. downloads Espressif's QEMU release pinned in `QEMU_RELEASE` (from
-   https://github.com/espressif/qemu/releases) into `target/qemu/`,
-2. starts it in UART download mode with its serial port on TCP port 5555 and exposes that as the
-   pseudo-terminal `target/qemu/serial` with `socat`,
+   https://github.com/espressif/qemu/releases) into `target/qemu/` (or `$QEMU_DIRECTORY`), and
+   refuses an archive without the SHA-256 digest pinned in the script,
+2. starts it in UART download mode with its serial port on a pseudo-terminal (`-serial pty`),
 3. flashes the manifest `hardware/qemu/<chip>.toml` (the fixture images, a 4 MiB layout, no reset)
-   and records the traffic,
+   and records the traffic: the ESP32 at 115200 baud, since the emulated ESP32 stops answering
+   after `CHANGE_BAUDRATE`, the ESP32-C3 at 460800 baud,
 4. stops QEMU, builds the expected image with `nanoflash image build --fill` and compares it with
    the emulated flash (`cmp`),
 5. replays the recording with `--replay`, which must succeed: the recorder and the replayer agree
@@ -23,8 +24,8 @@ The `qemu` job of `.github/workflows/ci.yml` runs this and is allowed to fail: i
 required check. If the emulated ROM cannot run a step (for example the flash identifier), record
 the step here; the backend then falls back as the design says.
 
-When Espressif publishes a new release, update `QEMU_RELEASE` and `QEMU_VERSION` in the script
-and check the flags against the `esp32` and `esp32c3` pages of
+When Espressif publishes a new release, update `QEMU_RELEASE`, `QEMU_VERSION` and the four
+digests (from the `checksum.sha256` asset of the release) in the script, and check the flags against the `esp32` and `esp32c3` pages of
 https://github.com/espressif/esp-toolchain-docs/tree/main/qemu (the strap modes `0x0f` and
 `0x02` select the UART download mode).
 
