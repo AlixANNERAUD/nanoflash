@@ -3,8 +3,8 @@
 //!
 //! Arduino, PlatformIO and `objcopy` write firmware as Intel HEX (`.hex`); the decoder turns it
 //! into the bytes from its lowest address to its highest, `0xFF` in the gaps, so every protocol
-//! writes it as it writes a binary image. It is `no_std` and the only memory it reserves for the
-//! image is checked first.
+//! writes it as it writes a binary image. It is `no_std`, and every allocation it makes is
+//! fallible: the image's after its span is checked, the records' as they are read.
 
 use alloc::format;
 use alloc::string::String;
@@ -88,6 +88,12 @@ fn ends_with_ignore_case(text: &str, suffix: &str) -> bool {
     text.len() >= suffix.len() && text[text.len() - suffix.len()..].eq_ignore_ascii_case(suffix)
 }
 
+/// The most bytes a record holds: its length, address, type and checksum, and 255 data bytes.
+const MAXIMUM_RECORD: usize = 5 + 255;
+
+/// The span of the addresses of a record from its base address: a record may not cross it.
+const SEGMENT: u64 = 0x1_0000;
+
 /// One data record: where its bytes are in the pool.
 struct Record {
     line: usize,
@@ -119,7 +125,21 @@ fn record_bytes(line: usize, text: &[u8], record: &mut Vec<u8>) -> Result<(), In
             "a record has an odd number of hexadecimal digits",
         ));
     }
+    if digits.len() / 2 > MAXIMUM_RECORD {
+        return Err(IntelHexError::invalid(
+            Some(line),
+            format!(
+                "a record has {} bytes, more than the {MAXIMUM_RECORD} of a record of 255 data bytes",
+                digits.len() / 2
+            ),
+        ));
+    }
     record.clear();
+    record
+        .try_reserve(digits.len() / 2)
+        .map_err(|_| IntelHexError::OutOfMemory {
+            size: MAXIMUM_RECORD as u64,
+        })?;
     for pair in digits.chunks_exact(2) {
         let [high, low] = pair else { continue };
         match (digit(*high), digit(*low)) {
@@ -160,10 +180,12 @@ fn record_bytes(line: usize, text: &[u8], record: &mut Vec<u8>) -> Result<(), In
 /// records (`00`) are placed at the base address plus their own; the end record (`01`) must be
 /// present and last; extended segment (`02`) and linear (`04`) addresses set the base; start
 /// addresses (`03`, `05`) are ignored; other types, records covering the same byte, a file
-/// without data, and records that do not wrap at 64 KiB, are errors.
+/// without data, and data records that cross the 64 KiB boundary above their base address
+/// (where the specification wraps them to the base), are errors.
 ///
 /// `maximum_span` bounds the number of bytes from the lowest to the highest address, both
-/// inclusive: the check is made before any allocation, and the allocation is fallible.
+/// inclusive: the check is made before the image is allocated. Every allocation is fallible:
+/// [`IntelHexError::OutOfMemory`] when one fails.
 pub fn decode_intel_hex(text: &[u8], maximum_span: u64) -> Result<IntelHexImage, IntelHexError> {
     let mut pool: Vec<u8> = Vec::new();
     let mut records: Vec<Record> = Vec::new();
@@ -198,7 +220,29 @@ pub fn decode_intel_hex(text: &[u8], maximum_span: u64) -> Result<IntelHexImage,
         };
         match scratch[3] {
             0x00 => {
+                if address + length as u64 > SEGMENT {
+                    return Err(IntelHexError::invalid(
+                        Some(line),
+                        format!(
+                            "the record of {length} bytes at 0x{address:04x} crosses the 64 KiB boundary at 0x{:x}, where the specification wraps it to 0x{base:x}: split it there and set the next base address with an extended address record",
+                            base + SEGMENT
+                        ),
+                    ));
+                }
                 if length > 0 {
+                    let out_of_memory = |size: usize| IntelHexError::OutOfMemory {
+                        size: u64::try_from(size).unwrap_or(u64::MAX),
+                    };
+                    records.try_reserve(1).map_err(|_| {
+                        out_of_memory(
+                            records
+                                .len()
+                                .saturating_add(1)
+                                .saturating_mul(core::mem::size_of::<Record>()),
+                        )
+                    })?;
+                    pool.try_reserve(length)
+                        .map_err(|_| out_of_memory(pool.len().saturating_add(length)))?;
                     records.push(Record {
                         line,
                         address: base + address,
@@ -237,7 +281,8 @@ pub fn decode_intel_hex(text: &[u8], maximum_span: u64) -> Result<IntelHexImage,
         return Err(IntelHexError::invalid(None, "there is no data record"));
     }
 
-    records.sort_by_key(|record| (record.address, record.line));
+    // In place: a stable sort would allocate. Lines are unique, so the order is the same.
+    records.sort_unstable_by_key(|record| (record.address, record.line));
     // The highest address so far, exclusive, and the line of the record that reaches it.
     let mut reach: Option<(u64, usize)> = None;
     for record in &records {
@@ -372,6 +417,42 @@ mod tests {
         let exact = ":0100000055AA\n:01001F0011CF\n:00000001FF\n";
         assert!(decode_intel_hex(exact.as_bytes(), 0x20).is_ok());
         assert!(decode_intel_hex(exact.as_bytes(), 0x1F).is_err());
+    }
+
+    #[test]
+    fn refuses_records_that_cross_64_kib() {
+        // Two bytes at 0xFFFF: the second would be at 0x10000, which the specification wraps to
+        // 0x0.
+        let crossing = ":02FFFF001122CD\n:00000001FF\n";
+        let error = decode_intel_hex(crossing.as_bytes(), 0x2_0000).unwrap_err();
+        assert_eq!(invalid_line(crossing), Some(1));
+        let text = error.to_string();
+        assert!(
+            text.contains("0xffff") && text.contains("0x10000"),
+            "{text}"
+        );
+        // Above an extended linear address, the boundary moves with it.
+        let linear = ":020000040001F9\n:02FFFF001122CD\n:00000001FF\n";
+        let text = decode_intel_hex(linear.as_bytes(), 0x2_0000)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            text.contains("0x20000") && text.contains("0x10000"),
+            "{text}"
+        );
+        // Ending exactly at the boundary is fine.
+        let last = ":01FFFF0011F0\n:00000001FF\n";
+        let image = decode_intel_hex(last.as_bytes(), 0x2_0000).unwrap();
+        assert_eq!((image.start, image.bytes), (0xFFFF, alloc::vec![0x11]));
+    }
+
+    #[test]
+    fn refuses_records_longer_than_255_data_bytes() {
+        let digits = "00".repeat(300);
+        let text = alloc::format!(":{digits}\n:00000001FF\n");
+        let error = decode_intel_hex(text.as_bytes(), 0x1000).unwrap_err();
+        assert_eq!(invalid_line(&text), Some(1));
+        assert!(error.to_string().contains("300 bytes"), "{error}");
     }
 
     #[test]
