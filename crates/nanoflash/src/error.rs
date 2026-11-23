@@ -318,8 +318,13 @@ pub enum Error {
         /// `2341:005a`; `None` when the port itself did not answer as a bootloader.
         waited_for: Option<String>,
         /// The reset sequence run before waiting, such as `touch-1200` or `custom`; `None` when
-        /// nothing was waited for.
+        /// nothing was waited for, or for STK500 when the backend pulsed DTR.
         reset: Option<&'static str>,
+        /// The protocol of the bootloader, which picks the hint.
+        protocol: Protocol,
+        /// The baud rates tried on the port, in order; empty for the protocols reached through
+        /// the 1200-baud touch, whose USB port ignores the baud rate.
+        rates: Vec<u32>,
     },
     /// A backend was asked to erase, write, verify or reset before a successful `connect`.
     NotConnected {
@@ -729,22 +734,61 @@ impl fmt::Display for Error {
                 formatter,
                 "the image \"{label}\" at 0x{offset:x} (0x{size:x} bytes) does not read back as written: the board computed the {checksum} {actual} instead of {expected}: flash again, and check the power supply and the flash size of the board if it fails again"
             ),
-            Error::NoBootloader { waited_for, reset } => match (waited_for, reset) {
-                (Some(filter), Some("touch-1200")) => write!(
-                    formatter,
-                    "no bootloader device matching {filter} appeared within 15 s after the 1200-baud touch: double-tap the reset button of the board (its LED pulses in the bootloader), then try again"
-                ),
-                (Some(filter), Some(reset)) => write!(
-                    formatter,
-                    "no bootloader device matching {filter} appeared within 15 s after the reset sequence \"{reset}\" of the board: check the reset sequence of the board in the manifest, or double-tap the reset button of the board (its LED pulses in the bootloader) and try again"
-                ),
-                (Some(filter), None) => write!(
-                    formatter,
-                    "no bootloader device matching {filter} appeared within 15 s after the reset: double-tap the reset button of the board (its LED pulses in the bootloader), then try again"
-                ),
-                (None, _) => formatter.write_str(
-                    "no SAM-BA bootloader answered on the port: double-tap the reset button of the board (its LED pulses in the bootloader), then try again with the port it shows",
-                ),
+            Error::NoBootloader {
+                waited_for,
+                reset,
+                protocol,
+                rates,
+            } => match protocol {
+                // The Espressif backend reports `NoSync` instead.
+                Protocol::Espressif | Protocol::Samba => match (waited_for, reset) {
+                    (Some(filter), Some("touch-1200")) => write!(
+                        formatter,
+                        "no bootloader device matching {filter} appeared within 15 s after the 1200-baud touch: double-tap the reset button of the board (its LED pulses in the bootloader), then try again"
+                    ),
+                    (Some(filter), Some(reset)) => write!(
+                        formatter,
+                        "no bootloader device matching {filter} appeared within 15 s after the reset sequence \"{reset}\" of the board: check the reset sequence of the board in the manifest, or double-tap the reset button of the board (its LED pulses in the bootloader) and try again"
+                    ),
+                    (Some(filter), None) => write!(
+                        formatter,
+                        "no bootloader device matching {filter} appeared within 15 s after the reset: double-tap the reset button of the board (its LED pulses in the bootloader), then try again"
+                    ),
+                    (None, _) => formatter.write_str(
+                        "no SAM-BA bootloader answered on the port: double-tap the reset button of the board (its LED pulses in the bootloader), then try again with the port it shows",
+                    ),
+                },
+                Protocol::Avr109 => match (waited_for, reset) {
+                    (Some(filter), Some("touch-1200")) => write!(
+                        formatter,
+                        "no bootloader device matching {filter} appeared within 15 s after the 1200-baud touch: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
+                    ),
+                    (Some(filter), Some(reset)) => write!(
+                        formatter,
+                        "no bootloader device matching {filter} appeared within 15 s after the reset sequence \"{reset}\" of the board: check the reset sequence of the board in the manifest, or press the reset button of the board once (its LED pulses for 8 s in the bootloader) and try again with the port it shows"
+                    ),
+                    (Some(filter), None) => write!(
+                        formatter,
+                        "no bootloader device matching {filter} appeared within 15 s after the reset: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
+                    ),
+                    (None, _) => formatter.write_str(
+                        "no AVR109 bootloader answered on the port: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows",
+                    ),
+                },
+                Protocol::Stk500v1 | Protocol::Stk500v2 => {
+                    write!(formatter, "no {protocol} bootloader answered on the port")?;
+                    let mut rates = rates.iter();
+                    if let Some(first) = rates.next() {
+                        write!(formatter, " at {first}")?;
+                        for rate in rates {
+                            write!(formatter, " and {rate}")?;
+                        }
+                        formatter.write_str(" baud")?;
+                    }
+                    formatter.write_str(
+                        ": check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)",
+                    )
+                }
             },
             Error::NotConnected { protocol } => write!(
                 formatter,
@@ -824,6 +868,8 @@ mod tests {
         let waited = Error::NoBootloader {
             waited_for: Some("2341:005a".into()),
             reset: Some("touch-1200"),
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         };
         assert_eq!(waited.class(), ErrorClass::Device);
         assert_eq!(
@@ -833,6 +879,8 @@ mod tests {
         let custom = Error::NoBootloader {
             waited_for: Some("2341:005a".into()),
             reset: Some("custom"),
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         };
         assert_eq!(
             custom.to_string(),
@@ -841,6 +889,8 @@ mod tests {
         let silent = Error::NoBootloader {
             waited_for: None,
             reset: None,
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         };
         assert_eq!(silent.class(), ErrorClass::Device);
         assert_eq!(
@@ -906,6 +956,62 @@ mod tests {
         assert_eq!(
             order.to_string(),
             "the image \"low\" at 0x2000 is written after an image above it, and the bootloader of the samd21g18a erases from 0x2000 to the end of flash before writing it, which would erase that image, so it was not written: write the images in order of offset"
+        );
+    }
+
+    #[test]
+    fn no_bootloader_names_the_protocol_hint() {
+        let caterina = Error::NoBootloader {
+            waited_for: Some("2341:0036".into()),
+            reset: Some("touch-1200"),
+            protocol: Protocol::Avr109,
+            rates: Vec::new(),
+        };
+        assert_eq!(caterina.class(), ErrorClass::Device);
+        assert_eq!(
+            caterina.to_string(),
+            "no bootloader device matching 2341:0036 appeared within 15 s after the 1200-baud touch: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
+        );
+        let custom = Error::NoBootloader {
+            waited_for: Some("2341:0036".into()),
+            reset: Some("custom"),
+            protocol: Protocol::Avr109,
+            rates: Vec::new(),
+        };
+        assert_eq!(
+            custom.to_string(),
+            "no bootloader device matching 2341:0036 appeared within 15 s after the reset sequence \"custom\" of the board: check the reset sequence of the board in the manifest, or press the reset button of the board once (its LED pulses for 8 s in the bootloader) and try again with the port it shows"
+        );
+        let silent = Error::NoBootloader {
+            waited_for: None,
+            reset: None,
+            protocol: Protocol::Avr109,
+            rates: Vec::new(),
+        };
+        assert_eq!(
+            silent.to_string(),
+            "no AVR109 bootloader answered on the port: press the reset button of the board once (its LED pulses for 8 s in the bootloader), then try again with the port it shows"
+        );
+        let optiboot = Error::NoBootloader {
+            waited_for: None,
+            reset: None,
+            protocol: Protocol::Stk500v1,
+            rates: alloc::vec![115_200, 57_600],
+        };
+        assert_eq!(optiboot.class(), ErrorClass::Device);
+        assert_eq!(
+            optiboot.to_string(),
+            "no stk500v1 bootloader answered on the port at 115200 and 57600 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
+        );
+        let wiring = Error::NoBootloader {
+            waited_for: None,
+            reset: Some("none"),
+            protocol: Protocol::Stk500v2,
+            rates: alloc::vec![115_200],
+        };
+        assert_eq!(
+            wiring.to_string(),
+            "no stk500v2 bootloader answered on the port at 115200 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
         );
     }
 

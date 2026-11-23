@@ -186,9 +186,15 @@ impl<'p, P: PortProvider> Backends<'p, P> {
                 };
                 SambaBackend::new(port, provider, reset, options).map(Backends::Samba)
             }
+            // No backend speaks the AVR protocols yet.
+            #[cfg(feature = "avr")]
+            protocol @ (Protocol::Stk500v1 | Protocol::Stk500v2 | Protocol::Avr109) => {
+                let _ = (port, provider, reset, options);
+                Err(Error::ProtocolNotEnabled { protocol })
+            }
             // With every backend compiled in, every protocol is matched above and this arm would
             // be unreachable.
-            #[cfg(not(all(feature = "espressif", feature = "samba")))]
+            #[cfg(not(all(feature = "espressif", feature = "samba", feature = "avr")))]
             protocol => {
                 let _ = (port, provider, reset, options);
                 Err(Error::ProtocolNotEnabled { protocol })

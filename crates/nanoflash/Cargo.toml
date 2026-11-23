@@ -27,6 +27,9 @@ flash = ["toml", "table-espressif", "dep:sha2"]
 espressif = ["table-espressif", "flash", "dep:miniz_oxide"]
 # The SAM-BA bootloader backend of the Arduino Nano 33 BLE and SAMD21 boards.
 samba = ["flash", "dep:crc"]
+# The AVR bootloaders of Arduino's boards: STK500v1 (Optiboot), STK500v2 (the Mega 2560) and
+# AVR109 (Caterina).
+avr = ["flash"]
 # Replay and record serial sessions from transcripts.
 testing = []
 # The serial transport of the host, over the `serialport` crate (needs the standard library).

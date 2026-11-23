@@ -5,6 +5,8 @@
 //! as requests. The timings follow espflash 4.7.0 and esptool-js, adapted to setting both lines
 //! at once.
 
+use alloc::string::ToString;
+
 use crate::error::Error;
 use crate::manifest::{Protocol, ResetSequence};
 use crate::transport::{Duration, SerialPort, Signals, TransportError};
@@ -32,7 +34,7 @@ const USB_SERIAL_JTAG_APPLICATION: [Step; 3] =
 pub(crate) fn unsupported(sequence: &ResetSequence) -> Error {
     Error::UnsupportedReset {
         protocol: Protocol::Espressif,
-        reset: sequence.name().into(),
+        reset: sequence.to_string(),
     }
 }
 

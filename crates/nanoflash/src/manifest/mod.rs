@@ -22,6 +22,16 @@ pub enum Protocol {
     Espressif,
     /// The SAM-BA monitor.
     Samba,
+    /// STK500v1 (Optiboot and the older Arduino bootloaders); `arduino` in a manifest also
+    /// names it, as Arduino's `boards.txt` does.
+    #[serde(alias = "arduino")]
+    Stk500v1,
+    /// STK500v2 (the Mega 2560's wiring bootloader); `wiring` in a manifest also names it, as
+    /// Arduino's `boards.txt` does.
+    #[serde(alias = "wiring")]
+    Stk500v2,
+    /// AVR109 (Caterina).
+    Avr109,
 }
 
 impl fmt::Display for Protocol {
@@ -29,6 +39,9 @@ impl fmt::Display for Protocol {
         formatter.write_str(match self {
             Protocol::Espressif => "espressif",
             Protocol::Samba => "samba",
+            Protocol::Stk500v1 => "stk500v1",
+            Protocol::Stk500v2 => "stk500v2",
+            Protocol::Avr109 => "avr109",
         })
     }
 }
@@ -55,7 +68,6 @@ pub enum ResetSequence {
 
 impl ResetSequence {
     /// The name of the sequence, as a manifest writes it.
-    #[cfg(any(feature = "espressif", feature = "samba"))]
     pub(crate) fn name(&self) -> &'static str {
         match self {
             ResetSequence::EspressifClassic => "espressif-classic",
@@ -65,6 +77,13 @@ impl ResetSequence {
             ResetSequence::None => "none",
             ResetSequence::Custom(_) => "custom",
         }
+    }
+}
+
+/// The name of the sequence, as a manifest writes it, such as `touch-1200` or `custom`.
+impl fmt::Display for ResetSequence {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.name())
     }
 }
 
@@ -557,7 +576,6 @@ mod tests {
     const JSON: &str = include_str!("../../tests/boards/esp32-s3-usb.json");
 
     #[test]
-    #[cfg(any(feature = "espressif", feature = "samba"))]
     fn reset_names_are_the_manifest_names() {
         for sequence in [
             ResetSequence::EspressifClassic,
@@ -574,6 +592,7 @@ mod tests {
                 other => panic!("{other:?}"),
             };
             assert_eq!(sequence.name(), written);
+            assert_eq!(sequence.to_string(), written);
         }
     }
 
@@ -854,5 +873,32 @@ sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
     fn protocol_names() {
         assert_eq!(Protocol::Espressif.to_string(), "espressif");
         assert_eq!(Protocol::Samba.to_string(), "samba");
+    }
+
+    #[test]
+    fn avr_protocol_names() {
+        for (protocol, name) in [
+            (Protocol::Stk500v1, "stk500v1"),
+            (Protocol::Stk500v2, "stk500v2"),
+            (Protocol::Avr109, "avr109"),
+        ] {
+            assert_eq!(protocol.to_string(), name);
+            assert_eq!(
+                serde_json::to_value(protocol).unwrap(),
+                serde_json::Value::String(name.into())
+            );
+            let parsed: Protocol = serde_json::from_value(name.into()).unwrap();
+            assert_eq!(parsed, protocol);
+        }
+        // The `upload.protocol` names of Arduino's `boards.txt`.
+        let arduino: Protocol = serde_json::from_value("arduino".into()).unwrap();
+        assert_eq!(arduino, Protocol::Stk500v1);
+        let wiring: Protocol = serde_json::from_value("wiring".into()).unwrap();
+        assert_eq!(wiring, Protocol::Stk500v2);
+        let manifest = Manifest::parse(
+            "[[board]]\nidentifier = \"uno\"\nprotocol = \"arduino\"\nchip = \"atmega328p\"\n",
+        )
+        .unwrap();
+        assert_eq!(manifest.boards[0].protocol, Protocol::Stk500v1);
     }
 }

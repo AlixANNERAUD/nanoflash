@@ -342,6 +342,8 @@ fn no_bootloader_device_after_the_touch() {
         Error::NoBootloader {
             waited_for: Some("2341:005a".into()),
             reset: Some("touch-1200"),
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         }
     );
     assert_eq!(error.class(), ErrorClass::Device);
@@ -369,6 +371,8 @@ fn no_bootloader_device_after_custom_steps() {
         Error::NoBootloader {
             waited_for: Some("2341:005a".into()),
             reset: Some("custom"),
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         }
     );
     let message = error.to_string();
@@ -400,7 +404,9 @@ fn silent_port_gives_no_bootloader() {
         result.unwrap_err(),
         Error::NoBootloader {
             waited_for: None,
-            reset: None
+            reset: None,
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         }
     );
     provider.finish().unwrap();
@@ -437,7 +443,9 @@ fn endless_text_gives_no_bootloader() {
         connection.result.unwrap_err(),
         Error::NoBootloader {
             waited_for: None,
-            reset: None
+            reset: None,
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         }
     );
     connection.provider.finish().unwrap();
@@ -460,7 +468,9 @@ fn version_lines_stop_at_256_bytes() {
         connection.result.unwrap_err(),
         Error::NoBootloader {
             waited_for: None,
-            reset: None
+            reset: None,
+            protocol: Protocol::Samba,
+            rates: Vec::new(),
         }
     );
     connection.provider.finish().unwrap();

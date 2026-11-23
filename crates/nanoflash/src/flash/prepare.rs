@@ -18,17 +18,22 @@ use crate::table::espressif::{TABLE_SIZE, write};
 
 /// The erase unit of a protocol: images start at a multiple of it, and the sectors an image ends
 /// in are erased whole. The Espressif ROM loader erases sectors of 4 KiB; the nRF52840 programs
-/// and erases whole 4 KiB pages, which the 256-byte rows of the SAMD21 divide.
+/// and erases whole 4 KiB pages, which the 256-byte rows of the SAMD21 divide. The AVR
+/// bootloaders write whole pages: the largest page of the chips of each protocol.
 fn erase_unit(protocol: Protocol) -> u64 {
     match protocol {
         Protocol::Espressif | Protocol::Samba => 0x1000,
+        Protocol::Stk500v1 | Protocol::Avr109 => 0x80,
+        Protocol::Stk500v2 => 0x100,
     }
 }
 
-/// The end of what a protocol can address: its offsets and sizes are 32-bit words.
+/// The end of what a protocol can address: its offsets and sizes are 32-bit words, except for
+/// STK500v1 and AVR109, whose 16-bit word addresses reach 128 KiB.
 pub(crate) fn address_limit(protocol: Protocol) -> u64 {
     match protocol {
-        Protocol::Espressif | Protocol::Samba => 1 << 32,
+        Protocol::Espressif | Protocol::Samba | Protocol::Stk500v2 => 1 << 32,
+        Protocol::Stk500v1 | Protocol::Avr109 => 1 << 17,
     }
 }
 

@@ -14,23 +14,13 @@ use alloc::vec::Vec;
 use crate::backend::{ChipInformation, Progress};
 use crate::error::Error;
 use crate::manifest::{Protocol, ResetSequence};
-use crate::transport::{
-    DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
-};
+use crate::touch;
+use crate::transport::{DeviceFilter, Duration, PortProvider, SerialPort, TransportError};
 use command::Capabilities;
 use family::Family;
 
-/// The USB vendor identifier of Arduino.
-const ARDUINO_VENDOR: u16 = 0x2341;
-/// Arduino's product identifiers set this bit while a sketch runs, and clear it in the
-/// bootloader (`805a` for the Nano 33 BLE's sketch, `005a` for its bootloader).
-const SKETCH_PRODUCT_BIT: u16 = 0x8000;
-/// The baud rate the sketch reads as a request to start the bootloader.
-const TOUCH_BAUD_RATE: u32 = 1200;
 /// The baud rate the bootloader's port is opened at; USB ignores it.
 const BOOTLOADER_BAUD_RATE: u32 = 115_200;
-/// How long the bootloader's USB device may take to appear after the touch.
-const REOPEN_TIMEOUT: Duration = Duration::from_secs(15);
 /// Attempts at `N#` and `V#` before the port is declared silent.
 const ATTEMPTS: u8 = 3;
 const READ_CHUNK: usize = 64;
@@ -84,28 +74,6 @@ fn disconnected() -> Error {
     Error::from(TransportError::Disconnected)
 }
 
-/// The filter of the bootloader device to wait for after touching the sketch of `identity`.
-fn bootloader_filter(
-    identity: &UsbIdentity,
-    bootloader_devices: &[DeviceFilter],
-) -> Result<DeviceFilter, Error> {
-    let product = identity.product & !SKETCH_PRODUCT_BIT;
-    let same_product = bootloader_devices
-        .iter()
-        .find(|filter| filter.vendor == identity.vendor && filter.product == Some(product));
-    match same_product.or(bootloader_devices.first()) {
-        Some(filter) => Ok(filter.clone()),
-        None if identity.vendor == ARDUINO_VENDOR => Ok(DeviceFilter {
-            vendor: ARDUINO_VENDOR,
-            product: Some(product),
-            serial_number: None,
-        }),
-        None => Err(Error::UnknownBootloaderDevice {
-            identity: identity.clone(),
-        }),
-    }
-}
-
 impl<'p, P: PortProvider> SambaBackend<'p, P> {
     /// A backend over `port`, which `provider` can reopen once the board re-enumerates into its
     /// bootloader. Without a `reset`, it uses `touch-1200`; `none` and `custom` also apply, the
@@ -125,7 +93,7 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             ) => {
                 return Err(Error::UnsupportedReset {
                     protocol: Protocol::Samba,
-                    reset: sequence.name().into(),
+                    reset: sequence.to_string(),
                 });
             }
             Some(sequence) => sequence,
@@ -153,7 +121,15 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
     /// chip. A requested baud rate is reported through `progress.message` as ignored.
     pub async fn connect(&mut self, progress: &mut dyn Progress) -> Result<ChipInformation, Error> {
         self.session = None;
-        self.enter_bootloader().await?;
+        touch::enter_bootloader(
+            &mut self.port,
+            &mut *self.provider,
+            &self.reset,
+            &self.options.bootloader_devices,
+            Protocol::Samba,
+            BOOTLOADER_BAUD_RATE,
+        )
+        .await?;
         if self.options.baud_rate.is_some() {
             progress.message("the SAM-BA bootloader talks over USB: the baud rate is ignored");
         }
@@ -161,6 +137,8 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             return Err(Error::NoBootloader {
                 waited_for: None,
                 reset: None,
+                protocol: Protocol::Samba,
+                rates: Vec::new(),
             });
         };
         let version = command::line(&reply);
@@ -188,94 +166,6 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             writable_from: Some(family.application_start),
             erases_to_end: family.erase_to_end,
         })
-    }
-
-    /// Touches the sketch and opens the bootloader's port, unless the port is the bootloader's
-    /// already: `none` reset, no USB identity (an emulator), a listed bootloader identity with a
-    /// product (a vendor alone also matches the sketch), or an Arduino product without bit 15.
-    async fn enter_bootloader(&mut self) -> Result<(), Error> {
-        let identity = self.port()?.identity();
-        let Some(identity) = identity else {
-            return Ok(());
-        };
-        let in_bootloader = self.reset == ResetSequence::None
-            || self
-                .options
-                .bootloader_devices
-                .iter()
-                .any(|filter| filter.product.is_some() && filter.matches(&identity))
-            || (identity.vendor == ARDUINO_VENDOR && identity.product & SKETCH_PRODUCT_BIT == 0);
-        if in_bootloader {
-            return Ok(());
-        }
-        let filter = bootloader_filter(&identity, &self.options.bootloader_devices)?;
-        match self.touch().await {
-            // The sketch already left for the bootloader.
-            Ok(())
-            | Err(Error::Transport {
-                error: TransportError::Disconnected,
-                ..
-            }) => {}
-            Err(error) => return Err(error),
-        }
-        // The port must be closed before the bootloader's device can be opened.
-        drop(self.port.take());
-        match self
-            .provider
-            .open(&filter, BOOTLOADER_BAUD_RATE, REOPEN_TIMEOUT)
-            .await
-        {
-            Ok(port) => {
-                self.port = Some(port);
-                Ok(())
-            }
-            Err(TransportError::NotFound { .. }) => Err(Error::NoBootloader {
-                waited_for: Some(filter.to_string()),
-                reset: Some(self.reset.name()),
-            }),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    /// Asks the sketch to start the bootloader: 1200 baud with DTR cleared, or the custom steps.
-    async fn touch(&mut self) -> Result<(), Error> {
-        let Some(port) = self.port.as_mut() else {
-            return Err(disconnected());
-        };
-        match &self.reset {
-            ResetSequence::Touch1200 => {
-                port.set_baud_rate(TOUCH_BAUD_RATE).await?;
-                port.set_signals(Signals {
-                    dtr: false,
-                    rts: false,
-                })
-                .await?;
-            }
-            ResetSequence::Custom(steps) => {
-                for step in steps {
-                    port.set_signals(Signals {
-                        dtr: step.dtr,
-                        rts: step.rts,
-                    })
-                    .await?;
-                    if !step.wait.is_zero() {
-                        port.sleep(step.wait).await;
-                    }
-                }
-            }
-            // The board sits in its bootloader already.
-            ResetSequence::None => {}
-            // Refused by `new`.
-            sequence @ (ResetSequence::Uf2Touch1200
-            | ResetSequence::EspressifClassic
-            | ResetSequence::EspressifUsbSerialJtag) => {
-                return Err(Error::UnsupportedReset {
-                    protocol: Protocol::Samba,
-                    reset: sequence.name().into(),
-                });
-            }
-        }
-        Ok(())
     }
 
     /// Discards what the port sends until it is quiet, at most [`DRAIN_BUDGET`] bytes.

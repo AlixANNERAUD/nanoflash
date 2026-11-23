@@ -32,6 +32,8 @@ pub mod samba;
 pub mod table;
 #[cfg(feature = "testing")]
 pub mod testing;
+#[cfg(any(feature = "samba", feature = "avr"))]
+pub(crate) mod touch;
 pub mod transport;
 #[cfg(feature = "web")]
 pub mod web;
