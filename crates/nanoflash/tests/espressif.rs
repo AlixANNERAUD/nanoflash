@@ -447,10 +447,24 @@ fn writes_and_verifies_two_images() {
     }
 }
 
+/// `size` bytes that do not compress: a xorshift sequence.
+fn incompressible(size: usize) -> Vec<u8> {
+    let mut state: u32 = 0x1234_5678;
+    (0..size)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state.to_le_bytes()[0]
+        })
+        .collect()
+}
+
 #[test]
 fn compressed_blocks_inflate_to_the_image() {
     let bootloader = image("bootloader.bin");
     let application = image("application.bin");
+    let noise = incompressible(0x800);
     let segments = [
         Segment {
             label: "bootloader",
@@ -462,20 +476,46 @@ fn compressed_blocks_inflate_to_the_image() {
             offset: 0x1_0000,
             data: &application,
         },
+        Segment {
+            label: "noise",
+            offset: 0x2_0000,
+            data: &noise,
+        },
     ];
-    let (port, provider) = replay(Transcript::parse(&after_connect("write-esp32s3")).unwrap());
+    // The writes of `write-esp32s3`, then the noise: 0x1000 bytes erased at 0x20000, in as many
+    // blocks as its zlib stream needs.
+    let mut text = transcript("connect-esp32s3-usb");
+    for line in transcript("write-esp32s3").lines() {
+        if line.starts_with("> c0 00 13") {
+            break;
+        }
+        text.push_str(line);
+        text.push('\n');
+    }
+    let blocks = miniz_oxide::deflate::compress_to_vec_zlib(&noise, 9)
+        .len()
+        .div_ceil(0x400);
+    assert!(blocks >= 2, "{blocks}");
+    writeln!(
+        text,
+        "> c0 00 10 14 00 00 00 00 00 00 10 00 00 {blocks:02x} 00 00 00 00 04 00 00 00 00 02 00 00 00 00 00 c0\n\
+         < c0 01 10 04 00 00 00 00 00 00 00 00 00 c0"
+    )
+    .unwrap();
+    for _ in 0..blocks {
+        text.push_str("> c0 00 11 .. c0\n< c0 01 11 04 00 00 00 00 00 00 00 00 00 c0\n");
+    }
+    let (port, provider) = replay(Transcript::parse(&text).unwrap());
     let (port, mut provider) = record(port, provider);
     {
         let mut backend =
             EspressifBackend::new(port, &mut provider, None, EspressifOptions::default()).unwrap();
         block_on(Backend::connect(&mut backend)).unwrap();
         block_on(backend.write(&segments, &mut ())).unwrap();
-        block_on(backend.verify(&segments, &mut ())).unwrap();
-        block_on(backend.reset_to_application()).unwrap();
     }
     provider.inner().finish().unwrap();
-    // The data of the blocks of each FLASH_DEFL_BEGIN, in order.
-    let mut streams: Vec<Vec<u8>> = Vec::new();
+    // The data of the blocks of each FLASH_DEFL_BEGIN, in order, and the number of blocks.
+    let mut streams: Vec<(Vec<u8>, u32)> = Vec::new();
     for entry in provider.transcript().events {
         let Event::Host(tokens) = entry.event else {
             continue;
@@ -488,19 +528,26 @@ fn compressed_blocks_inflate_to_the_image() {
             })
             .collect();
         let packet = slip_decode(&frame);
+        let word = |start: usize| u32::from_le_bytes(packet[start..start + 4].try_into().unwrap());
         match packet[1] {
-            0x10 => streams.push(Vec::new()),
+            0x10 => streams.push((Vec::new(), 0)),
             0x11 => {
-                let length = u32::from_le_bytes(packet[8..12].try_into().unwrap()) as usize;
+                let (stream, count) = streams.last_mut().unwrap();
+                let length = word(8) as usize;
                 let data = &packet[24..];
                 assert_eq!(data.len(), length);
-                streams.last_mut().unwrap().extend_from_slice(data);
+                let checksum = data.iter().fold(0xEF_u8, |sum, byte| sum ^ byte);
+                assert_eq!(word(4), u32::from(checksum), "checksum of block {count}");
+                assert_eq!(word(12), *count, "sequence");
+                *count += 1;
+                stream.extend_from_slice(data);
             }
             _ => {}
         }
     }
-    assert_eq!(streams.len(), 2);
-    for (stream, expected) in streams.iter().zip([&bootloader, &application]) {
+    assert_eq!(streams.len(), 3);
+    assert_eq!(streams[2].1 as usize, blocks);
+    for ((stream, _), expected) in streams.iter().zip([&bootloader, &application, &noise]) {
         assert_eq!(
             &miniz_oxide::inflate::decompress_to_vec_zlib(stream).unwrap(),
             expected
