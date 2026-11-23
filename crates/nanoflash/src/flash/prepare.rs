@@ -504,14 +504,12 @@ pub async fn prepare<S: ImageSource>(
                         .map_or(MAXIMUM_HEX_SPAN, |layout| layout.flash.size);
                     let image = intel_hex_image(path, &bytes, maximum)?;
                     if image.start != expected {
-                        return Err(Error::IntelHex {
+                        return Err(Error::MisplacedIntelHex {
                             path: path.to_string(),
-                            line: None,
-                            message: format!(
-                                "starts at 0x{:x}, and the manifest places it at 0x{expected:x}: set the offset of the image to 0x{:x}, or name the partition that starts there",
-                                image.start,
-                                image.start.saturating_sub(base)
-                            ),
+                            start: image.start,
+                            expected,
+                            base_address: base,
+                            partition: placement.partition.clone(),
                         });
                     }
                     image.bytes
@@ -1316,20 +1314,30 @@ mod tests {
         assert_eq!(prepared.images[0].bytes.len(), 300);
         assert_eq!(prepared.images[0].offset, 0);
 
+        // A valid file at the wrong offset is not an invalid file: nothing to rebuild.
         let error = prepare_with(&hex_board("0x1000", ""), &mut hex_source(UNO)).unwrap_err();
-        match &error {
-            Error::IntelHex {
-                line: None,
-                message,
-                ..
-            } => {
-                assert!(
-                    message.contains("0x0") && message.contains("0x1000"),
-                    "{message}"
-                );
+        assert_eq!(
+            error,
+            Error::MisplacedIntelHex {
+                path: "avr-application.hex".into(),
+                start: 0,
+                expected: 0x1000,
+                base_address: 0,
+                partition: None,
             }
-            other => panic!("{other:?}"),
-        }
+        );
+        assert_eq!(
+            error.to_string(),
+            "the Intel HEX image \"avr-application.hex\" starts at 0x0, but the manifest places it at 0x1000: fix the offset of the image to 0x0, or name the partition that starts there"
+        );
+        // Written to a partition that starts elsewhere.
+        let mut board = hex_board("0", "");
+        board.images[0].target = crate::manifest::ImageTarget::Partition("bootloader".into());
+        let error = prepare_with(&board, &mut hex_source(UNO)).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "the Intel HEX image \"avr-application.hex\" starts at 0x0, but the partition \"bootloader\" it is written to starts at 0x7e00: fix the partition of the image (it starts at the flash offset 0x0), or rebuild it for that partition"
+        );
         // The digest is the one of the file, not of the decoded bytes.
         let file = "c4ba8536e262509cb35fbe5da801c89d3695d5f5d46c99cccae49aae6b8152da";
         let decoded = "b1b36f51f514d11c6cd3a9656327f180209d503961ff0616db46cf88921deb28";
@@ -1346,15 +1354,23 @@ mod tests {
     fn hex_addresses_include_the_base_address_of_the_flash() {
         let layout = UNO.replace("base-address = 0x0", "base-address = 0x1000");
         let error = prepare_with(&hex_board("0", ""), &mut hex_source(&layout)).unwrap_err();
-        match &error {
-            Error::IntelHex { message, .. } => {
-                assert!(
-                    message.contains("starts at 0x0") && message.contains("0x1000"),
-                    "{message}"
-                )
+        assert_eq!(
+            error,
+            Error::MisplacedIntelHex {
+                path: "avr-application.hex".into(),
+                start: 0,
+                expected: 0x1000,
+                base_address: 0x1000,
+                partition: Some("application".into()),
             }
-            other => panic!("{other:?}"),
-        }
+        );
+        // Below the base address there is no offset to suggest.
+        let text = error.to_string();
+        assert!(
+            text.ends_with("it starts below the flash, which starts at 0x1000: rebuild it for this board, or fix the base address of the layout"),
+            "{text}"
+        );
+        assert!(!text.contains("offset of the image"), "{text}");
         let mut source = hex_source(&layout);
         source.files.insert(
             "avr-application.hex".into(),

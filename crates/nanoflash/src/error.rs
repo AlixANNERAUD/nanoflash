@@ -104,7 +104,7 @@ pub enum Error {
         /// What went wrong.
         message: String,
     },
-    /// An Intel HEX image is invalid, or does not go where the manifest places it.
+    /// An Intel HEX image is invalid.
     IntelHex {
         /// The path, as written in the manifest, or the file given to the command line.
         path: String,
@@ -112,6 +112,20 @@ pub enum Error {
         line: Option<usize>,
         /// What is wrong.
         message: String,
+    },
+    /// A valid Intel HEX image does not start where it is written: its addresses are those of
+    /// the memory map, the base address of the flash plus the offset it is written at.
+    MisplacedIntelHex {
+        /// The path, as written in the manifest, or the file given to the command line.
+        path: String,
+        /// The address of its first byte.
+        start: u64,
+        /// The address it is written at: the base address of the flash plus its offset.
+        expected: u64,
+        /// The base address of the flash of the layout; 0 without a layout.
+        base_address: u64,
+        /// The partition it is written to, when it names one.
+        partition: Option<String>,
     },
     /// An image does not have the SHA-256 digest the manifest gives.
     ChecksumMismatch {
@@ -438,6 +452,7 @@ impl Error {
             | Error::ChecksumMismatch { .. }
             | Error::ImageRejected { .. }
             | Error::IntelHex { .. }
+            | Error::MisplacedIntelHex { .. }
             | Error::ImageNeedsLayout { .. }
             | Error::UnknownPartition { .. }
             | Error::MisalignedImage { .. }
@@ -603,6 +618,39 @@ impl fmt::Display for Error {
                     formatter,
                     ": {message}: rebuild it, or give its binary form"
                 )
+            }
+            Error::MisplacedIntelHex {
+                path,
+                start,
+                expected,
+                base_address,
+                partition,
+            } => {
+                write!(
+                    formatter,
+                    "the Intel HEX image \"{path}\" starts at 0x{start:x}, but "
+                )?;
+                match partition {
+                    Some(partition) => write!(
+                        formatter,
+                        "the partition \"{partition}\" it is written to starts at 0x{expected:x}"
+                    )?,
+                    None => write!(formatter, "the manifest places it at 0x{expected:x}")?,
+                }
+                match (start.checked_sub(*base_address), partition) {
+                    (Some(offset), Some(_)) => write!(
+                        formatter,
+                        ": fix the partition of the image (it starts at the flash offset 0x{offset:x}), or rebuild it for that partition"
+                    ),
+                    (Some(offset), None) => write!(
+                        formatter,
+                        ": fix the offset of the image to 0x{offset:x}, or name the partition that starts there"
+                    ),
+                    (None, _) => write!(
+                        formatter,
+                        ": it starts below the flash, which starts at 0x{base_address:x}: rebuild it for this board, or fix the base address of the layout"
+                    ),
+                }
             }
             Error::ImageRejected { path, reason } => {
                 write!(formatter, "the image \"{path}\" was rejected: {reason}")
