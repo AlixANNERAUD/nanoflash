@@ -16,8 +16,8 @@ use crate::backend::{
     Backend, Backends, ChipInformation, Progress, ProgressEvent, Region, Segment, Stage,
 };
 use crate::error::Error;
-use crate::manifest::{Manifest, Protocol};
-use crate::transport::{PortProvider, SerialPort};
+use crate::manifest::{Board, Manifest, Protocol};
+use crate::transport::{DeviceFilter, PortProvider, SerialPort};
 pub use prepare::{Prepared, PreparedErase, PreparedImage, Warning, image_build, prepare};
 pub use select::{Selection, protocol_for_identity, select};
 
@@ -49,7 +49,7 @@ pub struct FlashOptions {
     /// The board of the manifest to flash, when the device cannot tell.
     pub board_identifier: Option<String>,
     /// Whether to erase the whole flash before writing: the size the chip reports, else the
-    /// flash size of the layout.
+    /// flash size of the layout, from the lowest offset the bootloader writes.
     pub erase_all: bool,
     /// Whether to check what was written.
     pub verify: bool,
@@ -144,7 +144,7 @@ async fn erase<P: PortProvider>(
     progress: &mut dyn Progress,
 ) -> Result<(), Error> {
     report(progress, Stage::Erasing, region.offset, 0, region.size);
-    backend.erase(region).await.map_err(|error| {
+    backend.erase(region, progress).await.map_err(|error| {
         error.during(|| {
             format!(
                 "erasing 0x{:x}..0x{:x}",
@@ -191,12 +191,16 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
         [board] => Some(prepare(board, source, verifier).await?),
         _ => None,
     };
+    let mut backend_options = options.backend.clone();
+    if backend_options.bootloader_devices.is_empty() {
+        backend_options.bootloader_devices = bootloader_devices(&selection.boards);
+    }
     let mut backend = Backends::new(
         selection.protocol,
         port,
         provider,
         selection.reset.clone(),
-        &options.backend,
+        &backend_options,
     )?;
     let chip = connect(&mut backend, progress).await?;
     let outcome = flash_connected(
@@ -229,29 +233,72 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
     }
 }
 
-/// Checks that every image and erase entry ends inside the `flash_size` bytes the chip reports.
-fn check_detected_flash(prepared: &Prepared, flash_size: u64) -> Result<(), Error> {
+/// Checks every image, then every erase entry, against what `connect` reported: each must start
+/// at or after `writable_from` and end inside the `flash_size` bytes of the chip.
+fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(), Error> {
     let images = prepared.images.iter().map(|image| {
         let size = u64::try_from(image.bytes.len()).unwrap_or(u64::MAX);
-        ("image", &image.label, image.offset.saturating_add(size))
+        ("image", &image.label, image.offset, size)
     });
     let erase = prepared.erase.iter().map(|entry| {
         (
             "erase entry",
             &entry.label,
-            entry.region.offset.saturating_add(entry.region.size),
+            entry.region.offset,
+            entry.region.size,
         )
     });
-    for (kind, label, end) in images.chain(erase) {
-        if end > flash_size {
-            return Err(Error::OutsideDetectedFlash {
-                what: format!("{kind} \"{label}\""),
-                end,
-                flash_size,
-            });
+    for (kind, label, offset, size) in images.chain(erase) {
+        if let Some(writable_from) = chip.writable_from {
+            if offset < writable_from {
+                return Err(Error::BelowWritableFlash {
+                    what: format!("{kind} \"{label}\""),
+                    offset,
+                    writable_from,
+                });
+            }
+        }
+        let end = offset.saturating_add(size);
+        if let Some(flash_size) = chip.flash_size {
+            if end > flash_size {
+                return Err(Error::OutsideDetectedFlash {
+                    what: format!("{kind} \"{label}\""),
+                    end,
+                    flash_size,
+                });
+            }
         }
     }
     Ok(())
+}
+
+/// The region `--erase-all` erases: the flash of the chip, else of the layout, from where the
+/// bootloader starts writing.
+fn erase_all_region(chip: &ChipInformation, layout_size: Option<u64>) -> Result<Region, Error> {
+    let flash_size = chip
+        .flash_size
+        .or(layout_size)
+        .ok_or(Error::UnknownFlashSize)?;
+    let offset = chip.writable_from.unwrap_or(0);
+    let size = flash_size
+        .checked_sub(offset)
+        .ok_or_else(|| Error::OutsideDetectedFlash {
+            what: "bootloader".into(),
+            end: offset,
+            flash_size,
+        })?;
+    Ok(Region { offset, size })
+}
+
+/// The USB identities the candidate boards show in their bootloader, in manifest order, each once.
+fn bootloader_devices(boards: &[&Board]) -> Vec<DeviceFilter> {
+    let mut devices: Vec<DeviceFilter> = Vec::new();
+    for device in boards.iter().flat_map(|board| &board.bootloader_devices) {
+        if !devices.contains(device) {
+            devices.push(device.clone());
+        }
+    }
+    devices
 }
 
 /// What a stage does with a segment, such as `writing "application" at 0x20000`.
@@ -285,17 +332,13 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
         }
     }
     // Nothing is erased before every image and erase entry is known to fit: `prepare` checked
-    // the address range of the protocol and the layout, this checks the flash of the chip, which
-    // is all a board without a layout (esp-web-tools) is checked against.
-    if let Some(detected) = chip.flash_size {
-        check_detected_flash(&prepared, detected)?;
-    }
+    // the address range of the protocol and the layout, this checks the flash of the chip and
+    // the part its bootloader protects, which is all a board without a layout (esp-web-tools)
+    // is checked against.
+    check_against_chip(&prepared, &chip)?;
     if options.erase_all {
-        let size = chip
-            .flash_size
-            .or(layout_size)
-            .ok_or(Error::UnknownFlashSize)?;
-        erase(backend, Region { offset: 0, size }, progress).await?;
+        let region = erase_all_region(&chip, layout_size)?;
+        erase(backend, region, progress).await?;
     }
     for entry in &prepared.erase {
         erase(backend, entry.region, progress).await?;
@@ -373,4 +416,224 @@ pub async fn detect<P: PortProvider>(
         .map_err(|error| error.during(|| "connecting".into()))?;
     reset(&mut backend, progress).await?;
     Ok(chip)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::ErrorClass;
+    use crate::transport::DeviceFilter;
+
+    fn chip(flash_size: Option<u64>, writable_from: Option<u64>) -> ChipInformation {
+        ChipInformation {
+            protocol: Protocol::Samba,
+            chip: "nrf52840".into(),
+            flash_size,
+            secure_download_mode: false,
+            usb: None,
+            writable_from,
+        }
+    }
+
+    /// Images as (label, offset, size) and erase entries as (label, offset, size).
+    fn prepared(images: &[(&str, u64, usize)], erase: &[(&str, u64, u64)]) -> Prepared {
+        Prepared {
+            layout: None,
+            images: images
+                .iter()
+                .map(|&(label, offset, size)| PreparedImage {
+                    label: label.into(),
+                    partition: None,
+                    offset,
+                    bytes: alloc::vec![0xA5; size],
+                })
+                .collect(),
+            erase: erase
+                .iter()
+                .map(|&(label, offset, size)| PreparedErase {
+                    label: label.into(),
+                    region: Region { offset, size },
+                })
+                .collect(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn images_below_writable_flash_are_refused() {
+        let protected = chip(Some(0x10_0000), Some(0x1_0000));
+        let error =
+            check_against_chip(&prepared(&[("bootloader", 0, 16)], &[]), &protected).unwrap_err();
+        assert_eq!(
+            error,
+            Error::BelowWritableFlash {
+                what: "image \"bootloader\"".into(),
+                offset: 0,
+                writable_from: 0x1_0000,
+            }
+        );
+        assert_eq!(error.class(), ErrorClass::Input);
+        let message = error.to_string();
+        assert!(message.contains("0x10000"), "{message}");
+        assert!(message.contains("\"bootloader\""), "{message}");
+        assert_eq!(
+            check_against_chip(
+                &prepared(&[], &[("region at 0x8000", 0x8000, 0x1_0000)]),
+                &protected
+            ),
+            Err(Error::BelowWritableFlash {
+                what: "erase entry \"region at 0x8000\"".into(),
+                offset: 0x8000,
+                writable_from: 0x1_0000,
+            })
+        );
+        // Images come before erase entries, whatever their offsets.
+        assert_eq!(
+            check_against_chip(
+                &prepared(
+                    &[("bootloader", 0x4000, 16)],
+                    &[("region at 0x0", 0, 0x1000)]
+                ),
+                &protected
+            ),
+            Err(Error::BelowWritableFlash {
+                what: "image \"bootloader\"".into(),
+                offset: 0x4000,
+                writable_from: 0x1_0000,
+            })
+        );
+        assert_eq!(
+            check_against_chip(&prepared(&[("application", 0x1_0000, 16)], &[]), &protected),
+            Ok(())
+        );
+        assert_eq!(
+            check_against_chip(
+                &prepared(&[("bootloader", 0, 16)], &[]),
+                &chip(Some(0x10_0000), None)
+            ),
+            Ok(())
+        );
+        // Neither size nor start known: nothing to check against.
+        assert_eq!(
+            check_against_chip(&prepared(&[("bootloader", 0, 16)], &[]), &chip(None, None)),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn below_writable_flash_comes_before_outside_detected_flash() {
+        let protected = chip(Some(0x4_0000), Some(0x2000));
+        assert!(matches!(
+            check_against_chip(&prepared(&[("both", 0x1000, 0x5_0000)], &[]), &protected),
+            Err(Error::BelowWritableFlash { .. })
+        ));
+    }
+
+    #[test]
+    fn image_ending_at_the_end_of_flash() {
+        let samd21 = chip(Some(0x4_0000), Some(0x2000));
+        assert_eq!(
+            check_against_chip(
+                &prepared(&[("application", 0x2000, 0x3_E000)], &[]),
+                &samd21
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            check_against_chip(
+                &prepared(&[("application", 0x2000, 0x3_E001)], &[]),
+                &samd21
+            ),
+            Err(Error::OutsideDetectedFlash {
+                what: "image \"application\"".into(),
+                end: 0x4_0001,
+                flash_size: 0x4_0000,
+            })
+        );
+        assert_eq!(
+            check_against_chip(&prepared(&[], &[("storage", 0x3_F000, 0x1000)]), &samd21),
+            Ok(())
+        );
+        assert_eq!(
+            check_against_chip(&prepared(&[], &[("storage", 0x3_F000, 0x1001)]), &samd21),
+            Err(Error::OutsideDetectedFlash {
+                what: "erase entry \"storage\"".into(),
+                end: 0x4_0001,
+                flash_size: 0x4_0000,
+            })
+        );
+    }
+
+    #[test]
+    fn erase_all_starts_at_the_writable_flash() {
+        assert_eq!(
+            erase_all_region(&chip(Some(0x10_0000), Some(0x1_0000)), None),
+            Ok(Region {
+                offset: 0x1_0000,
+                size: 0xF_0000,
+            })
+        );
+        assert_eq!(
+            erase_all_region(&chip(Some(0x80_0000), None), None),
+            Ok(Region {
+                offset: 0,
+                size: 0x80_0000,
+            })
+        );
+        assert_eq!(
+            erase_all_region(&chip(None, None), Some(0x4_0000)),
+            Ok(Region {
+                offset: 0,
+                size: 0x4_0000,
+            })
+        );
+        assert_eq!(
+            erase_all_region(&chip(None, None), None),
+            Err(Error::UnknownFlashSize)
+        );
+        // The chip's size wins over the layout's.
+        assert_eq!(
+            erase_all_region(&chip(Some(0x10_0000), Some(0x1_0000)), Some(0x8_0000)),
+            Ok(Region {
+                offset: 0x1_0000,
+                size: 0xF_0000,
+            })
+        );
+    }
+
+    #[test]
+    fn erase_all_of_a_bootloader_larger_than_the_flash() {
+        assert_eq!(
+            erase_all_region(&chip(Some(0x1000), Some(0x2000)), None),
+            Err(Error::OutsideDetectedFlash {
+                what: "bootloader".into(),
+                end: 0x2000,
+                flash_size: 0x1000,
+            })
+        );
+    }
+
+    #[test]
+    fn bootloader_devices_of_the_candidates() {
+        let manifest = Manifest::from_toml(
+            "[[board]]\nidentifier = \"first\"\nprotocol = \"samba\"\nchip = \"nrf52840\"\n\
+             bootloader-devices = [{ vendor = 0x2341, product = 0x005a }]\n\
+             [[board.image]]\noffset = 0x10000\npath = \"first.bin\"\n\
+             [[board]]\nidentifier = \"second\"\nprotocol = \"samba\"\nchip = \"nrf52840\"\n\
+             bootloader-devices = [{ vendor = 0x2341, product = 0x005a }, { vendor = 0x2341, product = 0x0054 }]\n\
+             [[board.image]]\noffset = 0x10000\npath = \"second.bin\"\n",
+        )
+        .unwrap();
+        let boards: Vec<&crate::manifest::Board> = manifest.boards.iter().collect();
+        let filter = |product| DeviceFilter {
+            vendor: 0x2341,
+            product: Some(product),
+            serial_number: None,
+        };
+        assert_eq!(
+            bootloader_devices(&boards),
+            [filter(0x005a), filter(0x0054)]
+        );
+        assert_eq!(bootloader_devices(&[]), []);
+    }
 }

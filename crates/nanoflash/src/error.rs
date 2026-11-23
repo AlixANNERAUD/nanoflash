@@ -290,14 +290,44 @@ pub enum Error {
     VerificationFailed {
         /// The image.
         label: String,
-        /// The flash offset of the image.
+        /// The flash offset of the part checked: the image, or the chunk of it the backend
+        /// checks at a time.
         offset: u64,
-        /// The number of bytes checked.
+        /// The number of bytes of the part checked.
         size: u64,
-        /// The MD5 digest of the image, in lowercase hexadecimal.
+        /// The checksum named by `checksum` of what was written, in lowercase hexadecimal.
         expected: String,
-        /// The MD5 digest the board computed over the flash, in lowercase hexadecimal.
+        /// The checksum named by `checksum` the board computed over the flash, in lowercase
+        /// hexadecimal.
         actual: String,
+        /// The checksum the backend compares, such as `MD5` or `CRC-16`.
+        checksum: &'static str,
+    },
+    /// No bootloader answered: none appeared after the reset, or the port is not one.
+    NoBootloader {
+        /// The USB identity of the bootloader device waited for after the reset, such as
+        /// `2341:005a`; `None` when the port itself did not answer as a bootloader.
+        waited_for: Option<String>,
+    },
+    /// The bootloader lacks the commands nanoflash needs.
+    UnsupportedBootloader {
+        /// What the bootloader says of its version.
+        version: String,
+    },
+    /// The USB identity the bootloader of a device shows is unknown, so the device cannot be
+    /// reopened after the reset.
+    UnknownBootloaderDevice {
+        /// The USB identity of the device running its application.
+        identity: UsbIdentity,
+    },
+    /// An image or an erase entry starts in the flash the bootloader protects.
+    BelowWritableFlash {
+        /// What starts there, such as `image "bootloader"`.
+        what: String,
+        /// Its offset.
+        offset: u64,
+        /// The lowest flash offset the bootloader writes.
+        writable_from: u64,
     },
 }
 
@@ -348,7 +378,9 @@ impl Error {
             | Error::ProtocolRequired { .. }
             | Error::ProtocolNotEnabled { .. }
             | Error::UnknownFlashSize
-            | Error::FlashTooSmall { .. } => ErrorClass::Input,
+            | Error::FlashTooSmall { .. }
+            | Error::UnknownBootloaderDevice { .. }
+            | Error::BelowWritableFlash { .. } => ErrorClass::Input,
             Error::Transport { .. }
             | Error::NoResponse { .. }
             | Error::NoSync { .. }
@@ -357,7 +389,9 @@ impl Error {
             | Error::InvalidResponse { .. }
             | Error::UnknownChip { .. }
             | Error::UnsupportedChip { .. }
-            | Error::WrongChip { .. } => ErrorClass::Device,
+            | Error::WrongChip { .. }
+            | Error::NoBootloader { .. }
+            | Error::UnsupportedBootloader { .. } => ErrorClass::Device,
             Error::VerificationFailed { .. } => ErrorClass::Verification,
         }
     }
@@ -485,7 +519,7 @@ impl fmt::Display for Error {
                 required,
             } => write!(
                 formatter,
-                "the image \"{label}\" starts at offset 0x{offset:x}, which is not a multiple of 0x{required:x}: the ROM loader erases whole sectors of 0x{required:x} bytes, so it would erase the bytes before the image; move the image to a multiple of 0x{required:x}"
+                "the image \"{label}\" starts at offset 0x{offset:x}, which is not a multiple of 0x{required:x}: the bootloader erases whole sectors of 0x{required:x} bytes, so it would erase the bytes before the image; move the image to a multiple of 0x{required:x}"
             ),
             Error::OverlappingImages {
                 first,
@@ -631,9 +665,36 @@ impl fmt::Display for Error {
                 size,
                 expected,
                 actual,
+                checksum,
             } => write!(
                 formatter,
-                "the image \"{label}\" at 0x{offset:x} (0x{size:x} bytes) does not read back as written: the board computed the MD5 digest {actual} instead of {expected}: flash again, and check the power supply and the flash size of the board if it fails again"
+                "the image \"{label}\" at 0x{offset:x} (0x{size:x} bytes) does not read back as written: the board computed the {checksum} {actual} instead of {expected}: flash again, and check the power supply and the flash size of the board if it fails again"
+            ),
+            Error::NoBootloader { waited_for } => match waited_for {
+                Some(filter) => write!(
+                    formatter,
+                    "no bootloader device matching {filter} appeared within 15 s after the 1200-baud touch: double-tap the reset button of the board (its LED pulses in the bootloader), then try again"
+                ),
+                None => formatter.write_str(
+                    "no SAM-BA bootloader answered on the port: double-tap the reset button of the board (its LED pulses in the bootloader), then try again with the port it shows",
+                ),
+            },
+            Error::UnsupportedBootloader { version } => write!(
+                formatter,
+                "the bootloader says \"{version}\" and lacks Arduino's SAM-BA extensions X, Y and Z, which nanoflash needs: update the bootloader, or flash with bossac"
+            ),
+            Error::UnknownBootloaderDevice { identity } => write!(
+                formatter,
+                "the USB identity of the bootloader of the device {:04x}:{:04x} is unknown: list it in \"bootloader-devices\" of the board, or double-tap the reset button and pass the bootloader's port",
+                identity.vendor, identity.product
+            ),
+            Error::BelowWritableFlash {
+                what,
+                offset,
+                writable_from,
+            } => write!(
+                formatter,
+                "the {what} starts at 0x{offset:x}, below 0x{writable_from:x}: the bootloader occupies the flash below 0x{writable_from:x} and does not write it; remove it from the manifest or move it to 0x{writable_from:x} or above"
             ),
         }
     }
@@ -661,5 +722,76 @@ pub(crate) fn rom_error(code: u8) -> &'static str {
         0x67 => "bad encoding description",
         0x69 => "insufficient storage",
         _ => "unknown error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    #[test]
+    fn bootloader_errors_have_their_class_and_hint() {
+        let waited = Error::NoBootloader {
+            waited_for: Some("2341:005a".into()),
+        };
+        assert_eq!(waited.class(), ErrorClass::Device);
+        assert_eq!(
+            waited.to_string(),
+            "no bootloader device matching 2341:005a appeared within 15 s after the 1200-baud touch: double-tap the reset button of the board (its LED pulses in the bootloader), then try again"
+        );
+        let silent = Error::NoBootloader { waited_for: None };
+        assert_eq!(silent.class(), ErrorClass::Device);
+        assert_eq!(
+            silent.to_string(),
+            "no SAM-BA bootloader answered on the port: double-tap the reset button of the board (its LED pulses in the bootloader), then try again with the port it shows"
+        );
+        let unsupported = Error::UnsupportedBootloader {
+            version: "v1.1 [Arduino:IKXYZ]".into(),
+        };
+        assert_eq!(unsupported.class(), ErrorClass::Device);
+        assert_eq!(
+            unsupported.to_string(),
+            "the bootloader says \"v1.1 [Arduino:IKXYZ]\" and lacks Arduino's SAM-BA extensions X, Y and Z, which nanoflash needs: update the bootloader, or flash with bossac"
+        );
+        let unknown = Error::UnknownBootloaderDevice {
+            identity: UsbIdentity {
+                vendor: 0x2341,
+                product: 0x805a,
+                serial_number: None,
+            },
+        };
+        assert_eq!(unknown.class(), ErrorClass::Input);
+        assert_eq!(
+            unknown.to_string(),
+            "the USB identity of the bootloader of the device 2341:805a is unknown: list it in \"bootloader-devices\" of the board, or double-tap the reset button and pass the bootloader's port"
+        );
+        let below = Error::BelowWritableFlash {
+            what: "image \"bootloader\"".into(),
+            offset: 0,
+            writable_from: 0x1_0000,
+        };
+        assert_eq!(below.class(), ErrorClass::Input);
+        assert_eq!(
+            below.to_string(),
+            "the image \"bootloader\" starts at 0x0, below 0x10000: the bootloader occupies the flash below 0x10000 and does not write it; remove it from the manifest or move it to 0x10000 or above"
+        );
+    }
+
+    #[test]
+    fn verification_failures_name_their_checksum() {
+        let error = Error::VerificationFailed {
+            label: "application".into(),
+            offset: 0x1_1000,
+            size: 0x1000,
+            expected: "d5b0".into(),
+            actual: "1234".into(),
+            checksum: "CRC-16",
+        };
+        assert_eq!(error.class(), ErrorClass::Verification);
+        assert_eq!(
+            error.to_string(),
+            "the image \"application\" at 0x11000 (0x1000 bytes) does not read back as written: the board computed the CRC-16 1234 instead of d5b0: flash again, and check the power supply and the flash size of the board if it fails again"
+        );
     }
 }

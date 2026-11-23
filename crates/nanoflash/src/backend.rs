@@ -1,6 +1,7 @@
 //! What every flashing backend offers: connect, erase, write, verify and reset, with progress.
 
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::convert::Infallible;
 use core::marker::PhantomData;
 
@@ -10,7 +11,7 @@ use crate::error::Error;
 #[cfg(feature = "espressif")]
 use crate::espressif::{EspressifBackend, EspressifOptions};
 use crate::manifest::{Protocol, ResetSequence};
-use crate::transport::{PortProvider, UsbIdentity};
+use crate::transport::{DeviceFilter, PortProvider, UsbIdentity};
 
 /// One image to write: its name for messages, where it goes and its bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +96,9 @@ pub struct ChipInformation {
     pub secure_download_mode: bool,
     /// The USB identity of the port, when it has one.
     pub usb: Option<UsbIdentity>,
+    /// The lowest flash offset the bootloader writes, when it protects the flash below it
+    /// (SAM-BA bootloaders protect themselves); `None` when the whole flash is writable.
+    pub writable_from: Option<u64>,
 }
 
 /// A flashing backend.
@@ -104,8 +108,8 @@ pub trait Backend {
     /// Resets the board into its bootloader and detects the chip.
     async fn connect(&mut self) -> Result<ChipInformation, Error>;
 
-    /// Erases `region`.
-    async fn erase(&mut self, region: Region) -> Result<(), Error>;
+    /// Erases `region`, reporting through `progress` how far it went when the backend can tell.
+    async fn erase(&mut self, region: Region, progress: &mut dyn Progress) -> Result<(), Error>;
 
     /// Writes `segments`, in order.
     async fn write(
@@ -132,6 +136,9 @@ pub struct BackendOptions {
     /// Espressif backend then uses 460800 through a USB-to-UART bridge, and 115200 on
     /// USB-Serial-JTAG and the ESP32-C2, which keep 115200 whatever is requested.
     pub baud_rate: Option<u32>,
+    /// The USB identities the board shows in its bootloader, for resets that re-enumerate;
+    /// `flash` fills it from the manifest when empty.
+    pub bootloader_devices: Vec<DeviceFilter>,
 }
 
 /// The backends compiled in, chosen by protocol.
@@ -205,12 +212,12 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
         Backends::connect(self, &mut ()).await
     }
 
-    async fn erase(&mut self, region: Region) -> Result<(), Error> {
+    async fn erase(&mut self, region: Region, progress: &mut dyn Progress) -> Result<(), Error> {
         match self {
             #[cfg(feature = "espressif")]
-            Backends::Espressif(backend) => backend.erase(region).await,
+            Backends::Espressif(backend) => backend.erase(region, progress).await,
             Backends::Unavailable(never, _) => {
-                let _ = region;
+                let _ = (region, progress);
                 match *never {}
             }
         }

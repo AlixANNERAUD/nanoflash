@@ -282,6 +282,7 @@ impl<P: PortProvider> EspressifBackend<'_, P> {
                 size: u64::from(segment.padded_length),
                 expected: hexadecimal(&expected),
                 actual: hexadecimal(&actual),
+                checksum: "MD5",
             });
         }
         report(total);
@@ -305,7 +306,9 @@ impl<P: PortProvider> Backend for EspressifBackend<'_, P> {
         EspressifBackend::connect(self, &mut ()).await
     }
 
-    async fn erase(&mut self, region: Region) -> Result<(), Error> {
+    async fn erase(&mut self, region: Region, progress: &mut dyn Progress) -> Result<(), Error> {
+        // One FLASH_BEGIN erases the whole region: there is nothing to report in between.
+        let _ = progress;
         let offset = u32::try_from(region.offset)
             .map_err(|_| out_of_range("erase", "offset", region.offset))?;
         let size = u32::try_from(region.size)

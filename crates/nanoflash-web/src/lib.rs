@@ -284,6 +284,7 @@ mod device {
             verify: options.verify,
             backend: BackendOptions {
                 baud_rate: options.baud_rate,
+                ..BackendOptions::default()
             },
         };
         let mut provider = WebPortProvider::new().await;

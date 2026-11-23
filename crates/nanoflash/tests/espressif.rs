@@ -96,6 +96,7 @@ fn connects_to_an_esp32_s3_over_usb() {
             flash_size: Some(8 * MEBIBYTE),
             secure_download_mode: false,
             usb: usb_jtag(),
+            writable_from: None,
         }
     );
     assert_eq!(chip, Some(Chip::Esp32S3));
@@ -587,10 +588,13 @@ fn pads_to_four_bytes() {
 #[test]
 fn erases_a_region() {
     let (result, provider) = session(&after_connect("erase-esp32s3"), None, |backend| {
-        block_on(backend.erase(Region {
-            offset: 0,
-            size: 0x80_0000,
-        }))
+        block_on(backend.erase(
+            Region {
+                offset: 0,
+                size: 0x80_0000,
+            },
+            &mut (),
+        ))
     });
     result.unwrap();
     provider.finish().unwrap();
@@ -624,6 +628,7 @@ fn md5_mismatch_is_a_verification_failure() {
             size: 0x1000,
             expected: expected.into(),
             actual: actual.clone(),
+            checksum: "MD5",
         }
     );
     assert_eq!(error.class(), ErrorClass::Verification);
@@ -632,6 +637,7 @@ fn md5_mismatch_is_a_verification_failure() {
     assert!(message.contains(&actual), "{message}");
     assert!(message.contains("0x0"), "{message}");
     assert!(message.contains("\"bootloader\""), "{message}");
+    assert!(message.contains("the board computed the MD5 "), "{message}");
 }
 
 #[test]
@@ -687,10 +693,13 @@ fn offsets_beyond_four_gibibytes_are_refused() {
         (
             block_on(backend.write(&segments, &mut ())),
             block_on(backend.verify(&segments, &mut ())),
-            block_on(backend.erase(Region {
-                offset: 1 << 32,
-                size: 0x1000,
-            })),
+            block_on(backend.erase(
+                Region {
+                    offset: 1 << 32,
+                    size: 0x1000,
+                },
+                &mut (),
+            )),
         )
     });
     // Nothing was sent: the transcript ends with the connection.

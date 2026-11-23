@@ -48,6 +48,8 @@ export interface ChipInformation {
   flashSize: number | null;
   secureDownloadMode: boolean;
   usb: { vendor: number; product: number; serialNumber: string | null } | null;
+  /** The lowest flash offset the bootloader writes, when it protects the flash below it. */
+  writableFrom: number | null;
 }
 
 /** Something to know, which did not stop the flash. `message` is what to show. */

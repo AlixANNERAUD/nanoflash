@@ -16,11 +16,11 @@ use crate::manifest::{Board, EraseTarget, ImageTarget, Manifest, Protocol};
 use crate::table::espressif::{TABLE_SIZE, write};
 
 /// The erase unit of a protocol: images start at a multiple of it, and the sectors an image ends
-/// in are erased whole. The Espressif ROM loader erases sectors of 4 KiB; 1 puts no constraint.
+/// in are erased whole. The Espressif ROM loader erases sectors of 4 KiB; the nRF52840 programs
+/// and erases whole 4 KiB pages, which the 256-byte rows of the SAMD21 divide.
 fn erase_unit(protocol: Protocol) -> u64 {
     match protocol {
-        Protocol::Espressif => 0x1000,
-        Protocol::Samba => 1,
+        Protocol::Espressif | Protocol::Samba => 0x1000,
     }
 }
 
@@ -832,13 +832,30 @@ mod tests {
     }
 
     #[test]
-    fn the_erase_unit_depends_on_the_protocol() {
+    fn samba_images_start_on_4_kib() {
         let mut source = fixture_source();
         source.files.insert("small.bin".into(), alloc::vec![0; 16]);
         let mut samba = board(&offset_image("0x1800", "small.bin"));
         samba.protocol = Protocol::Samba;
         samba.layout = None;
-        assert!(prepare_with(&samba, &mut source).is_ok());
+        let error = prepare_with(&samba, &mut source).unwrap_err();
+        assert_eq!(
+            error,
+            Error::MisalignedImage {
+                label: "image at 0x1800".into(),
+                offset: 0x1800,
+                required: 0x1000,
+            }
+        );
+        let message = error.to_string();
+        assert!(
+            message.contains("the bootloader erases whole sectors of 0x1000 bytes"),
+            "{message}"
+        );
+        let mut aligned = board(&offset_image("0x3000", "small.bin"));
+        aligned.protocol = Protocol::Samba;
+        aligned.layout = None;
+        assert!(prepare_with(&aligned, &mut source).is_ok());
     }
 
     #[test]

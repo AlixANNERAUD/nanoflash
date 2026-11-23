@@ -596,7 +596,10 @@ fn flash_qemu(chip: &str, first_offset: u64, baud_rate: Option<u32>, opcode: &st
     let text = transcript(&format!("flash-{chip}-qemu"));
     assert!(text.contains(opcode), "{chip}: {opcode}");
     let options = FlashOptions {
-        backend: BackendOptions { baud_rate },
+        backend: BackendOptions {
+            baud_rate,
+            ..BackendOptions::default()
+        },
         ..FlashOptions::default()
     };
     let mut progress = Recorder::default();

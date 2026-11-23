@@ -324,6 +324,7 @@ pub fn flash_command(arguments: &FlashArguments<'_>) -> Result<String, Failure> 
                 verify: !arguments.no_verify,
                 backend: BackendOptions {
                     baud_rate: arguments.baud_rate,
+                    ..BackendOptions::default()
                 },
             },
             progress: progress_format(arguments.progress, arguments.json),
