@@ -1128,3 +1128,24 @@ fn the_hardware_manifest_parses() {
     let output = run(&["layout", "check", path_text(&layout)]);
     assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
 }
+
+// arduino/BOSSA's emulated SAM-BA bootloader, recorded by hardware/samba-emulator/run.sh.
+
+#[test]
+fn replays_the_emulator_recording() {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let board = repository.join("hardware/samba-emulator/nano33ble.toml");
+    let transcript = samba_transcript("recorded/emulator-nano33ble.transcript");
+    let output = run(&[
+        "flash",
+        "--board",
+        path_text(&board),
+        "--replay",
+        path_text(&transcript),
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let document = document(&output);
+    assert_eq!(document["ok"], true);
+    assert_eq!(document["report"]["verified"], true);
+}

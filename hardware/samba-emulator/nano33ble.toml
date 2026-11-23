@@ -1,0 +1,13 @@
+# Flashed into arduino/BOSSA's emulated SAM-BA bootloader by hardware/samba-emulator/run.sh: no
+# reset and no USB identity, the emulator answers on a pseudo-terminal.
+[[board]]
+identifier = "arduino-nano-33-ble-emulated"
+name = "Arduino Nano 33 BLE (emulated)"
+protocol = "samba"
+chip = "nrf52840"
+layout = "../nano33ble/layout.toml"
+reset = "none"
+
+[[board.image]]
+partition = "application"
+path = "../../crates/nanoflash/tests/images/application.bin"

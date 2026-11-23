@@ -38,8 +38,9 @@ Modules of the library:
 | `build` | Constants and linker regions for a firmware's `build.rs` (`build`, needs `std`). |
 
 Device sessions are tested by replaying transcripts (`crates/nanoflash/tests/transcripts`);
-`hardware/qemu/run.sh` flashes Espressif's QEMU and `hardware/README.md` describes the boards in
-the loop.
+`hardware/qemu/run.sh` flashes Espressif's QEMU, `hardware/samba-emulator/run.sh` flashes
+arduino/BOSSA's emulated SAM-BA bootloader with nanoflash and bossac, and `hardware/README.md`
+describes the boards in the loop.
 
 ## Invariants
 

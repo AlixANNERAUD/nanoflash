@@ -1,7 +1,7 @@
 # Hardware in the loop
 
-Two checks run the flashing path against something other than a transcript: Espressif's QEMU
-(no board needed) and real boards attached to a machine.
+Three checks run the flashing path against something other than a transcript: Espressif's QEMU
+and arduino/BOSSA's SAM-BA emulator (no board needed), and real boards attached to a machine.
 
 ## QEMU
 
@@ -28,6 +28,44 @@ When Espressif publishes a new release, update `QEMU_RELEASE`, `QEMU_VERSION` an
 digests (from the `checksum.sha256` asset of the release) in the script, and check the flags against the `esp32` and `esp32c3` pages of
 https://github.com/espressif/esp-toolchain-docs/tree/main/qemu (the strap modes `0x0f` and
 `0x02` select the UART download mode).
+
+## SAM-BA emulator
+
+`mise run test-samba-emulator` runs `hardware/samba-emulator/run.sh` on Linux or macOS with git,
+python3, make and a C++ compiler (no package to install, no root). The script
+
+1. fetches https://github.com/arduino/BOSSA at the commit pinned in `BOSSA_COMMIT` into
+   `target/samba-emulator/BOSSA` (or `$SAMBA_EMULATOR_DIRECTORY/BOSSA`), refuses a checkout at
+   another commit, and builds `bossac` (`make` prints `wx-config: not found`: only the graphical
+   BOSSA needs wxWidgets). BOSSA is BSD-3-Clause: it is only built and run as a test tool, and
+   none of its code is in this repository,
+2. runs `hardware/samba-emulator/emulate.py`, which starts BOSSA's emulated Arduino Nano 33 BLE
+   bootloader (`tests/samba.py`) on a pseudo-terminal for each scenario and prints `<name> ok`
+   or `<name> FAILED: <why>`:
+   - `nanoflash`: flashes `hardware/samba-emulator/nano33ble.toml` (the fixture application at
+     `0x10000`, no reset, no USB identity) and records the traffic; the flash holds the image and
+     `0xFF` elsewhere, the emulator saw `X` first and `K` last,
+   - `same-flash-as-bossac`: flashes a 154600-byte image with nanoflash, and with
+     `bossac -U -i -e -w -v <image> -R` on a fresh emulator; the images are identical in both
+     flashes, and so is everything outside the last page. The rest of the last page differs:
+     nanoflash pads it with `0xFF`, bossac with `0x00`,
+   - `crc-mismatch`: the emulator corrupts one byte; exit code 3, `verification-failed`, then
+     `K`,
+   - `no-bootloader`: the emulator never answers; exit code 2, `no-bootloader`, nothing written,
+   - `below-the-application`: an image at `0x0`; exit code 1, `below-writable-flash`, nothing
+     erased or written,
+3. replays the recording with `--replay`, which must succeed.
+
+`crates/nanoflash/tests/transcripts/samba/recorded/emulator-nano33ble.transcript` is a copy of
+the recording, replayed by `cargo test`.
+
+The `samba-emulator` job of `.github/workflows/ci.yml` runs this and is allowed to fail: BOSSA is
+fetched from GitHub, and the emulator is not the real bootloader. If it fails while nanoflash did
+not change, first check whether the emulator or bossac changed. To move to a newer BOSSA, update
+`BOSSA_COMMIT` (and the commit named in the first line of the copied transcript), run the task,
+read the new `tests/samba.py` for changed commands, then copy
+`target/samba-emulator/nano33ble.transcript` over the recorded transcript, keeping its first
+comment line.
 
 ## Boards
 

@@ -184,3 +184,7 @@ run = [
 description = "Flash the boards listed in hardware/boards.toml (see hardware/README.md)"
 env.NANOFLASH_HARDWARE = "hardware/boards.toml"
 run = "cargo test -p nanoflash-cli --test hardware -- --ignored --nocapture"
+
+[tasks.test-samba-emulator]
+description = "Flash arduino/BOSSA's emulated SAM-BA bootloader with nanoflash and bossac (Linux or macOS; needs git, python3, make and a C++ compiler)"
+run = "hardware/samba-emulator/run.sh"
