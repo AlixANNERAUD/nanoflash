@@ -23,7 +23,8 @@ struct TemporaryDirectory(PathBuf);
 
 impl TemporaryDirectory {
     fn new(name: &str) -> Self {
-        let path = std::env::temp_dir().join(format!("nanoflash-{name}-{}", std::process::id()));
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("nanoflash-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&path);
         fs::create_dir_all(&path).unwrap();
         Self(path)

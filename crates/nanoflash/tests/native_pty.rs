@@ -35,8 +35,8 @@ impl Drop for Pair {
 /// Starts `socat`, or returns `None` when it is missing and not required.
 fn start(name: &str) -> Option<Pair> {
     let required = std::env::var("NANOFLASH_REQUIRE_SOCAT").is_ok_and(|value| value == "1");
-    let directory =
-        std::env::temp_dir().join(format!("nanoflash-pty-{}-{name}", std::process::id()));
+    let directory = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("nanoflash-pty-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&directory);
     std::fs::create_dir_all(&directory).expect("a temporary directory");
     let spawned = Command::new("socat")

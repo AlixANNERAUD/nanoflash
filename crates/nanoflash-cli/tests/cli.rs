@@ -72,7 +72,7 @@ fn write_overlapping_layout(directory: &Path) -> PathBuf {
 
 #[test]
 fn check_fails_on_overlap_with_exit_code_1() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let layout = write_overlapping_layout(directory.path());
     let output = run(&["layout", "check", path_text(&layout)]);
     assert_eq!(output.status.code(), Some(1));
@@ -109,7 +109,7 @@ fn image_of(directory: &Path, size: usize) -> PathBuf {
 
 #[test]
 fn check_image_headroom() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let image = image_of(directory.path(), 0xC0000);
     let layout = fixture(ESP32);
     let argument = format!("application={}", path_text(&image));
@@ -124,7 +124,7 @@ fn check_image_headroom() {
 
 #[test]
 fn image_too_large_fails() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let image = image_of(directory.path(), 0x100001);
     let layout = fixture(ESP32);
     let argument = format!("application={}", path_text(&image));
@@ -180,7 +180,7 @@ fn missing_layout_file_is_an_input_error() {
 
 #[test]
 fn write_espressif_is_0xc00_bytes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let output_path = directory.path().join("table.bin");
     let layout = fixture(ESP32);
     let output = run(&[
@@ -203,7 +203,7 @@ fn write_espressif_is_0xc00_bytes() {
 
 #[test]
 fn write_mbr_is_512_bytes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let output_path = directory.path().join("mbr.bin");
     let layout = fixture("sd-card.toml");
     let output = run(&[
@@ -225,7 +225,7 @@ fn write_mbr_is_512_bytes() {
 
 #[test]
 fn write_constants_matches_the_library() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let output_path = directory.path().join("constants.rs");
     let layout = fixture(ESP32);
     let output = run(&[
@@ -248,7 +248,7 @@ fn write_constants_matches_the_library() {
 
 #[test]
 fn write_linker_regions() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let output_path = directory.path().join("memory.x");
     let layout = fixture("nrf52840-arduino.toml");
     let output = run(&[
@@ -354,7 +354,7 @@ fn help_and_version_exit_0() {
 
 #[test]
 fn image_directory_is_rejected() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let layout = fixture(ESP32);
     let argument = format!("application={}", path_text(directory.path()));
     let output = run(&["layout", "check", path_text(&layout), "--image", &argument]);
@@ -379,7 +379,7 @@ fn closed_stdout_does_not_panic() {
 
 #[test]
 fn write_table_error_exits_1() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let output_path = directory.path().join("mbr.bin");
     let layout = fixture(ESP32);
     let output = run(&[
@@ -552,7 +552,7 @@ fn manifest_with_image(directory: &Path, path: &str) -> PathBuf {
 
 #[test]
 fn input_errors_exit_1_before_the_device() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let manifest = manifest_with_image(directory.path(), "missing.bin");
     let transcript = transcript_path("identity-only.transcript");
     let output = run(&[
@@ -576,7 +576,7 @@ fn input_errors_exit_1_before_the_device() {
 
 #[test]
 fn url_paths_are_refused_natively() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let manifest = manifest_with_image(directory.path(), "https://example.com/a.bin");
     let transcript = transcript_path("identity-only.transcript");
     let output = run(&[
@@ -634,7 +634,7 @@ fn host_matches(tokens: &[HostToken], bytes: &[u8]) -> bool {
 
 #[test]
 fn record_writes_the_transcript() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let recorded = directory.path().join("recorded.transcript");
     let output = flash_replaying(
         "flash-esp32s3-usb.transcript",
@@ -669,7 +669,7 @@ fn record_writes_the_transcript() {
 
 #[test]
 fn record_writes_the_transcript_when_the_command_fails() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let recorded = directory.path().join("failed.transcript");
     let output = flash_replaying(
         "flash-md5-mismatch.transcript",
@@ -714,7 +714,7 @@ fn detect_needs_a_port() {
 
 #[test]
 fn detect_without_identity_asks_for_a_protocol() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let transcript = directory.path().join("bridge.transcript");
     fs::write(&transcript, "! timeout\n").unwrap();
     let output = run(&["detect", "--replay", path_text(&transcript), "--json"]);
@@ -739,7 +739,7 @@ fn detect_without_identity_asks_for_a_protocol() {
 
 #[test]
 fn image_build_writes_the_merged_image() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let board = boards(USB_BOARD);
     let merged = directory.path().join("out.bin");
     let output = run(&[
@@ -811,7 +811,7 @@ fn layout_check_with_a_manifest() {
 
 #[test]
 fn layout_check_warns_on_a_different_table() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let table = directory.path().join("table.bin");
     fs::write(&table, vec![0u8; 0xC00]).unwrap();
     let manifest = directory.path().join("manifest.toml");
@@ -884,7 +884,7 @@ fn layout_check_names_the_boards_when_none_uses_the_layout() {
 
 #[test]
 fn a_replay_that_diverges_exits_2() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let transcript = directory.path().join("short.transcript");
     fs::write(&transcript, "! identity 303a:1001\n> 01\n").unwrap();
     let board = boards(USB_BOARD);
@@ -914,7 +914,7 @@ fn port_and_replay_conflict() {
 
 #[test]
 fn image_build_refuses_offsets_beyond_four_gibibytes() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     fs::write(directory.path().join("small.bin"), [0u8; 16]).unwrap();
     for offset in ["1099511627776", "18446744073709486080"] {
         let manifest = directory.path().join("manifest.json");
@@ -952,7 +952,7 @@ fn secure_download_mode_is_flashed_without_verification() {
         .filter(|line| !line.starts_with("> c0 00 13") && !line.starts_with("< c0 01 13"))
         .map(|line| format!("{line}\n"))
         .collect();
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let transcript = directory.path().join("secure.transcript");
     fs::write(
         &transcript,
@@ -1212,7 +1212,7 @@ fn layout_check_counts_hex_images_decoded() {
 
 #[test]
 fn layout_check_names_the_line_of_a_bad_hex_image() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let hex = directory.path().join("broken.hex");
     fs::write(&hex, ":0100000055AB\n:00000001FF\n").unwrap();
     let layout = fixture("uno.toml");
@@ -1352,7 +1352,7 @@ fn detects_an_uno_and_a_leonardo() {
     }
     // The protocols also go by their names in Arduino's boards.txt, as in manifests: `arduino`
     // for the Uno, `wiring` for the Mega 2560 (its connection, then CMD_LEAVE_PROGMODE_ISP).
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let mega = directory.path().join("detect-mega2560.transcript");
     let connect = fs::read_to_string(avr_transcript("connect-mega2560.transcript")).unwrap();
     fs::write(

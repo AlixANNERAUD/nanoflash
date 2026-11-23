@@ -119,8 +119,11 @@ mod tests {
     use std::fs;
 
     fn scratch(name: &str) -> PathBuf {
-        let directory =
-            std::env::temp_dir().join(std::format!("nanoflash-{name}-{}", std::process::id()));
+        let directory = Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/test-scratch"
+        ))
+        .join(std::format!("nanoflash-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&directory);
         fs::create_dir_all(&directory).unwrap();
         directory

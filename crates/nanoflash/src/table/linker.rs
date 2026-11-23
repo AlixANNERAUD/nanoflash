@@ -556,7 +556,11 @@ pub mod log {\n    // Moves with the flash of the device: its offset is only kno
     }
 
     fn compiles(index: usize, text: &str) {
-        let directory = std::env::temp_dir().join(std::format!(
+        let directory = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../target/test-scratch"
+        ))
+        .join(std::format!(
             "nanoflash-constants-{}-{index}",
             std::process::id()
         ));
