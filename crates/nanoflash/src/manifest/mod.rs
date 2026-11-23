@@ -555,7 +555,8 @@ sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
             board.application_devices,
             [DeviceFilter {
                 vendor: 0x2341,
-                product: Some(0x805a)
+                product: Some(0x805a),
+                serial_number: None,
             }]
         );
         assert_eq!(board.bootloader_devices[0].product, Some(0x005a));
@@ -676,13 +677,30 @@ sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
             text.boards[0].application_devices,
             [DeviceFilter {
                 vendor: 0x303a,
-                product: None
+                product: None,
+                serial_number: None,
             }]
         );
         let message = Manifest::from_json(&with("\"0x10000\""))
             .unwrap_err()
             .to_string();
         assert!(message.contains("0x10000"), "{message}");
+    }
+
+    #[test]
+    fn device_filters_may_name_a_serial_number() {
+        let manifest = Manifest::from_toml(&board(
+            "application-devices = [{ vendor = 0x303a, product = 0x1001, serial-number = \"A1\" }]",
+        ))
+        .unwrap();
+        assert_eq!(
+            manifest.boards[0].application_devices[0]
+                .serial_number
+                .as_deref(),
+            Some("A1")
+        );
+        let text = serde_json::to_string(&manifest).unwrap();
+        assert!(text.contains("\"serial-number\":\"A1\""), "{text}");
     }
 
     #[test]

@@ -704,3 +704,55 @@ fn offsets_beyond_four_gibibytes_are_refused() {
     assert!(matches!(result.2, Err(Error::OutOfRange { value, .. }) if value == 1 << 32));
     assert_eq!(refused.class(), ErrorClass::Input);
 }
+
+/// Two boards of the same model, told apart by their serial number: opens the first port the
+/// filter selects, in order.
+struct TwoBoards {
+    ports: Vec<nanoflash::testing::ReplayPort>,
+}
+
+impl PortProvider for TwoBoards {
+    type Port = nanoflash::testing::ReplayPort;
+
+    async fn open(
+        &mut self,
+        filter: &DeviceFilter,
+        _baud_rate: u32,
+        _timeout: Duration,
+    ) -> Result<Self::Port, TransportError> {
+        let index = self
+            .ports
+            .iter()
+            .position(|port| {
+                port.identity()
+                    .is_some_and(|identity| filter.matches(&identity))
+            })
+            .ok_or(TransportError::NotFound {
+                filter: filter.to_string(),
+            })?;
+        Ok(self.ports.remove(index))
+    }
+}
+
+#[test]
+fn reopening_picks_the_board_with_the_same_serial_number() {
+    let full = transcript("connect-reopen");
+    let (before, after) = full.split_once("! reopen 303a:1001\n").unwrap();
+    // The board being connected to leaves during the reset and comes back.
+    let before = before.replace("! identity 303a:1001", "! identity 303a:1001 SECOND");
+    let (port, _) = replay(Transcript::parse(&before).unwrap());
+    // Another board of the same model, listed first, which must not be talked to.
+    let (other, other_session) = replay(Transcript::parse("! identity 303a:1001 FIRST\n").unwrap());
+    let (returning, session) =
+        replay(Transcript::parse(&format!("! identity 303a:1001 SECOND\n{after}")).unwrap());
+    let mut provider = TwoBoards {
+        ports: vec![other, returning],
+    };
+    let mut backend =
+        EspressifBackend::new(port, &mut provider, None, EspressifOptions::default()).unwrap();
+    assert_eq!(block_on(backend.connect(&mut ())).unwrap().chip, "esp32-s3");
+    drop(backend);
+    session.finish().unwrap();
+    other_session.finish().unwrap();
+    assert_eq!(provider.ports.len(), 1);
+}

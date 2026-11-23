@@ -104,6 +104,7 @@ fn provider_gives_up_with_not_found() {
     let filter = DeviceFilter {
         vendor: 0xffff,
         product: Some(0xffff),
+        serial_number: None,
     };
     let result =
         pollster::block_on(NativePortProvider.open(&filter, 115200, Duration::from_millis(300)));

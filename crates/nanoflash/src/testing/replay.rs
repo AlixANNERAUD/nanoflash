@@ -245,7 +245,14 @@ impl PortProvider for ReplayProvider {
     ) -> Result<ReplayPort, TransportError> {
         let mut state = self.state.borrow_mut();
         let identity = match state.events.get(state.next).map(|entry| &entry.event) {
-            Some(Event::Reopen(identity)) => identity.clone(),
+            // The port of the transcript must be one the filter selects.
+            Some(Event::Reopen(identity))
+                if identity
+                    .as_ref()
+                    .is_none_or(|identity| filter.matches(identity)) =>
+            {
+                identity.clone()
+            }
             _ => return Err(state.unexpected(&format!("an open of {filter}"))),
         };
         state.advance();
@@ -374,6 +381,7 @@ mod tests {
             let filter = DeviceFilter {
                 vendor: 0x303a,
                 product: None,
+                serial_number: None,
             };
             let mut reopened = provider.open(&filter, 115_200, TIMEOUT).await.unwrap();
             let identity = reopened.identity().unwrap();
@@ -386,7 +394,8 @@ mod tests {
             block_on(provider.open(
                 &DeviceFilter {
                     vendor: 1,
-                    product: None
+                    product: None,
+                    serial_number: None,
                 },
                 9600,
                 TIMEOUT

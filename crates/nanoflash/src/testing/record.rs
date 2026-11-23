@@ -210,6 +210,7 @@ mod tests {
             let filter = DeviceFilter {
                 vendor: 0x303a,
                 product: None,
+                serial_number: None,
             };
             let mut reopened = provider.open(&filter, 115_200, timeout).await.unwrap();
             assert_eq!(reopened.read(&mut buffer, timeout).await.unwrap(), 2);

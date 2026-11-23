@@ -431,6 +431,7 @@ mod tests {
         vec![DeviceFilter {
             vendor: 0x303a,
             product: Some(0x1001),
+            serial_number: None,
         }]
     }
 

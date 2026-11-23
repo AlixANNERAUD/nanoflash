@@ -33,22 +33,28 @@ pub struct UsbIdentity {
 
 /// Selects the devices a provider may open.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "RawDeviceFilter")]
+#[serde(try_from = "RawDeviceFilter", rename_all = "kebab-case")]
 pub struct DeviceFilter {
     /// The USB vendor identifier.
     pub vendor: u16,
     /// The USB product identifier; any product when `None`.
     pub product: Option<u16>,
+    /// The USB serial number; any device when `None`. Reopening a device that left sets it, so
+    /// that another board of the same model is not picked instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial_number: Option<String>,
 }
 
 /// A filter as written in a manifest: integers or text for the identifiers.
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct RawDeviceFilter {
     #[serde(deserialize_with = "crate::quantity::deserialize")]
     vendor: u64,
     #[serde(default, deserialize_with = "crate::quantity::deserialize_optional")]
     product: Option<u64>,
+    #[serde(default)]
+    serial_number: Option<String>,
 }
 
 impl TryFrom<RawDeviceFilter> for DeviceFilter {
@@ -69,24 +75,35 @@ impl TryFrom<RawDeviceFilter> for DeviceFilter {
                 )
             })?),
         };
-        Ok(DeviceFilter { vendor, product })
+        Ok(DeviceFilter {
+            vendor,
+            product,
+            serial_number: raw.serial_number,
+        })
     }
 }
 
 impl DeviceFilter {
-    /// Whether `identity` is selected by this filter.
+    /// Whether `identity` is selected by this filter. The serial number is only compared when
+    /// the filter has one.
     pub fn matches(&self, identity: &UsbIdentity) -> bool {
         self.vendor == identity.vendor
             && self
                 .product
                 .is_none_or(|product| product == identity.product)
+            && self
+                .serial_number
+                .as_ref()
+                .is_none_or(|serial| identity.serial_number.as_ref() == Some(serial))
     }
 
-    /// The filter selecting exactly the vendor and product of `identity`.
+    /// The filter selecting exactly the device of `identity`: its vendor, its product and, when
+    /// it has one, its serial number.
     pub fn exact(identity: &UsbIdentity) -> DeviceFilter {
         DeviceFilter {
             vendor: identity.vendor,
             product: Some(identity.product),
+            serial_number: identity.serial_number.clone(),
         }
     }
 }
@@ -94,8 +111,12 @@ impl DeviceFilter {
 impl fmt::Display for DeviceFilter {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self.product {
-            Some(product) => write!(formatter, "{:04x}:{:04x}", self.vendor, product),
-            None => write!(formatter, "{:04x}:*", self.vendor),
+            Some(product) => write!(formatter, "{:04x}:{:04x}", self.vendor, product)?,
+            None => write!(formatter, "{:04x}:*", self.vendor)?,
+        }
+        match &self.serial_number {
+            Some(serial) => write!(formatter, " with the serial number {serial}"),
+            None => Ok(()),
         }
     }
 }
@@ -189,4 +210,36 @@ pub trait PortProvider {
         baud_rate: u32,
         timeout: Duration,
     ) -> Result<Self::Port, TransportError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::string::ToString;
+
+    fn identity(serial_number: Option<&str>) -> UsbIdentity {
+        UsbIdentity {
+            vendor: 0x303a,
+            product: 0x1001,
+            serial_number: serial_number.map(String::from),
+        }
+    }
+
+    #[test]
+    fn exact_filters_compare_the_serial_number() {
+        let first = identity(Some("FIRST"));
+        let second = identity(Some("SECOND"));
+        let filter = DeviceFilter::exact(&second);
+        assert!(filter.matches(&second));
+        assert!(!filter.matches(&first));
+        assert!(!filter.matches(&identity(None)));
+        assert_eq!(
+            filter.to_string(),
+            "303a:1001 with the serial number SECOND"
+        );
+        // Without a serial number, any device of the model matches.
+        let any = DeviceFilter::exact(&identity(None));
+        assert!(any.matches(&first) && any.matches(&second));
+        assert_eq!(any.to_string(), "303a:1001");
+    }
 }
