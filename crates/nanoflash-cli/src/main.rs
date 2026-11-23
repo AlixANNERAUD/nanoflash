@@ -2,16 +2,17 @@
 
 #![forbid(unsafe_code)]
 
+mod device;
+mod image;
+mod layout;
 mod output;
+mod source;
 
 use getargs_derive::{Error as ArgumentError, GetArgs, Subcommand, ValueEnum};
-use nanoflash::layout::{ImageSize, Layout, LayoutErrors, ResolvedLayout};
-use nanoflash::table::{TableError, espressif, linker, mbr};
 use output::Failure;
 use std::ffi::OsString;
-use std::fs;
 use std::io::{self, ErrorKind, Write};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 /// Lay out flash and write firmware to microcontroller boards of any vendor.
@@ -29,6 +30,104 @@ enum Command {
         #[command(subcommand)]
         command: LayoutCommand,
     },
+    /// Write the images of a board to the device on a serial port.
+    Flash {
+        /// The board manifest (TOML or JSON).
+        #[arg(long, value_name = "MANIFEST")]
+        board: PathBuf,
+        /// The serial port; by default the only one that suits the board.
+        #[arg(long)]
+        port: Option<String>,
+        /// The board of the manifest to flash, when the device cannot tell.
+        #[arg(long)]
+        board_identifier: Option<String>,
+        /// Erase the whole flash before writing.
+        #[arg(long)]
+        erase_all: bool,
+        /// Do not check what was written.
+        #[arg(long)]
+        no_verify: bool,
+        /// The baud rate to flash at [default: 460800 through a UART bridge, 115200 on USB-Serial-JTAG].
+        #[arg(long)]
+        baud_rate: Option<u32>,
+        /// How to report progress on standard error; quiet with --json.
+        #[arg(long, value_enum)]
+        progress: Option<ProgressFormat>,
+        /// Print one JSON document instead of sentences.
+        #[arg(long)]
+        json: bool,
+        #[arg(long, hide)]
+        record: Option<PathBuf>,
+        #[arg(long, hide)]
+        replay: Option<PathBuf>,
+    },
+    /// Connect to a device and tell what chip it is.
+    Detect {
+        /// The serial port.
+        #[arg(long, required_unless_present = "replay")]
+        port: Option<String>,
+        /// The protocol of the device, when its USB identity does not tell.
+        #[arg(long, value_enum)]
+        protocol: Option<ProtocolArgument>,
+        /// The baud rate to use [default: 460800 through a UART bridge, 115200 on USB-Serial-JTAG].
+        #[arg(long)]
+        baud_rate: Option<u32>,
+        /// How to report progress on standard error; quiet with --json.
+        #[arg(long, value_enum)]
+        progress: Option<ProgressFormat>,
+        /// Print one JSON document instead of sentences.
+        #[arg(long)]
+        json: bool,
+        #[arg(long, hide)]
+        record: Option<PathBuf>,
+        #[arg(long, hide)]
+        replay: Option<PathBuf>,
+    },
+    /// Work with flash images.
+    Image {
+        #[command(subcommand)]
+        command: ImageCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ImageCommand {
+    /// Merge the images of a board into one flash image.
+    Build {
+        /// The board manifest (TOML or JSON).
+        #[arg(long, value_name = "MANIFEST")]
+        board: PathBuf,
+        /// The board of the manifest, when it has several.
+        #[arg(long)]
+        board_identifier: Option<String>,
+        /// The file to write.
+        #[arg(long)]
+        output: PathBuf,
+        /// Pad the image to the flash size of the layout.
+        #[arg(long)]
+        fill: bool,
+        /// Print one JSON document instead of a sentence.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// How progress is reported on standard error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProgressFormat {
+    /// One line per stage.
+    Human,
+    /// One JSON object per event.
+    Json,
+    /// Nothing.
+    Quiet,
+}
+
+/// The protocols `detect` can be told to speak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum ProtocolArgument {
+    /// The Espressif ROM loader.
+    Espressif,
 }
 
 #[derive(Debug, Subcommand)]
@@ -38,8 +137,18 @@ enum LayoutCommand {
         /// The layout file.
         layout: PathBuf,
         /// An image written to a partition, as PARTITION=FILE (repeatable).
-        #[arg(long = "image", value_name = "PARTITION=FILE")]
+        #[arg(
+            long = "image",
+            value_name = "PARTITION=FILE",
+            conflicts_with = "manifest"
+        )]
         images: Vec<String>,
+        /// A board manifest: check the images it writes instead.
+        #[arg(long, value_name = "MANIFEST")]
+        manifest: Option<PathBuf>,
+        /// The board of the manifest, when several use the layout.
+        #[arg(long, requires = "manifest")]
+        board_identifier: Option<String>,
         /// Print one JSON document instead of the table.
         #[arg(long)]
         json: bool,
@@ -89,24 +198,96 @@ fn main() -> ExitCode {
         Ok(arguments) => arguments,
         Err(error) => return argument_error(&error, &raw),
     };
-    let Command::Layout { command } = arguments.command;
-    let (json, result) = match command {
-        LayoutCommand::Check {
-            layout,
-            images,
-            json,
-        } => (json, check(&layout, &images, json)),
-        LayoutCommand::Write {
-            layout,
-            format,
-            output,
-            json,
-        } => (json, write(&layout, format, &output, json)),
-    };
+    let (json, result) = run(arguments.command);
     match result {
         Ok(text) => emit(&mut io::stdout().lock(), &text, 0),
-        Err(failure) if json => emit(&mut io::stdout().lock(), &failure.json(), 1),
-        Err(failure) => emit(&mut io::stderr().lock(), &failure.human(), 1),
+        Err(failure) if json => emit(&mut io::stdout().lock(), &failure.json(), failure.code()),
+        Err(failure) => emit(&mut io::stderr().lock(), &failure.human(), failure.code()),
+    }
+}
+
+/// Run a command: whether it was asked for JSON, and what it printed or why it failed.
+fn run(command: Command) -> (bool, Result<String, Failure>) {
+    match command {
+        Command::Layout { command } => match command {
+            LayoutCommand::Check {
+                layout,
+                images,
+                manifest,
+                board_identifier,
+                json,
+            } => {
+                let choice = manifest.as_deref().map(|manifest| layout::ManifestChoice {
+                    manifest,
+                    board_identifier: board_identifier.as_deref(),
+                });
+                (json, layout::check(&layout, &images, choice, json))
+            }
+            LayoutCommand::Write {
+                layout,
+                format,
+                output,
+                json,
+            } => (json, layout::write(&layout, format, &output, json)),
+        },
+        Command::Flash {
+            board,
+            port,
+            board_identifier,
+            erase_all,
+            no_verify,
+            baud_rate,
+            progress,
+            json,
+            record,
+            replay,
+        } => (
+            json,
+            device::flash_command(&device::FlashArguments {
+                board: &board,
+                port: port.as_deref(),
+                board_identifier: board_identifier.as_deref(),
+                erase_all,
+                no_verify,
+                baud_rate,
+                progress,
+                json,
+                record: record.as_deref(),
+                replay: replay.as_deref(),
+            }),
+        ),
+        Command::Detect {
+            port,
+            protocol,
+            baud_rate,
+            progress,
+            json,
+            record,
+            replay,
+        } => (
+            json,
+            device::detect_command(&device::DetectArguments {
+                port: port.as_deref(),
+                protocol,
+                baud_rate,
+                progress,
+                json,
+                record: record.as_deref(),
+                replay: replay.as_deref(),
+            }),
+        ),
+        Command::Image { command } => match command {
+            ImageCommand::Build {
+                board,
+                board_identifier,
+                output,
+                fill,
+                json,
+            } => (
+                json,
+                image::build(&board, board_identifier.as_deref(), &output, fill, json),
+            ),
+        },
     }
 }
 
@@ -133,82 +314,4 @@ fn argument_error(error: &ArgumentError<'_>, raw: &[OsString]) -> ExitCode {
     } else {
         emit(&mut io::stderr().lock(), &format!("error: {error}\n"), 1)
     }
-}
-
-fn load(path: &Path) -> Result<ResolvedLayout, Failure> {
-    let text = fs::read_to_string(path)
-        .map_err(|error| Failure::Input(format!("cannot read {}: {error}", path.display())))?;
-    let layout = Layout::from_toml(&text)
-        .map_err(|error| Failure::Input(format!("{}: {error}", path.display())))?;
-    layout
-        .resolve()
-        .map_err(|LayoutErrors(errors)| Failure::Layout(errors))
-}
-
-fn image_size(argument: &str) -> Result<ImageSize, Failure> {
-    let Some((partition, file)) = argument.split_once('=') else {
-        return Err(Failure::Input(format!(
-            "bad --image argument \"{argument}\": expected PARTITION=FILE"
-        )));
-    };
-    if partition.is_empty() || file.is_empty() {
-        return Err(Failure::Input(format!(
-            "bad --image argument \"{argument}\": expected PARTITION=FILE"
-        )));
-    }
-    let metadata = fs::metadata(file)
-        .map_err(|error| Failure::Input(format!("cannot read image {file}: {error}")))?;
-    if !metadata.is_file() {
-        return Err(Failure::Input(format!(
-            "cannot read image {file}: not a regular file"
-        )));
-    }
-    Ok(ImageSize {
-        partition: partition.to_string(),
-        size: metadata.len(),
-    })
-}
-
-fn check(layout: &Path, images: &[String], json: bool) -> Result<String, Failure> {
-    let resolved = load(layout)?;
-    let sizes = images
-        .iter()
-        .map(|argument| image_size(argument))
-        .collect::<Result<Vec<_>, _>>()?;
-    let report = resolved
-        .report(&sizes)
-        .map_err(|LayoutErrors(errors)| Failure::Layout(errors))?;
-    Ok(if json {
-        output::report_json(&report)
-    } else {
-        output::report_table(&report)
-    })
-}
-
-fn write(layout: &Path, format: Format, destination: &Path, json: bool) -> Result<String, Failure> {
-    let resolved = load(layout)?;
-    let bytes: Vec<u8> = match format {
-        Format::Espressif => espressif::write(&resolved),
-        Format::Mbr => mbr::write(&resolved).map(|table| table.to_vec()),
-        Format::Linker => linker::memory_regions(&resolved).map(String::into_bytes),
-        Format::Constants => linker::rust_constants(&resolved).map(String::into_bytes),
-    }
-    .map_err(|error: TableError| Failure::Table(error))?;
-    fs::write(destination, &bytes).map_err(|error| {
-        Failure::Input(format!("cannot write {}: {error}", destination.display()))
-    })?;
-    let file = destination.display().to_string();
-    Ok(if json {
-        output::written_json(&file, bytes.len())
-    } else {
-        let kind = match format {
-            Format::Espressif | Format::Mbr => "table",
-            Format::Linker | Format::Constants => "output",
-        };
-        format!(
-            "wrote {} {kind} to {file} ({} bytes)\n",
-            format.name(),
-            bytes.len()
-        )
-    })
 }

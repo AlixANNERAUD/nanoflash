@@ -485,6 +485,7 @@ dependencies = [
  "getargs",
  "getargs-derive",
  "nanoflash",
+ "pollster",
  "serde",
  "serde_json",
  "tempfile",
