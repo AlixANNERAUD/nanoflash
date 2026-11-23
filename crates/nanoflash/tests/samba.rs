@@ -1,13 +1,15 @@
 //! Transcript tests of the SAM-BA backend.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
 use nanoflash::backend::{Backend, ChipInformation, ProgressEvent, Region, Segment, Stage};
-use nanoflash::manifest::{Protocol, ResetSequence};
+use nanoflash::flash::{FlashOptions, FlashReport, Hooks, detect, flash};
+use nanoflash::manifest::{Manifest, Protocol, ResetSequence};
 use nanoflash::samba::{SambaBackend, SambaOptions, crc16};
 use nanoflash::testing::{
-    Event, HostToken, ReplayPort, ReplayProvider, Transcript, record, replay,
+    Event, HostToken, MemorySource, ReplayPort, ReplayProvider, Transcript, record, replay,
 };
 use nanoflash::transport::{
     DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
@@ -106,6 +108,7 @@ fn connects_to_a_nano_33_ble_after_the_touch() {
             secure_download_mode: false,
             usb: identity(0x2341, 0x005a),
             writable_from: Some(0x1_0000),
+            erases_to_end: false,
         }
     );
     assert_eq!(connection.chip, Some("nrf52840"));
@@ -300,6 +303,7 @@ fn connects_to_a_samd21_bootloader() {
             secure_download_mode: false,
             usb: identity(0x2341, 0x0054),
             writable_from: Some(0x2000),
+            erases_to_end: true,
         }
     );
     assert_eq!(connection.chip, Some("samd21g18a"));
@@ -1152,4 +1156,407 @@ fn nothing_is_done_before_connecting() {
     assert_eq!(block_on(backend.verify(&[segment], &mut ())), none);
     assert_eq!(block_on(backend.erase(region, &mut ())), none);
     assert_eq!(block_on(backend.reset_to_application()), none);
+}
+
+fn fixture(relative: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(relative);
+    std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// The text of `tests/boards/<name>.toml`.
+fn board_text(name: &str) -> String {
+    String::from_utf8(fixture(&format!("boards/{name}.toml"))).unwrap()
+}
+
+fn board(name: &str) -> Manifest {
+    Manifest::from_toml(&board_text(name)).unwrap()
+}
+
+/// The layouts and images of the fixture boards, under the paths their manifests use.
+fn fixture_source() -> MemorySource {
+    let mut files = BTreeMap::new();
+    for path in [
+        "../layouts/nrf52840-arduino.toml",
+        "../images/application.bin",
+    ] {
+        files.insert(path.to_string(), fixture(&path[3..]));
+    }
+    MemorySource { files }
+}
+
+/// Flashes `manifest` over a replay of `text`.
+fn run_flash(
+    manifest: &Manifest,
+    text: &str,
+    source: &mut MemorySource,
+    options: &FlashOptions,
+    progress: &mut Recorder,
+) -> (Result<FlashReport, Error>, ReplayProvider) {
+    let (port, mut provider) = replay(Transcript::parse(text).unwrap());
+    let hooks = Hooks {
+        source,
+        verifier: &mut (),
+        progress,
+    };
+    let result = block_on(flash(manifest, port, &mut provider, hooks, options));
+    (result, provider)
+}
+
+fn images(report: &FlashReport) -> Vec<(&str, u64, u64)> {
+    report
+        .images
+        .iter()
+        .map(|image| (image.label.as_str(), image.offset, image.size))
+        .collect()
+}
+
+fn stages(recorder: &Recorder) -> Vec<Stage> {
+    let mut stages: Vec<Stage> = Vec::new();
+    for event in &recorder.events {
+        if stages.last() != Some(&event.stage) {
+            stages.push(event.stage);
+        }
+    }
+    stages
+}
+
+#[test]
+fn flashes_the_nano_33_ble_fixture() {
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &board("nano33ble"),
+        &transcript("flash-nano33ble"),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut recorder,
+    );
+    let report = result.unwrap();
+    assert_eq!(report.board, "arduino-nano-33-ble");
+    assert_eq!(report.chip.chip, "nrf52840");
+    assert_eq!(report.chip.writable_from, Some(0x1_0000));
+    assert!(!report.chip.erases_to_end);
+    assert_eq!(images(&report), [("application", 0x1_0000, 8192)]);
+    assert!(report.verified);
+    assert!(report.warnings.is_empty());
+    provider.finish().unwrap();
+    assert_eq!(
+        stages(&recorder),
+        [
+            Stage::Connecting,
+            Stage::Writing,
+            Stage::Verifying,
+            Stage::Resetting
+        ]
+    );
+    assert!(recorder.messages.is_empty(), "{:?}", recorder.messages);
+}
+
+#[test]
+fn flashes_an_mkr_wifi_1010() {
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &board("mkr-wifi-1010"),
+        &transcript("flash-mkrwifi1010"),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut recorder,
+    );
+    let report = result.unwrap();
+    assert_eq!(report.board, "arduino-mkr-wifi-1010");
+    assert_eq!(report.chip.chip, "samd21g18a");
+    assert_eq!(report.chip.writable_from, Some(0x2000));
+    assert!(report.chip.erases_to_end);
+    assert_eq!(images(&report), [("image at 0x2000", 0x2000, 8192)]);
+    assert!(report.verified);
+    provider.finish().unwrap();
+    // The X of the write erases to the end of flash, and says so.
+    assert_eq!(recorder.messages.len(), 1, "{:?}", recorder.messages);
+}
+
+#[test]
+fn crc_mismatch_resets_and_fails() {
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &board("nano33ble"),
+        &transcript("flash-nano33ble-crc-mismatch"),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut recorder,
+    );
+    let error = result.unwrap_err();
+    assert!(
+        matches!(
+            error,
+            Error::VerificationFailed {
+                offset: 0x1_1000,
+                ..
+            }
+        ),
+        "{error:?}"
+    );
+    assert_eq!(error.class(), ErrorClass::Verification);
+    // K# was sent.
+    provider.finish().unwrap();
+    assert_eq!(stages(&recorder).last(), Some(&Stage::Resetting));
+}
+
+#[test]
+fn images_below_the_application_are_refused_first() {
+    let mut text = board_text("nano33ble");
+    text.push_str("\n[[board.image]]\npartition = \"bootloader\"\npath = \"bootloader.bin\"\n");
+    let manifest = Manifest::from_toml(&text).unwrap();
+    let mut source = fixture_source();
+    source
+        .files
+        .insert("bootloader.bin".to_string(), vec![0xA5; 16]);
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &manifest,
+        &transcript("flash-below-application"),
+        &mut source,
+        &FlashOptions::default(),
+        &mut recorder,
+    );
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::BelowWritableFlash {
+            what: "image \"bootloader\"".into(),
+            offset: 0,
+            writable_from: 0x1_0000,
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Input);
+    // No X: only K# after connecting.
+    provider.finish().unwrap();
+    assert_eq!(stages(&recorder), [Stage::Connecting, Stage::Resetting]);
+}
+
+/// The lines of `Z` over `data` at `address`, one 4096-byte chunk at a time.
+fn checksum_lines(address: u32, data: &[u8]) -> String {
+    let mut text = String::new();
+    for (index, chunk) in data.chunks(0x1000).enumerate() {
+        let chunk_address = address + u32::try_from(index * 0x1000).unwrap();
+        writeln!(
+            text,
+            "> \"Z{chunk_address:08X},{:08X}#\"\n< \"Z{:08X}#\\n\\r\"",
+            chunk.len(),
+            crc16(chunk)
+        )
+        .unwrap();
+    }
+    text
+}
+
+/// The lines of the buffered writes of `data` at `address` on a SAMD21.
+fn samd21_copies(address: u32, data: &[u8]) -> String {
+    let mut text = String::new();
+    for (index, chunk) in data.chunks(0x1000).enumerate() {
+        let chunk_address = address + u32::try_from(index * 0x1000).unwrap();
+        text.push_str(&copy_lines(
+            0x2000_4034,
+            chunk_address,
+            chunk.len().next_multiple_of(0x40),
+            &format!("..{}", chunk.len().next_multiple_of(0x40)),
+        ));
+    }
+    text
+}
+
+const SAMD21_RESET: &str = "> \"WE000ED0C,05FA0004#\"\n";
+
+#[test]
+fn erase_all_starts_at_the_application() {
+    let image = application();
+    let mut text = transcript("connect-mkrwifi1010");
+    // Erase all: one X from the application start; the write needs no second X.
+    text.push_str("> \"X00002000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&samd21_copies(0x2000, &image));
+    text.push_str(&checksum_lines(0x2000, &image));
+    text.push_str(SAMD21_RESET);
+    let options = FlashOptions {
+        erase_all: true,
+        ..FlashOptions::default()
+    };
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &board("mkr-wifi-1010"),
+        &text,
+        &mut fixture_source(),
+        &options,
+        &mut recorder,
+    );
+    result.unwrap();
+    provider.finish().unwrap();
+    assert_eq!(
+        recorder.events[1..3],
+        [
+            event(Stage::Erasing, 0x2000, 0, 0x3_E000),
+            event(Stage::Erasing, 0x2000, 0x3_E000, 0x3_E000),
+        ]
+    );
+    assert_eq!(recorder.messages.len(), 1, "{:?}", recorder.messages);
+}
+
+/// The MKR WiFi 1010 with `image.bin` at 0x2000 instead of the fixture image.
+fn mkr_wifi_1010_with(image: &[u8]) -> (Manifest, MemorySource) {
+    let text = board_text("mkr-wifi-1010").replace("../images/application.bin", "image.bin");
+    let mut source = MemorySource::default();
+    source.files.insert("image.bin".to_string(), image.to_vec());
+    (Manifest::from_toml(&text).unwrap(), source)
+}
+
+#[test]
+fn image_ending_at_the_end_of_flash() {
+    // 0x2000 + 0x3E000 = 0x40000, the end of the SAMD21G18A's flash.
+    let image: Vec<u8> = (0..0x3_E000_u32)
+        .map(|index| (index / 0x1000) as u8)
+        .collect();
+    let (manifest, mut source) = mkr_wifi_1010_with(&image);
+    let mut text = transcript("connect-mkrwifi1010");
+    text.push_str("> \"X00002000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&samd21_copies(0x2000, &image));
+    text.push_str(&checksum_lines(0x2000, &image));
+    text.push_str(SAMD21_RESET);
+    let (result, provider) = run_flash(
+        &manifest,
+        &text,
+        &mut source,
+        &FlashOptions::default(),
+        &mut Recorder::default(),
+    );
+    assert_eq!(
+        images(&result.unwrap()),
+        [("image at 0x2000", 0x2000, 0x3_E000)]
+    );
+    provider.finish().unwrap();
+
+    // One byte more: refused once the chip is known, before any X.
+    let mut longer = image;
+    longer.push(0);
+    let (manifest, mut source) = mkr_wifi_1010_with(&longer);
+    let mut text = transcript("connect-mkrwifi1010");
+    text.push_str(SAMD21_RESET);
+    let (result, provider) = run_flash(
+        &manifest,
+        &text,
+        &mut source,
+        &FlashOptions::default(),
+        &mut Recorder::default(),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Error::OutsideDetectedFlash {
+            what: "image \"image at 0x2000\"".into(),
+            end: 0x4_0001,
+            flash_size: 0x4_0000,
+        }
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn detects_a_nano_33_ble_without_a_manifest() {
+    // The protocol comes from the vendor 0x2341, the bootloader's identity from the built-in
+    // rule (0x805a to 0x005a).
+    let (port, mut provider) = replay(Transcript::parse(&transcript("detect-nano33ble")).unwrap());
+    let chip = block_on(detect(port, &mut provider, None, &mut ())).unwrap();
+    assert_eq!(chip.protocol, Protocol::Samba);
+    assert_eq!(chip.chip, "nrf52840");
+    assert_eq!(chip.usb, identity(0x2341, 0x005a));
+    provider.finish().unwrap();
+}
+
+/// Flashes the MKR WiFi 1010 with `erase` appended to its board, over `connect-mkrwifi1010`
+/// and the reset only.
+fn flash_mkr_wifi_1010_erasing(erase: &str, erase_all: bool) -> (Error, Recorder) {
+    let mut text = board_text("mkr-wifi-1010");
+    text.push_str(erase);
+    let manifest = Manifest::from_toml(&text).unwrap();
+    let mut transcript_text = transcript("connect-mkrwifi1010");
+    transcript_text.push_str(SAMD21_RESET);
+    let options = FlashOptions {
+        erase_all,
+        ..FlashOptions::default()
+    };
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &manifest,
+        &transcript_text,
+        &mut fixture_source(),
+        &options,
+        &mut recorder,
+    );
+    // No X was sent.
+    provider.finish().unwrap();
+    (result.unwrap_err(), recorder)
+}
+
+#[test]
+fn erase_all_and_a_short_erase_entry_are_refused_before_erasing() {
+    let (error, recorder) =
+        flash_mkr_wifi_1010_erasing("\n[[board.erase]]\noffset = 0x8000\nsize = 0x1000\n", true);
+    assert_eq!(
+        error,
+        Error::EraseShortOfFlashEnd {
+            chip: "samd21g18a".into(),
+            offset: 0x8000,
+            end: 0x9000,
+            flash_size: 0x4_0000,
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Input);
+    assert!(
+        error.to_string().contains("this region was not erased"),
+        "{error}"
+    );
+    assert_eq!(stages(&recorder), [Stage::Connecting, Stage::Resetting]);
+}
+
+#[test]
+fn a_short_erase_entry_after_one_reaching_the_end_is_refused_before_erasing() {
+    let (error, recorder) = flash_mkr_wifi_1010_erasing(
+        "\n[[board.erase]]\noffset = 0x10000\nsize = 0x30000\n\n\
+         [[board.erase]]\noffset = 0x8000\nsize = 0x1000\n",
+        false,
+    );
+    assert_eq!(
+        error,
+        Error::EraseShortOfFlashEnd {
+            chip: "samd21g18a".into(),
+            offset: 0x8000,
+            end: 0x9000,
+            flash_size: 0x4_0000,
+        }
+    );
+    assert_eq!(stages(&recorder), [Stage::Connecting, Stage::Resetting]);
+}
+
+#[test]
+fn flash_fills_the_bootloader_devices_from_the_manifest() {
+    // Not an Arduino vendor: without the manifest's bootloader-devices the backend could not tell
+    // which device to wait for after the touch (`UnknownBootloaderDevice`).
+    let manifest = Manifest::from_toml(
+        "[[board]]\nidentifier = \"other-samd21\"\nprotocol = \"samba\"\nchip = \"samd21g18a\"\n\
+         application-devices = [{ vendor = 0x1209, product = 0x8001 }]\n\
+         bootloader-devices = [{ vendor = 0x1209, product = 0x0001 }]\n\
+         [[board.image]]\noffset = 0x2000\npath = \"../images/application.bin\"\n",
+    )
+    .unwrap();
+    let text = transcript("flash-mkrwifi1010")
+        .replace("! identity 2341:8054", "! identity 1209:8001")
+        .replace("! reopen 2341:0054", "! reopen 1209:0001");
+    let (result, provider) = run_flash(
+        &manifest,
+        &text,
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut Recorder::default(),
+    );
+    let report = result.unwrap();
+    assert_eq!(report.board, "other-samd21");
+    assert_eq!(report.chip.usb, identity(0x1209, 0x0001));
+    provider.finish().unwrap();
 }

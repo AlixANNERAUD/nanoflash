@@ -1,0 +1,12 @@
+[[board]]
+identifier = "arduino-mkr-wifi-1010"
+name = "Arduino MKR WiFi 1010"
+protocol = "samba"
+chip = "samd21g18a"
+reset = "touch-1200"
+application-devices = [{ vendor = 0x2341, product = 0x8054 }]
+bootloader-devices = [{ vendor = 0x2341, product = 0x0054 }]
+
+[[board.image]]
+offset = 0x2000
+path = "../images/application.bin"

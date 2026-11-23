@@ -50,6 +50,8 @@ export interface ChipInformation {
   usb: { vendor: number; product: number; serialNumber: string | null } | null;
   /** The lowest flash offset the bootloader writes, when it protects the flash below it. */
   writableFrom: number | null;
+  /** Whether the bootloader erases from an offset to the end of flash, never a region alone. */
+  erasesToEnd: boolean;
 }
 
 /** Something to know, which did not stop the flash. `message` is what to show. */

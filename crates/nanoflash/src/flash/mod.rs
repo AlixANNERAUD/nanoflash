@@ -234,7 +234,8 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
 }
 
 /// Checks every image, then every erase entry, against what `connect` reported: each must start
-/// at or after `writable_from` and end inside the `flash_size` bytes of the chip.
+/// at or after `writable_from` and end inside the `flash_size` bytes of the chip, and when the
+/// bootloader erases to the end of flash, every erase entry must end there.
 fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(), Error> {
     let images = prepared.images.iter().map(|image| {
         let size = u64::try_from(image.bytes.len()).unwrap_or(u64::MAX);
@@ -263,6 +264,22 @@ fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(),
             if end > flash_size {
                 return Err(Error::OutsideDetectedFlash {
                     what: format!("{kind} \"{label}\""),
+                    end,
+                    flash_size,
+                });
+            }
+        }
+    }
+    // Where the bootloader erases from an offset to the end of flash, an erase entry ending
+    // earlier would also erase what follows it. `--erase-all` ends there, but runs first: every
+    // entry is checked before it.
+    if let (true, Some(flash_size)) = (chip.erases_to_end, chip.flash_size) {
+        for entry in &prepared.erase {
+            let end = entry.region.offset.saturating_add(entry.region.size);
+            if end != flash_size {
+                return Err(Error::EraseShortOfFlashEnd {
+                    chip: chip.chip.clone(),
+                    offset: entry.region.offset,
                     end,
                     flash_size,
                 });
@@ -432,6 +449,7 @@ mod tests {
             secure_download_mode: false,
             usb: None,
             writable_from,
+            erases_to_end: false,
         }
     }
 
@@ -561,6 +579,36 @@ mod tests {
                 end: 0x4_0001,
                 flash_size: 0x4_0000,
             })
+        );
+    }
+
+    #[test]
+    fn erase_entries_end_at_the_end_of_flash_where_erases_do() {
+        let samd21 = ChipInformation {
+            chip: "samd21g18a".into(),
+            erases_to_end: true,
+            ..chip(Some(0x4_0000), Some(0x2000))
+        };
+        let to_the_end = ("to the end", 0x1_0000, 0x3_0000);
+        let short = ("short", 0x8000, 0x1000);
+        assert_eq!(
+            check_against_chip(&prepared(&[], &[to_the_end]), &samd21),
+            Ok(())
+        );
+        assert_eq!(
+            check_against_chip(&prepared(&[], &[to_the_end, short]), &samd21),
+            Err(Error::EraseShortOfFlashEnd {
+                chip: "samd21g18a".into(),
+                offset: 0x8000,
+                end: 0x9000,
+                flash_size: 0x4_0000,
+            })
+        );
+        // Where erases stop at the end of the region, a short entry is fine.
+        let region_erases = chip(Some(0x4_0000), Some(0x2000));
+        assert_eq!(
+            check_against_chip(&prepared(&[], &[short]), &region_erases),
+            Ok(())
         );
     }
 

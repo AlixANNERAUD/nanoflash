@@ -109,6 +109,7 @@ test("flashes with the chosen port", async () => {
   assert.equal(report.chip.flashSize, 8388608);
   assert.equal(report.chip.secureDownloadMode, false);
   assert.equal(report.chip.writableFrom, null);
+  assert.equal(report.chip.erasesToEnd, false);
   assert.deepEqual(report.chip.usb, { vendor: 0x303a, product: 0x1001, serialNumber: null });
   assert.deepEqual(
     report.images.map((image) => image.label),

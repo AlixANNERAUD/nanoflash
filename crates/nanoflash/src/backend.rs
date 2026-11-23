@@ -11,6 +11,8 @@ use crate::error::Error;
 #[cfg(feature = "espressif")]
 use crate::espressif::{EspressifBackend, EspressifOptions};
 use crate::manifest::{Protocol, ResetSequence};
+#[cfg(feature = "samba")]
+use crate::samba::{SambaBackend, SambaOptions};
 use crate::transport::{DeviceFilter, PortProvider, UsbIdentity};
 
 /// One image to write: its name for messages, where it goes and its bytes.
@@ -99,6 +101,9 @@ pub struct ChipInformation {
     /// The lowest flash offset the bootloader writes, when it protects the flash below it
     /// (SAM-BA bootloaders protect themselves); `None` when the whole flash is writable.
     pub writable_from: Option<u64>,
+    /// Whether the bootloader erases from an offset to the end of flash, never a region alone
+    /// (the SAMD21's SAM-BA bootloader): every erase must then end at the end of flash.
+    pub erases_to_end: bool,
 }
 
 /// A flashing backend.
@@ -146,6 +151,9 @@ pub enum Backends<'p, P: PortProvider> {
     /// The Espressif ROM loader.
     #[cfg(feature = "espressif")]
     Espressif(EspressifBackend<'p, P>),
+    /// Arduino's SAM-BA bootloaders.
+    #[cfg(feature = "samba")]
+    Samba(SambaBackend<'p, P>),
     /// No backend: keeps the type parameters used when every backend is left out.
     #[doc(hidden)]
     Unavailable(Infallible, PhantomData<&'p mut P>),
@@ -170,6 +178,17 @@ impl<'p, P: PortProvider> Backends<'p, P> {
                 };
                 EspressifBackend::new(port, provider, reset, options).map(Backends::Espressif)
             }
+            #[cfg(feature = "samba")]
+            Protocol::Samba => {
+                let options = SambaOptions {
+                    bootloader_devices: options.bootloader_devices.clone(),
+                    baud_rate: options.baud_rate,
+                };
+                SambaBackend::new(port, provider, reset, options).map(Backends::Samba)
+            }
+            // With every backend compiled in, every protocol is matched above and this arm would
+            // be unreachable.
+            #[cfg(not(all(feature = "espressif", feature = "samba")))]
             protocol => {
                 let _ = (port, provider, reset, options);
                 Err(Error::ProtocolNotEnabled { protocol })
@@ -183,6 +202,8 @@ impl<'p, P: PortProvider> Backends<'p, P> {
         match self {
             #[cfg(feature = "espressif")]
             Backends::Espressif(backend) => backend.connect(progress).await,
+            #[cfg(feature = "samba")]
+            Backends::Samba(backend) => backend.connect(progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = progress;
                 match *never {}
@@ -199,6 +220,9 @@ impl<'p, P: PortProvider> Backends<'p, P> {
         match self {
             #[cfg(feature = "espressif")]
             Backends::Espressif(backend) => backend.identify(progress).await,
+            // SAM-BA changes no baud rate: identifying is connecting.
+            #[cfg(feature = "samba")]
+            Backends::Samba(backend) => backend.connect(progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = progress;
                 match *never {}
@@ -216,6 +240,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
         match self {
             #[cfg(feature = "espressif")]
             Backends::Espressif(backend) => backend.erase(region, progress).await,
+            #[cfg(feature = "samba")]
+            Backends::Samba(backend) => backend.erase(region, progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = (region, progress);
                 match *never {}
@@ -231,6 +257,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
         match self {
             #[cfg(feature = "espressif")]
             Backends::Espressif(backend) => backend.write(segments, progress).await,
+            #[cfg(feature = "samba")]
+            Backends::Samba(backend) => backend.write(segments, progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = (segments, progress);
                 match *never {}
@@ -246,6 +274,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
         match self {
             #[cfg(feature = "espressif")]
             Backends::Espressif(backend) => backend.verify(segments, progress).await,
+            #[cfg(feature = "samba")]
+            Backends::Samba(backend) => backend.verify(segments, progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = (segments, progress);
                 match *never {}
@@ -257,6 +287,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
         match self {
             #[cfg(feature = "espressif")]
             Backends::Espressif(backend) => backend.reset_to_application().await,
+            #[cfg(feature = "samba")]
+            Backends::Samba(backend) => backend.reset_to_application().await,
             Backends::Unavailable(never, _) => match *never {},
         }
     }

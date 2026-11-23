@@ -727,7 +727,7 @@ impl fmt::Display for Error {
                 flash_size,
             } => write!(
                 formatter,
-                "the bootloader of the {chip} erases from an offset to the end of flash, so erasing 0x{offset:x}..0x{end:x} would also erase 0x{end:x}..0x{flash_size:x}; nothing was erased: make the erase entry end at 0x{flash_size:x}, or remove it from the manifest"
+                "the bootloader of the {chip} erases from an offset to the end of flash, so erasing 0x{offset:x}..0x{end:x} would also erase 0x{end:x}..0x{flash_size:x}; this region was not erased: make the erase entry end at 0x{flash_size:x}, or remove it from the manifest"
             ),
             Error::ImageBelowWritten {
                 chip,
@@ -826,7 +826,7 @@ mod tests {
         assert_eq!(short.class(), ErrorClass::Input);
         assert_eq!(
             short.to_string(),
-            "the bootloader of the samd21g18a erases from an offset to the end of flash, so erasing 0x8000..0x9000 would also erase 0x9000..0x40000; nothing was erased: make the erase entry end at 0x40000, or remove it from the manifest"
+            "the bootloader of the samd21g18a erases from an offset to the end of flash, so erasing 0x8000..0x9000 would also erase 0x9000..0x40000; this region was not erased: make the erase entry end at 0x40000, or remove it from the manifest"
         );
         let order = Error::ImageBelowWritten {
             chip: "samd21g18a".into(),

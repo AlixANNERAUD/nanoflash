@@ -320,6 +320,8 @@ fn detect_without_identity_needs_a_protocol() {
     provider.finish().unwrap();
 }
 
+// Only meaningful when the samba feature is off.
+#[cfg(not(feature = "samba"))]
 #[test]
 fn disabled_protocol() {
     let manifest = Manifest::from_toml(

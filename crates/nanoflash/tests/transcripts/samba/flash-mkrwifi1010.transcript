@@ -1,0 +1,34 @@
+# flash of the arduino-mkr-wifi-1010 fixture board: connect-mkrwifi1010, then write-mkrwifi1010
+# Arduino MKR WiFi 1010 running a sketch: 1200-baud touch, then the SAMD21 bootloader on 2341:0054
+! identity 2341:8054
+! baud 1200
+! signals dtr=0 rts=0
+! reopen 2341:0054
+> "N#"
+< "\n\r"
+> "V#"
+< "v2.0 [Arduino:XYZP] Nov 23 2026 12:00:00\n\r"
+# no I: the device identifier of the SAMD21G18A, revision D
+> "w41002018,4#"
+< 05 03 01 10
+# application.bin (8192 bytes) written at 0x2000 of a MKR WiFi 1010, checked, then the AIRCR
+# word write: addresses are absolute, and X erases from 0x2000 to the end of flash
+> "X00002000#"
+< "X\n\r"
+> "S20004034,00001000#" ..4096
+! sleep 10
+> "Y20004034,0#"
+< "Y\n\r"
+> "Y00002000,00001000#"
+< "Y\n\r"
+> "S20004034,00001000#" ..4096
+! sleep 10
+> "Y20004034,0#"
+< "Y\n\r"
+> "Y00003000,00001000#"
+< "Y\n\r"
+> "Z00002000,00001000#"
+< "Z0000D5B0#\n\r"
+> "Z00003000,00001000#"
+< "Z0000D5B0#\n\r"
+> "WE000ED0C,05FA0004#"

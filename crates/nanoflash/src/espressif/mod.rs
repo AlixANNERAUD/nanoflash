@@ -465,6 +465,7 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
             secure_download_mode,
             usb: identity,
             writable_from: None,
+            erases_to_end: false,
         })
     }
 
