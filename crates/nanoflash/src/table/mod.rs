@@ -24,6 +24,8 @@ pub enum TableError {
     },
     /// An attribute holds a name or number the writer does not know.
     UnknownValue {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The partition.
         partition: String,
         /// The attribute, such as `subtype`.
@@ -33,16 +35,22 @@ pub enum TableError {
     },
     /// A partition name is longer than the table allows.
     LabelTooLong {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The partition.
         partition: String,
     },
     /// A partition name holds characters outside ASCII.
     NotAscii {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The partition.
         partition: String,
     },
     /// An offset is not a multiple of what the table requires.
     Misaligned {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The partition.
         partition: String,
         /// Its offset.
@@ -52,11 +60,15 @@ pub enum TableError {
     },
     /// An offset, size or number does not fit the field of the table.
     OutOfRange {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The partition.
         partition: String,
     },
     /// The layout has more partitions than the table holds.
     TooManyPartitions {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The number of partitions to write.
         count: usize,
         /// The number the table holds.
@@ -64,11 +76,15 @@ pub enum TableError {
     },
     /// A partition the table depends on is missing.
     MissingPartition {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// What is missing.
         role: &'static str,
     },
     /// The partition meant to hold the table is too small for it.
     TableDoesNotFit {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The partition.
         partition: String,
         /// Its size.
@@ -78,6 +94,8 @@ pub enum TableError {
     },
     /// Two partitions both claim to be the firmware.
     SeveralFirmware {
+        /// The writer, such as `espressif`.
+        writer: &'static str,
         /// The first partition.
         first: String,
         /// The second partition.
@@ -94,55 +112,66 @@ impl fmt::Display for TableError {
                 attribute,
             } => write!(
                 formatter,
-                "the {writer} partition table cannot express partition \"{partition}\": it needs the \"{attribute}\" attribute, set under [partition.{writer}]"
+                "the {writer} writer cannot place partition \"{partition}\": it needs the \"{attribute}\" attribute, set under [partition.{writer}]"
             ),
             TableError::UnknownValue {
                 partition,
+                writer,
                 attribute,
                 value,
             } => write!(
                 formatter,
-                "the espressif partition table cannot express partition \"{partition}\": \"{value}\" is not a known {attribute}"
+                "the {writer} writer cannot place partition \"{partition}\": \"{value}\" is not a known {attribute}"
             ),
-            TableError::LabelTooLong { partition } => write!(
+            TableError::LabelTooLong { partition, writer } => write!(
                 formatter,
-                "the espressif partition table cannot express partition \"{partition}\": its name is longer than 16 bytes"
+                "the {writer} writer cannot place partition \"{partition}\": its name is longer than 16 bytes"
             ),
-            TableError::NotAscii { partition } => write!(
+            TableError::NotAscii { partition, writer } => write!(
                 formatter,
-                "the espressif partition table cannot express partition \"{partition}\": its name is not ASCII"
+                "the {writer} writer cannot place partition \"{partition}\": its name is not ASCII"
             ),
             TableError::Misaligned {
                 partition,
+                writer,
                 offset,
                 required,
             } => write!(
                 formatter,
-                "the espressif partition table cannot express partition \"{partition}\": its offset {offset:#x} is not a multiple of {required:#x}"
+                "the {writer} writer cannot place partition \"{partition}\": offset {offset:#x} is not a multiple of {required}"
             ),
-            TableError::OutOfRange { partition } => write!(
+            TableError::OutOfRange { partition, writer } => write!(
                 formatter,
-                "the espressif partition table cannot express partition \"{partition}\": its offset, size, slot or number is out of range"
+                "the {writer} writer cannot place partition \"{partition}\": its offset, size, slot or number is out of range"
             ),
-            TableError::TooManyPartitions { count, maximum } => write!(
+            TableError::TooManyPartitions {
+                writer,
+                count,
+                maximum,
+            } => write!(
                 formatter,
-                "the espressif partition table holds at most {maximum} partitions but the layout has {count}"
+                "the {writer} writer holds at most {maximum} partitions but the layout has {count}"
             ),
-            TableError::MissingPartition { role } => write!(
+            TableError::MissingPartition { writer, role } => write!(
                 formatter,
-                "the espressif partition table needs a partition for {role}, and the layout has none"
+                "the {writer} writer needs a partition for {role}, and the layout has none"
             ),
             TableError::TableDoesNotFit {
                 partition,
+                writer,
                 size,
                 required,
             } => write!(
                 formatter,
-                "the espressif partition table does not fit in partition \"{partition}\": it is {size:#x} bytes and the table needs {required:#x}"
+                "the {writer} writer cannot fit its table in partition \"{partition}\": it is {size:#x} bytes and the table needs {required:#x}"
             ),
-            TableError::SeveralFirmware { first, second } => write!(
+            TableError::SeveralFirmware {
+                writer,
+                first,
+                second,
+            } => write!(
                 formatter,
-                "the espressif partition table cannot express partitions \"{first}\" and \"{second}\": both are the factory application"
+                "the {writer} writer cannot place partitions \"{first}\" and \"{second}\": both are the factory application"
             ),
         }
     }

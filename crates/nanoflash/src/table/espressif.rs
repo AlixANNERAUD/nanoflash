@@ -29,10 +29,12 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
         .iter()
         .find(|partition| partition.definition.role == Role::PartitionTable)
         .ok_or(TableError::MissingPartition {
+            writer: WRITER,
             role: "partition-table",
         })?;
     if table.size < TABLE_SIZE as u64 {
         return Err(TableError::TableDoesNotFit {
+            writer: WRITER,
             partition: table.definition.name.clone(),
             size: table.size,
             required: TABLE_SIZE as u64,
@@ -52,6 +54,7 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
     partitions.sort_by_key(|partition| partition.offset);
     if partitions.len() > MAXIMUM_ENTRIES {
         return Err(TableError::TooManyPartitions {
+            writer: WRITER,
             count: partitions.len(),
             maximum: MAXIMUM_ENTRIES,
         });
@@ -66,6 +69,7 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
         let (kind, subtype) = types(&partition.definition)?;
         if kind == APP && partition.offset % APP_ALIGNMENT != 0 {
             return Err(TableError::Misaligned {
+                writer: WRITER,
                 partition: name.into(),
                 offset: partition.offset,
                 required: APP_ALIGNMENT,
@@ -80,6 +84,7 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
         if (kind, subtype) == (APP, FACTORY) {
             if let Some(first) = factory {
                 return Err(TableError::SeveralFirmware {
+                    writer: WRITER,
                     first: first.into(),
                     second: name.into(),
                 });
@@ -87,6 +92,7 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
             factory = Some(name);
         }
         let out_of_range = || TableError::OutOfRange {
+            writer: WRITER,
             partition: name.into(),
         };
         let offset = u32::try_from(partition.offset).map_err(|_| out_of_range())?;
@@ -104,6 +110,7 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
     }
     if first_update.is_some() && !has_otadata {
         return Err(TableError::MissingPartition {
+            writer: WRITER,
             role: "otadata (data/ota)",
         });
     }
@@ -119,11 +126,13 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
 fn label(name: &str) -> Result<[u8; LABEL_SIZE], TableError> {
     if !name.is_ascii() {
         return Err(TableError::NotAscii {
+            writer: WRITER,
             partition: name.into(),
         });
     }
     if name.len() > LABEL_SIZE {
         return Err(TableError::LabelTooLong {
+            writer: WRITER,
             partition: name.into(),
         });
     }
@@ -154,6 +163,7 @@ fn types(partition: &Partition) -> Result<(u8, u8), TableError> {
             let subtype = (slot < 16).then_some(OTA_SLOT_BASE + slot);
             if subtype.is_none() && subtype_override.is_none() {
                 return Err(TableError::OutOfRange {
+                    writer: WRITER,
                     partition: partition.name.clone(),
                 });
             }
@@ -185,6 +195,7 @@ fn types(partition: &Partition) -> Result<(u8, u8), TableError> {
 
 fn unknown(partition: &Partition, attribute: &'static str, value: &EspressifValue) -> TableError {
     TableError::UnknownValue {
+        writer: WRITER,
         partition: partition.name.clone(),
         attribute,
         value: match value {
@@ -396,12 +407,14 @@ mod tests {
                 "long" => assert_eq!(
                     error,
                     TableError::LabelTooLong {
+                        writer: "espressif",
                         partition: name.into()
                     }
                 ),
                 _ => assert_eq!(
                     error,
                     TableError::NotAscii {
+                        writer: "espressif",
                         partition: name.into()
                     }
                 ),
@@ -489,6 +502,7 @@ mod tests {
         assert_eq!(
             write(&layout).unwrap_err(),
             TableError::MissingPartition {
+                writer: "espressif",
                 role: "otadata (data/ota)"
             }
         );
@@ -503,6 +517,7 @@ mod tests {
         assert_eq!(
             write(&layout).unwrap_err(),
             TableError::OutOfRange {
+                writer: "espressif",
                 partition: "ota-16".into()
             }
         );
@@ -517,6 +532,7 @@ mod tests {
         assert_eq!(
             write(&layout).unwrap_err(),
             TableError::Misaligned {
+                writer: "espressif",
                 partition: "app".into(),
                 offset: 0x11000,
                 required: 0x10000
@@ -542,6 +558,7 @@ mod tests {
         assert_eq!(
             write(&layout).unwrap_err(),
             TableError::OutOfRange {
+                writer: "espressif",
                 partition: "app".into()
             }
         );
@@ -553,6 +570,7 @@ mod tests {
         assert_eq!(
             write(&resolve(vec![app.clone()])).unwrap_err(),
             TableError::MissingPartition {
+                writer: "espressif",
                 role: "partition-table"
             }
         );
@@ -560,6 +578,7 @@ mod tests {
         assert_eq!(
             write(&resolve(vec![small, app])).unwrap_err(),
             TableError::TableDoesNotFit {
+                writer: "espressif",
                 partition: "partition-table".into(),
                 size: 0x800,
                 required: 0xC00
@@ -577,6 +596,7 @@ mod tests {
         assert_eq!(
             write(&layout).unwrap_err(),
             TableError::SeveralFirmware {
+                writer: "espressif",
                 first: "a".into(),
                 second: "b".into()
             }
@@ -601,6 +621,7 @@ mod tests {
         assert_eq!(
             write(&resolve(partitions)).unwrap_err(),
             TableError::TooManyPartitions {
+                writer: "espressif",
                 count: 96,
                 maximum: 95
             }
@@ -641,17 +662,28 @@ mod tests {
             let bytes = write(&layout).unwrap();
             prop_assert_eq!(bytes.len(), 0xC00);
             let table = parse(&bytes);
-            let mut expected: Vec<(String, u64, u64)> = layout
+            let mut expected: Vec<(String, u8, u8, u64, u64)> = layout
                 .partitions
                 .iter()
                 .filter(|p| p.definition.role != Role::PartitionTable)
-                .map(|p| (p.definition.name.clone(), p.offset, p.size))
+                .map(|p| {
+                    let (kind, subtype) = types(&p.definition).unwrap();
+                    (p.definition.name.clone(), kind, subtype, p.offset, p.size)
+                })
                 .collect();
-            expected.sort_by_key(|entry| entry.1);
-            let actual: Vec<(String, u64, u64)> = table
+            expected.sort_by_key(|entry| entry.3);
+            let actual: Vec<(String, u8, u8, u64, u64)> = table
                 .partitions()
                 .iter()
-                .map(|e| (e.name(), u64::from(e.offset()), u64::from(e.size())))
+                .map(|e| {
+                    (
+                        e.name(),
+                        e.ty().into(),
+                        e.subtype().into(),
+                        u64::from(e.offset()),
+                        u64::from(e.size()),
+                    )
+                })
                 .collect();
             prop_assert_eq!(actual, expected);
         }
