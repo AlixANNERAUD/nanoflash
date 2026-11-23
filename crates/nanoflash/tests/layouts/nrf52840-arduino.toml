@@ -1,0 +1,20 @@
+[flash]
+size = "1 MiB"
+base-address = 0x0
+
+[[partition]]
+name = "bootloader"
+role = "bootloader"
+offset = 0x0
+size = 0x10000
+
+[[partition]]
+name = "application"
+role = "firmware"
+size = "remaining"
+
+[[partition]]
+name = "storage"
+role = "storage"
+offset = 0xF0000
+size = "64 KiB"

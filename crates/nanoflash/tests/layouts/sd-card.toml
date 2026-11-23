@@ -1,0 +1,22 @@
+[flash]
+size = "64 MiB"
+alignment = "1 MiB"
+
+[[partition]]
+name = "partition-table"
+role = "partition-table"
+offset = 0
+size = "512 B"
+alignment = "512 B"
+
+[[partition]]
+name = "boot"
+role = "storage"
+filesystem = "fat"
+size = "16 MiB"
+
+[[partition]]
+name = "data"
+role = "custom"
+mbr = { type = 0x83 }
+size = "remaining"

@@ -14,13 +14,17 @@ categories = ["embedded", "no-std"]
 [features]
 default = []
 # Read layout files from TOML.
-toml = []
+toml = ["dep:toml"]
 # Writers of the partition table each family needs.
 table-espressif = []
 table-mbr = []
 table-linker = []
 # Constants and linker scripts for the `build.rs` of a firmware (needs the standard library).
 build = []
+
+[dependencies]
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde"] }
 
 [lints]
 workspace = true
