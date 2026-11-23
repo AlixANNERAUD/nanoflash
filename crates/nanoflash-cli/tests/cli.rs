@@ -673,7 +673,7 @@ fn detect_without_identity_asks_for_a_protocol() {
         "--protocol",
         "espressif",
     ]);
-    assert_ne!(output.status.code(), Some(1), "{}", text(&output.stderr));
+    assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
 }
 
 #[test]
@@ -835,4 +835,18 @@ fn a_replay_that_diverges_exits_2() {
         path_text(&transcript),
     ]);
     assert_eq!(output.status.code(), Some(2), "{}", text(&output.stderr));
+}
+
+#[test]
+fn port_and_replay_conflict() {
+    let transcript = transcript_path("identity-only.transcript");
+    let output = run(&[
+        "detect",
+        "--port",
+        "/dev/null",
+        "--replay",
+        path_text(&transcript),
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(text(&output.stderr).contains("cannot be used with"));
 }

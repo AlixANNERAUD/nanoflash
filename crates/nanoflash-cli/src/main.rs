@@ -36,7 +36,7 @@ enum Command {
         #[arg(long, value_name = "MANIFEST")]
         board: PathBuf,
         /// The serial port; by default the only one that suits the board.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "replay")]
         port: Option<String>,
         /// The board of the manifest to flash, when the device cannot tell.
         #[arg(long)]
@@ -64,7 +64,7 @@ enum Command {
     /// Connect to a device and tell what chip it is.
     Detect {
         /// The serial port.
-        #[arg(long, required_unless_present = "replay")]
+        #[arg(long, conflicts_with = "replay", required_unless_present = "replay")]
         port: Option<String>,
         /// The protocol of the device, when its USB identity does not tell.
         #[arg(long, value_enum)]
