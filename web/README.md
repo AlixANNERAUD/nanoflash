@@ -88,9 +88,16 @@ Every failure is a `NanoflashError` with `kind` (such as `no-sync`, `verificatio
 the kind is `no-port-chosen`; when the browser does not show it at all, `port-request-refused`
 (a page in an iframe needs `allow="serial"`, and a permissions policy may block Web Serial).
 `not-granted` means that the board came back as a device the page has no permission for (see
-the component's bootloader button). A WebAssembly trap is fatal: the port is
-closed, the module is marked broken (it cannot be instantiated again) and every later call that
-needs it fails at once with kind `module-broken` (class `device`). Reload the page.
+the component's bootloader button).
+
+A WebAssembly trap (a bug of nanoflash) is fatal for its module, which cannot be instantiated
+again. A layout call runs synchronously and sees the trap at once. `flash` and `detect` run in
+microtasks, where a trap is an uncaught exception (the browser logs it) that would leave their
+promise pending: while they run, the package listens for uncaught `WebAssembly.RuntimeError`s
+(the `error` event of the page, `uncaughtExceptionMonitor` in Node) and rejects the call when one
+comes. Either way, the call rejects with kind `module-broken` (class `device`), its port is
+closed, and every later call that needs the module fails at once with the same error. Reload the
+page.
 
 ## Component
 

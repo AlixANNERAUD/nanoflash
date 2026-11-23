@@ -113,3 +113,58 @@ export async function settle(
   broken.set(key, failure);
   return failure;
 }
+
+/**
+ * Calls `listener` with every uncaught WebAssembly trap until the returned function is called:
+ * the `error` events of the page, and in Node `uncaughtExceptionMonitor`, which leaves Node's
+ * own handling of the exception as it is.
+ */
+function watchTraps(listener: (error: unknown) => void): () => void {
+  type Target = {
+    addEventListener?(type: string, listener: (event: Event) => void): void;
+    removeEventListener?(type: string, listener: (event: Event) => void): void;
+  };
+  type Process = {
+    on?(event: string, listener: (error: unknown) => void): void;
+    off?(event: string, listener: (error: unknown) => void): void;
+  };
+  const page = globalThis as Target;
+  const node = (globalThis as { process?: Process }).process;
+  const onError = (event: Event) => {
+    const error: unknown = (event as { error?: unknown }).error;
+    if (isTrap(error)) listener(error);
+  };
+  const onException = (error: unknown) => {
+    if (isTrap(error)) listener(error);
+  };
+  page.addEventListener?.("error", onError);
+  node?.on?.("uncaughtExceptionMonitor", onException);
+  return () => {
+    page.removeEventListener?.("error", onError);
+    node?.off?.("uncaughtExceptionMonitor", onException);
+  };
+}
+
+/**
+ * Runs `call`, an asynchronous call of the module `key` that uses `ports`, and turns what it
+ * throws into a `NanoflashError` as `settle` does. wasm-bindgen runs asynchronous exports in
+ * microtasks, where a trap is an uncaught exception and the promise of the call never settles:
+ * while the call runs, an uncaught trap (of any module) rejects it as well.
+ */
+export async function guard<T>(
+  key: string,
+  ports: readonly SerialPortLike[],
+  call: () => Promise<T>,
+): Promise<T> {
+  let stop = () => {};
+  const trapped = new Promise<never>((_, reject) => {
+    stop = watchTraps(reject);
+  });
+  try {
+    return await Promise.race([call(), trapped]);
+  } catch (error) {
+    throw await settle(error, key, ports);
+  } finally {
+    stop();
+  }
+}

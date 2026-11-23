@@ -1,4 +1,4 @@
-import { assertUsable, loadBackend, settle } from "./backend.js";
+import { assertUsable, guard, loadBackend } from "./backend.js";
 import { camelize } from "./convert.js";
 import { NanoflashError } from "./errors.js";
 import type {
@@ -263,8 +263,8 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
         }
         return new Uint8Array(await response.arrayBuffer());
       };
-      try {
-        const report = await backend.flash(
+      const report = await guard(protocol, [port], () =>
+        backend.flash(
           text,
           port,
           JSON.stringify({
@@ -275,11 +275,9 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
           }),
           readFile,
           progressHandler(options),
-        );
-        return camelize<FlashReport>(report);
-      } catch (error) {
-        throw await settle(error, protocol, [port]);
-      }
+        ),
+      );
+      return camelize<FlashReport>(report);
     },
   };
 }
@@ -298,14 +296,8 @@ export async function detect(options: {
   assertUsable(options.protocol);
   const port = options.port ?? (await requestPort([]));
   const backend = await loadBackend(options.protocol);
-  try {
-    const chip = await backend.detect(
-      port,
-      JSON.stringify({ protocol: options.protocol }),
-      progressHandler(options),
-    );
-    return camelize<ChipInformation>(chip);
-  } catch (error) {
-    throw await settle(error, options.protocol, [port]);
-  }
+  const chip = await guard(options.protocol, [port], () =>
+    backend.detect(port, JSON.stringify({ protocol: options.protocol }), progressHandler(options)),
+  );
+  return camelize<ChipInformation>(chip);
 }

@@ -242,3 +242,30 @@ test("shows errors", async () => {
   assert.match(part("message").textContent, /missing\.json/);
   assert.equal(failures.length, 1);
 });
+
+// Last: the module it breaks stays broken.
+test("an uncaught trap during a flash breaks the module and asks to reload", async () => {
+  const { loadBackend } = await import("../dist/index.js");
+  const backend = await loadBackend("espressif");
+  backend.flash = () => {
+    // As a browser reports a trap of a microtask: an error event of the window.
+    setTimeout(() => {
+      window.dispatchEvent(
+        new ErrorEvent("error", { error: new WebAssembly.RuntimeError("unreachable") }),
+      );
+    }, 10);
+    return new Promise(() => {});
+  };
+  let closed = 0;
+  const port = { close: async () => void (closed += 1) };
+  restoreNavigator = installNavigator([port], { onRequestPort: () => port });
+  mount("esp32-s3-usb.json");
+  const failures = events(element, "nanoflash-error");
+  await waitFor("ready");
+  part("button").click();
+  await waitFor("error");
+  assert.match(part("message").textContent, /reload the page/);
+  assert.equal(failures.length, 1);
+  assert.equal(failures[0].detail.kind, "module-broken");
+  assert.equal(closed, 1);
+});
