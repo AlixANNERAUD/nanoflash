@@ -1,11 +1,23 @@
-//! Choosing the board a device is and preparing the images its manifest flashes.
+//! Flashing a board from its manifest and detecting a chip, through one code path for every
+//! backend: choosing the board a device is, preparing its images, then connecting, erasing,
+//! writing, verifying and resetting.
 
 mod prepare;
 mod select;
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use serde::Serialize;
+
+pub use crate::backend::BackendOptions;
+use crate::backend::{
+    Backend, Backends, ChipInformation, Progress, ProgressEvent, Region, Segment, Stage,
+};
+use crate::error::Error;
+use crate::manifest::{Manifest, Protocol};
+use crate::transport::{PortProvider, SerialPort};
 pub use prepare::{Prepared, PreparedImage, Warning, image_build, prepare};
 pub use select::{Selection, protocol_for_identity, select};
 
@@ -29,4 +41,261 @@ impl ImageVerifier for () {
     fn verify(&mut self, _path: &str, _bytes: &[u8]) -> Result<(), String> {
         Ok(())
     }
+}
+
+/// How to flash a board.
+#[derive(Debug, Clone)]
+pub struct FlashOptions {
+    /// The board of the manifest to flash, when the device cannot tell.
+    pub board_identifier: Option<String>,
+    /// Whether to erase the whole flash before writing.
+    pub erase_all: bool,
+    /// Whether to check what was written.
+    pub verify: bool,
+    /// How to connect.
+    pub backend: BackendOptions,
+}
+
+impl Default for FlashOptions {
+    fn default() -> Self {
+        FlashOptions {
+            board_identifier: None,
+            erase_all: false,
+            verify: true,
+            backend: BackendOptions::default(),
+        }
+    }
+}
+
+/// What [`flash`] reads images through and reports to.
+pub struct Hooks<'h, S: ImageSource> {
+    /// Reads the layout and the images the manifest names.
+    pub source: &'h mut S,
+    /// Accepts or refuses each image read.
+    pub verifier: &'h mut dyn ImageVerifier,
+    /// Receives progress events and messages.
+    pub progress: &'h mut dyn Progress,
+}
+
+/// What [`flash`] did.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlashReport {
+    /// The identifier of the board flashed.
+    pub board: String,
+    /// What the backend found out about the chip.
+    pub chip: ChipInformation,
+    /// The images written, by offset.
+    pub images: Vec<WrittenImage>,
+    /// Whether what was written was checked.
+    pub verified: bool,
+    /// What the user may want to know.
+    pub warnings: Vec<Warning>,
+}
+
+/// An image [`flash`] wrote.
+#[derive(Debug, Clone, Serialize)]
+pub struct WrittenImage {
+    /// The name of the image: its partition, or `image at 0x<offset>`.
+    pub label: String,
+    /// The flash offset of its first byte.
+    pub offset: u64,
+    /// Its size in bytes.
+    pub size: u64,
+}
+
+fn report(progress: &mut dyn Progress, stage: Stage, offset: u64, done: u64, total: u64) {
+    progress.report(ProgressEvent {
+        stage,
+        offset,
+        done,
+        total,
+    });
+}
+
+/// Resets into the application, reporting `Resetting`.
+async fn reset<P: PortProvider>(
+    backend: &mut Backends<'_, P>,
+    progress: &mut dyn Progress,
+) -> Result<(), Error> {
+    report(progress, Stage::Resetting, 0, 0, 0);
+    backend.reset_to_application().await
+}
+
+/// Erases `region`, reporting `Erasing` before and after.
+async fn erase<P: PortProvider>(
+    backend: &mut Backends<'_, P>,
+    region: Region,
+    progress: &mut dyn Progress,
+) -> Result<(), Error> {
+    report(progress, Stage::Erasing, region.offset, 0, region.size);
+    backend.erase(region).await?;
+    report(
+        progress,
+        Stage::Erasing,
+        region.offset,
+        region.size,
+        region.size,
+    );
+    Ok(())
+}
+
+/// Flashes the board `manifest` has for the device on `port`, which `provider` can reopen.
+///
+/// The board is the one `options.board_identifier` names, else the boards that list the USB
+/// identity of the port, else those that suit a serial bridge; the chip found picks among them.
+/// The images of a single candidate are read and checked before the device is touched. Once
+/// connected, the board is reset into its application whether flashing succeeds or not.
+pub async fn flash<P: PortProvider, S: ImageSource>(
+    manifest: &Manifest,
+    port: P::Port,
+    provider: &mut P,
+    hooks: Hooks<'_, S>,
+    options: &FlashOptions,
+) -> Result<FlashReport, Error> {
+    let Hooks {
+        source,
+        verifier,
+        progress,
+    } = hooks;
+    let identity = port.identity();
+    let selection = select(
+        manifest,
+        identity.as_ref(),
+        options.board_identifier.as_deref(),
+    )?;
+    let prepared = match selection.boards.as_slice() {
+        [board] => Some(prepare(board, source, verifier).await?),
+        _ => None,
+    };
+    let mut backend = Backends::new(
+        selection.protocol,
+        port,
+        provider,
+        selection.reset.clone(),
+        &options.backend,
+    )?;
+    report(progress, Stage::Connecting, 0, 0, 0);
+    let chip = backend.connect(progress).await?;
+    let outcome = flash_connected(
+        &mut backend,
+        &selection,
+        prepared,
+        chip,
+        Hooks {
+            source,
+            verifier,
+            progress: &mut *progress,
+        },
+        options,
+    )
+    .await;
+    match outcome {
+        Ok(flashed) => {
+            reset(&mut backend, progress).await?;
+            Ok(flashed)
+        }
+        Err(error) => {
+            // The error is what the caller needs; a failed reset adds nothing to it.
+            let _ = reset(&mut backend, progress).await;
+            Err(error)
+        }
+    }
+}
+
+/// The part of [`flash`] between connecting and resetting into the application.
+async fn flash_connected<P: PortProvider, S: ImageSource>(
+    backend: &mut Backends<'_, P>,
+    selection: &Selection<'_>,
+    prepared: Option<Prepared>,
+    chip: ChipInformation,
+    hooks: Hooks<'_, S>,
+    options: &FlashOptions,
+) -> Result<FlashReport, Error> {
+    let Hooks {
+        source,
+        verifier,
+        progress,
+    } = hooks;
+    let board = selection.pick(&chip.chip)?;
+    let prepared = match prepared {
+        Some(prepared) => prepared,
+        None => prepare(board, source, verifier).await?,
+    };
+    let layout_size = prepared.layout.as_ref().map(|layout| layout.flash.size);
+    if let (Some(layout), Some(detected)) = (layout_size, chip.flash_size) {
+        if layout > detected {
+            return Err(Error::FlashTooSmall { layout, detected });
+        }
+    }
+    if options.erase_all {
+        let size = layout_size
+            .or(chip.flash_size)
+            .ok_or(Error::UnknownFlashSize)?;
+        erase(backend, Region { offset: 0, size }, progress).await?;
+    }
+    for region in &prepared.erase {
+        erase(backend, *region, progress).await?;
+    }
+    let mut images: Vec<&PreparedImage> = prepared.images.iter().collect();
+    images.sort_by_key(|image| image.offset);
+    let segments: Vec<Segment<'_>> = images
+        .iter()
+        .map(|image| Segment {
+            label: &image.label,
+            offset: image.offset,
+            data: &image.bytes,
+        })
+        .collect();
+    backend.write(&segments, progress).await?;
+    if options.verify {
+        if let Err(error) = backend.verify(&segments, progress).await {
+            if let Error::VerificationFailed { offset, .. } = &error {
+                // The error carries the offset; the label is only known here.
+                if let Some(segment) = segments.iter().find(|segment| segment.offset == *offset) {
+                    progress.message(&format!(
+                        "the image \"{}\" at 0x{offset:x} does not read back as written",
+                        segment.label
+                    ));
+                }
+            }
+            return Err(error);
+        }
+    }
+    Ok(FlashReport {
+        board: board.identifier.clone(),
+        chip,
+        images: segments
+            .iter()
+            .map(|segment| WrittenImage {
+                label: segment.label.into(),
+                offset: segment.offset,
+                size: u64::try_from(segment.data.len()).unwrap_or(u64::MAX),
+            })
+            .collect(),
+        verified: options.verify,
+        warnings: prepared.warnings,
+    })
+}
+
+/// Connects to the device on `port` and tells what chip it is, then resets it into its
+/// application.
+///
+/// The protocol is `protocol`, else the one the USB vendor of the port speaks.
+pub async fn detect<P: PortProvider>(
+    port: P::Port,
+    provider: &mut P,
+    protocol: Option<Protocol>,
+    options: &BackendOptions,
+    progress: &mut dyn Progress,
+) -> Result<ChipInformation, Error> {
+    let identity = port.identity();
+    let protocol = match protocol.or_else(|| identity.as_ref().and_then(protocol_for_identity)) {
+        Some(protocol) => protocol,
+        None => return Err(Error::ProtocolRequired { identity }),
+    };
+    let mut backend = Backends::new(protocol, port, provider, None, options)?;
+    report(progress, Stage::Connecting, 0, 0, 0);
+    let chip = backend.connect(progress).await?;
+    reset(&mut backend, progress).await?;
+    Ok(chip)
 }

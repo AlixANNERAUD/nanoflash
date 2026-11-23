@@ -1,0 +1,336 @@
+//! Transcript tests of the flash and detect orchestration.
+
+use std::collections::BTreeMap;
+use std::path::Path;
+
+use nanoflash::Error;
+use nanoflash::backend::{BackendOptions, Progress, ProgressEvent, Stage};
+use nanoflash::flash::{FlashOptions, Hooks, detect, flash};
+use nanoflash::manifest::{Manifest, Protocol};
+use nanoflash::testing::{MemorySource, ReplayProvider, Transcript, replay};
+use pollster::block_on;
+
+const MEBIBYTE: u64 = 1024 * 1024;
+
+fn fixture(relative: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(relative);
+    std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+fn transcript(name: &str) -> String {
+    String::from_utf8(fixture(&format!("transcripts/espressif/{name}.transcript"))).unwrap()
+}
+
+fn manifest() -> Manifest {
+    Manifest::from_json(core::str::from_utf8(&fixture("boards/esp32-s3-usb.json")).unwrap())
+        .unwrap()
+}
+
+/// The layout and the images of the fixture board, under the paths its manifest uses.
+fn fixture_source() -> MemorySource {
+    let mut files = BTreeMap::new();
+    for path in [
+        "../layouts/esp32-s3-8mb.toml",
+        "../images/bootloader.bin",
+        "../images/application.bin",
+    ] {
+        files.insert(path.to_string(), fixture(&path[3..]));
+    }
+    MemorySource { files }
+}
+
+/// Records the stages, without repeating a stage that goes on, and the messages.
+#[derive(Default)]
+struct Recorder {
+    stages: Vec<Stage>,
+    events: Vec<ProgressEvent>,
+    messages: Vec<String>,
+}
+
+impl Progress for Recorder {
+    fn report(&mut self, event: ProgressEvent) {
+        if self.stages.last() != Some(&event.stage) {
+            self.stages.push(event.stage);
+        }
+        self.events.push(event);
+    }
+
+    fn message(&mut self, text: &str) {
+        self.messages.push(text.to_string());
+    }
+}
+
+/// Flashes `manifest` over a replay of `text`.
+fn run_flash(
+    manifest: &Manifest,
+    text: &str,
+    source: &mut MemorySource,
+    options: &FlashOptions,
+    progress: &mut Recorder,
+) -> (Result<nanoflash::flash::FlashReport, Error>, ReplayProvider) {
+    let (port, mut provider) = replay(Transcript::parse(text).unwrap());
+    let hooks = Hooks {
+        source,
+        verifier: &mut (),
+        progress,
+    };
+    let result = block_on(flash(manifest, port, &mut provider, hooks, options));
+    (result, provider)
+}
+
+fn run_detect(
+    text: &str,
+    protocol: Option<Protocol>,
+) -> (
+    Result<nanoflash::backend::ChipInformation, Error>,
+    ReplayProvider,
+) {
+    let (port, mut provider) = replay(Transcript::parse(text).unwrap());
+    let result = block_on(detect(
+        port,
+        &mut provider,
+        protocol,
+        &BackendOptions::default(),
+        &mut (),
+    ));
+    (result, provider)
+}
+
+#[test]
+fn flashes_the_fixture_board() {
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(
+        &manifest(),
+        &transcript("flash-esp32s3-usb"),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    let report = result.unwrap();
+    assert_eq!(report.board, "esp32-s3-devkitc");
+    assert_eq!(report.chip.chip, "esp32-s3");
+    assert_eq!(report.chip.flash_size, Some(8 * MEBIBYTE));
+    let images: Vec<(&str, u64, u64)> = report
+        .images
+        .iter()
+        .map(|image| (image.label.as_str(), image.offset, image.size))
+        .collect();
+    assert_eq!(
+        images,
+        [
+            ("bootloader", 0x0, 4096),
+            ("partition-table", 0x8000, 0xC00),
+            ("application", 0x20000, 8192),
+        ]
+    );
+    assert!(report.verified);
+    assert!(report.warnings.is_empty());
+    provider.finish().unwrap();
+    assert_eq!(
+        progress.stages,
+        [
+            Stage::Connecting,
+            Stage::Writing,
+            Stage::Verifying,
+            Stage::Resetting
+        ]
+    );
+}
+
+#[test]
+fn no_verify_skips_the_digests() {
+    let text: String = transcript("flash-esp32s3-usb")
+        .lines()
+        .filter(|line| !line.contains(" 13 "))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    let mut progress = Recorder::default();
+    let options = FlashOptions {
+        verify: false,
+        ..FlashOptions::default()
+    };
+    let (result, provider) = run_flash(
+        &manifest(),
+        &text,
+        &mut fixture_source(),
+        &options,
+        &mut progress,
+    );
+    assert!(!result.unwrap().verified);
+    provider.finish().unwrap();
+    assert!(!progress.stages.contains(&Stage::Verifying));
+}
+
+#[test]
+fn a_failed_verification_names_the_image() {
+    // The application, checked last, reads back as 32 zeros.
+    let text = transcript("flash-esp32s3-usb").replace(
+        "37 30 30 37 64 64 39 63 30 36 31 33 61 37 31 62 35 38 33 65 66 37 61 62 35 65 62 65 63 38 31 31",
+        &["30"; 32].join(" "),
+    );
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(
+        &manifest(),
+        &text,
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    assert!(matches!(
+        result,
+        Err(Error::VerificationFailed {
+            offset: 0x20000,
+            ..
+        })
+    ));
+    // The board is still reset into its application.
+    provider.finish().unwrap();
+    assert_eq!(progress.stages.last(), Some(&Stage::Resetting));
+    assert!(
+        progress
+            .messages
+            .iter()
+            .any(|message| message.contains("\"application\"") && message.contains("0x20000")),
+        "{:?}",
+        progress.messages
+    );
+}
+
+#[test]
+fn layout_larger_than_flash_stops_before_writing() {
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(
+        &manifest(),
+        &transcript("flash-too-small"),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Error::FlashTooSmall {
+            layout: 8 * MEBIBYTE,
+            detected: 4 * MEBIBYTE,
+        }
+    );
+    provider.finish().unwrap();
+    assert_eq!(progress.stages, [Stage::Connecting, Stage::Resetting]);
+}
+
+#[test]
+fn erases_everything_first_when_asked() {
+    // The whole 8 MiB of the layout: FLASH_BEGIN with 0x800000 bytes at 0x0, then the flash.
+    let text = transcript("flash-esp32s3-usb").replacen(
+        "> c0 00 10 ",
+        "> c0 00 02 14 00 00 00 00 00 00 00 80 00 00 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 c0\n\
+         < c0 01 02 04 00 00 00 00 00 00 00 00 00 c0\n> c0 00 10 ",
+        1,
+    );
+    let mut progress = Recorder::default();
+    let options = FlashOptions {
+        erase_all: true,
+        ..FlashOptions::default()
+    };
+    let (result, provider) = run_flash(
+        &manifest(),
+        &text,
+        &mut fixture_source(),
+        &options,
+        &mut progress,
+    );
+    result.unwrap();
+    provider.finish().unwrap();
+    assert_eq!(
+        progress.stages,
+        [
+            Stage::Connecting,
+            Stage::Erasing,
+            Stage::Writing,
+            Stage::Verifying,
+            Stage::Resetting
+        ]
+    );
+    let erasing: Vec<&ProgressEvent> = progress
+        .events
+        .iter()
+        .filter(|event| event.stage == Stage::Erasing)
+        .collect();
+    assert_eq!(erasing.len(), 2);
+    assert_eq!(
+        (erasing[0].offset, erasing[0].done, erasing[0].total),
+        (0, 0, 8 * MEBIBYTE)
+    );
+    assert_eq!(erasing[1].done, 8 * MEBIBYTE);
+}
+
+#[test]
+fn missing_image_fails_before_connecting() {
+    let mut source = fixture_source();
+    source.files.remove("../images/application.bin");
+    let (result, provider) = run_flash(
+        &manifest(),
+        "! identity 303a:1001\n",
+        &mut source,
+        &FlashOptions::default(),
+        &mut Recorder::default(),
+    );
+    match result {
+        Err(Error::ImageSource { path, .. }) => assert_eq!(path, "../images/application.bin"),
+        other => panic!("{other:?}"),
+    }
+    provider.finish().unwrap();
+}
+
+#[test]
+fn detects_with_the_identity_table() {
+    let (result, provider) = run_detect(&transcript("detect-esp32s3-usb"), None);
+    let chip = result.unwrap();
+    assert_eq!(chip.chip, "esp32-s3");
+    assert_eq!(chip.protocol, Protocol::Espressif);
+    provider.finish().unwrap();
+}
+
+#[test]
+fn detect_without_identity_needs_a_protocol() {
+    let (result, provider) = run_detect("# no identity\n", None);
+    assert_eq!(
+        result.unwrap_err(),
+        Error::ProtocolRequired { identity: None }
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn disabled_protocol() {
+    let manifest = Manifest::from_toml(
+        r#"
+[[board]]
+identifier = "samd21"
+protocol = "samba"
+chip = "samd21"
+
+[[board.image]]
+offset = 0x2000
+path = "firmware.bin"
+"#,
+    )
+    .unwrap();
+    let mut source = MemorySource::default();
+    source.files.insert("firmware.bin".to_string(), vec![0; 16]);
+    let (result, provider) = run_flash(
+        &manifest,
+        "# a serial bridge\n",
+        &mut source,
+        &FlashOptions::default(),
+        &mut Recorder::default(),
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Error::ProtocolNotEnabled {
+            protocol: Protocol::Samba
+        }
+    );
+    provider.finish().unwrap();
+}

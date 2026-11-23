@@ -1,12 +1,16 @@
 //! What every flashing backend offers: connect, erase, write, verify and reset, with progress.
 
 use alloc::string::String;
+use core::convert::Infallible;
+use core::marker::PhantomData;
 
 use serde::Serialize;
 
 use crate::error::Error;
-use crate::manifest::Protocol;
-use crate::transport::UsbIdentity;
+#[cfg(feature = "espressif")]
+use crate::espressif::{EspressifBackend, EspressifOptions};
+use crate::manifest::{Protocol, ResetSequence};
+use crate::transport::{PortProvider, UsbIdentity};
 
 /// One image to write: its name for messages, where it goes and its bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,4 +123,117 @@ pub trait Backend {
 
     /// Leaves the bootloader and starts the application.
     async fn reset_to_application(&mut self) -> Result<(), Error>;
+}
+
+/// How every backend connects.
+#[derive(Debug, Clone, Default)]
+pub struct BackendOptions {
+    /// The baud rate to switch to after connecting; `None` lets the backend choose (460800
+    /// through an Espressif UART bridge).
+    pub baud_rate: Option<u32>,
+}
+
+/// The backends compiled in, chosen by protocol.
+pub enum Backends<'p, P: PortProvider> {
+    /// The Espressif ROM loader.
+    #[cfg(feature = "espressif")]
+    Espressif(EspressifBackend<'p, P>),
+    /// No backend: keeps the type parameters used when every backend is left out.
+    #[doc(hidden)]
+    Unavailable(Infallible, PhantomData<&'p mut P>),
+}
+
+impl<'p, P: PortProvider> Backends<'p, P> {
+    /// The backend of `protocol` over `port`, which `provider` can reopen; `reset` is the reset
+    /// sequence of the board, or `None` to let the backend choose from the port.
+    pub fn new(
+        protocol: Protocol,
+        port: P::Port,
+        provider: &'p mut P,
+        reset: Option<ResetSequence>,
+        options: &BackendOptions,
+    ) -> Result<Self, Error> {
+        match protocol {
+            #[cfg(feature = "espressif")]
+            Protocol::Espressif => {
+                let options = EspressifOptions {
+                    baud_rate: options.baud_rate,
+                    ..EspressifOptions::default()
+                };
+                EspressifBackend::new(port, provider, reset, options).map(Backends::Espressif)
+            }
+            protocol => {
+                let _ = (port, provider, reset, options);
+                Err(Error::ProtocolNotEnabled { protocol })
+            }
+        }
+    }
+
+    /// Resets the board into its bootloader and detects the chip, reporting through `progress`
+    /// the settings the backend could not apply.
+    pub async fn connect(&mut self, progress: &mut dyn Progress) -> Result<ChipInformation, Error> {
+        match self {
+            #[cfg(feature = "espressif")]
+            Backends::Espressif(backend) => backend.connect(progress).await,
+            Backends::Unavailable(never, _) => {
+                let _ = progress;
+                match *never {}
+            }
+        }
+    }
+}
+
+impl<P: PortProvider> Backend for Backends<'_, P> {
+    async fn connect(&mut self) -> Result<ChipInformation, Error> {
+        Backends::connect(self, &mut ()).await
+    }
+
+    async fn erase(&mut self, region: Region) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "espressif")]
+            Backends::Espressif(backend) => backend.erase(region).await,
+            Backends::Unavailable(never, _) => {
+                let _ = region;
+                match *never {}
+            }
+        }
+    }
+
+    async fn write(
+        &mut self,
+        segments: &[Segment<'_>],
+        progress: &mut dyn Progress,
+    ) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "espressif")]
+            Backends::Espressif(backend) => backend.write(segments, progress).await,
+            Backends::Unavailable(never, _) => {
+                let _ = (segments, progress);
+                match *never {}
+            }
+        }
+    }
+
+    async fn verify(
+        &mut self,
+        segments: &[Segment<'_>],
+        progress: &mut dyn Progress,
+    ) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "espressif")]
+            Backends::Espressif(backend) => backend.verify(segments, progress).await,
+            Backends::Unavailable(never, _) => {
+                let _ = (segments, progress);
+                match *never {}
+            }
+        }
+    }
+
+    async fn reset_to_application(&mut self) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "espressif")]
+            Backends::Espressif(backend) => backend.reset_to_application().await,
+            Backends::Unavailable(never, _) => match *never {},
+        }
+    }
 }

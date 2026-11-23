@@ -62,3 +62,7 @@ required-features = ["espressif", "testing"]
 [[test]]
 name = "native_pty"
 required-features = ["native"]
+
+[[test]]
+name = "flash"
+required-features = ["espressif", "json", "testing"]
