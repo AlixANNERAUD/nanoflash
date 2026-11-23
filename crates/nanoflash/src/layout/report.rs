@@ -3,10 +3,10 @@
 use super::{LayoutError, LayoutErrors, ResolvedLayout, Role};
 use alloc::string::String;
 use alloc::vec::Vec;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The size of the image destined to a partition.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ImageSize {
     /// The name of the partition.
     pub partition: String,
@@ -15,7 +15,7 @@ pub struct ImageSize {
 }
 
 /// The space used and left in every partition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Report {
     /// Total size of the flash in bytes.
     pub flash_size: u64,
@@ -26,7 +26,7 @@ pub struct Report {
 }
 
 /// The space used and left in one partition.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PartitionReport {
     /// The name of the partition.
     pub name: String,
@@ -236,5 +236,51 @@ mod tests {
             mbr: None,
             linker: None,
         }
+    }
+
+    #[test]
+    fn wire_shapes_round_trip() {
+        assert_eq!(
+            serde_json::to_string(&Size::Bytes(4096)).unwrap(),
+            r#"{"bytes":4096}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&Size::Remaining).unwrap(),
+            r#""remaining""#
+        );
+        assert_eq!(
+            serde_json::from_str::<Size>(r#"{"bytes":4096}"#).unwrap(),
+            Size::Bytes(4096)
+        );
+        let image = ImageSize {
+            partition: "application".into(),
+            size: 7,
+        };
+        let text = serde_json::to_string(&image).unwrap();
+        assert_eq!(serde_json::from_str::<ImageSize>(&text).unwrap(), image);
+        let report = Report {
+            flash_size: 0x1000,
+            unallocated: 0x800,
+            partitions: vec![PartitionReport {
+                name: "application".into(),
+                role: Role::Firmware,
+                offset: 0,
+                end: 0x800,
+                size: 0x800,
+                image_size: Some(0x400),
+                headroom: Some(0x400),
+                headroom_percent: Some(50),
+            }],
+        };
+        let text = serde_json::to_string(&report).unwrap();
+        assert_eq!(serde_json::from_str::<Report>(&text).unwrap(), report);
+        let error = crate::layout::ParseError {
+            message: "bad".into(),
+        };
+        let text = serde_json::to_string(&error).unwrap();
+        assert_eq!(
+            serde_json::from_str::<crate::layout::ParseError>(&text).unwrap(),
+            error
+        );
     }
 }

@@ -73,6 +73,7 @@ pub enum Role {
 
 /// The size of a partition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
 pub enum Size {
     /// A fixed number of bytes.
     Bytes(u64),
@@ -341,7 +342,7 @@ fn deserialize_size<'de, D: Deserializer<'de>>(deserializer: D) -> Result<RawSiz
 }
 
 /// A layout file that could not be read.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParseError {
     /// The message, with the line and column when the parser gives them.
     pub message: String,
