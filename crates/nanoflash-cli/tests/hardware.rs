@@ -114,8 +114,8 @@ fn wait_for_text(port: &str, expect: &str) -> Result<(), String> {
     ))
 }
 
-/// The chip a manifest names, for the first board.
-fn manifest_chip(manifest: &Path) -> String {
+/// A text field of the first board of a manifest.
+fn manifest_field(manifest: &Path, key: &str) -> String {
     let content = std::fs::read_to_string(manifest)
         .unwrap_or_else(|error| panic!("{}: {error}", manifest.display()));
     let document: toml::Table = content
@@ -126,8 +126,18 @@ fn manifest_chip(manifest: &Path) -> String {
         .and_then(toml::Value::as_array)
         .and_then(|boards| boards.first())
         .and_then(toml::Value::as_table)
-        .map(|table| text(table, "chip", manifest).to_string())
+        .map(|table| text(table, key, manifest).to_string())
         .unwrap_or_else(|| panic!("{}: no [[board]] table", manifest.display()))
+}
+
+/// The chip a manifest names, for the first board.
+fn manifest_chip(manifest: &Path) -> String {
+    manifest_field(manifest, "chip")
+}
+
+/// The protocol a manifest names, for the first board.
+fn manifest_protocol(manifest: &Path) -> String {
+    manifest_field(manifest, "protocol")
 }
 
 #[test]
@@ -172,6 +182,9 @@ fn flashes_every_attached_board() {
             "detect",
             "--port",
             &board.port,
+            // Bridges without a known identity (Nano clones) are detected by protocol.
+            "--protocol",
+            &manifest_protocol(&board.manifest),
             "--json",
             "--record",
             path_text(&detect_transcript),

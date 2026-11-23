@@ -11,3 +11,27 @@ name = "arduino-nano-33-ble"
 manifest = "nano33ble/manifest.toml"
 port = "/dev/serial/by-id/usb-Arduino_Nano_33_BLE_<serial>-if00"
 expect = "Hello world!"
+
+# [[board]]
+# name = "arduino-uno-r3"
+# manifest = "uno/manifest.toml"
+# port = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_<serial>-if00"
+# expect = "Hello world!"
+
+# [[board]]
+# name = "arduino-nano"
+# manifest = "nano/manifest.toml"
+# port = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+# expect = "Hello world!"
+
+# [[board]]
+# name = "arduino-mega-2560"
+# manifest = "mega2560/manifest.toml"
+# port = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__0042_<serial>-if00"
+# expect = "Hello world!"
+
+# [[board]]
+# name = "arduino-leonardo"
+# manifest = "leonardo/manifest.toml"
+# port = "/dev/serial/by-id/usb-Arduino_LLC_Arduino_Leonardo-if00"
+# expect = "Hello world!"

@@ -203,6 +203,56 @@ A manifest for the runner firmware lists:
 `layout.toml` gives the same `FLASH` region as nanoglia's `memory.x`, through
 `nanoflash layout write --format linker` or the `build` feature's constants.
 
+### Arduino AVR boards
+
+One sketch serves the four boards: `hardware/avr-hello/avr-hello.ino` prints `Hello world!` at
+115200 baud every 500 ms. Build it for each board you own; the hex file stays out of git
+(`hardware/*/firmware/` is ignored):
+
+```sh
+arduino-cli core install arduino:avr
+arduino-cli compile --fqbn arduino:avr:uno --output-dir hardware/uno/firmware hardware/avr-hello
+arduino-cli compile --fqbn arduino:avr:nano:cpu=atmega328 --output-dir hardware/nano/firmware hardware/avr-hello
+arduino-cli compile --fqbn arduino:avr:mega:cpu=atmega2560 --output-dir hardware/mega2560/firmware hardware/avr-hello
+arduino-cli compile --fqbn arduino:avr:leonardo --output-dir hardware/leonardo/firmware hardware/avr-hello
+```
+
+Use `arduino:avr:nano:cpu=atmega328old` for a Nano with the old bootloader (57600 baud).
+nanoflash reads the `avr-hello.ino.hex` that arduino-cli writes (the manifests name
+`firmware/avr-hello.ino.hex`). Then add the entries of `hardware/boards.example.toml` for the boards
+you own to `hardware/boards.toml`; the test passes `--protocol` from the manifest to `detect`, so
+Nano clones whose USB bridge has no known identity are detected too.
+
+What a flash does:
+
+- Uno, Nano (STK500v1): a DTR pulse resets the board into its bootloader, then sync (`GET_SYNC`),
+  signature check, page writes, read-back and leave (the application starts). The Nano tries
+  115200 baud, then 57600.
+- Mega 2560 (STK500v2): the same pulse, then `CMD_SIGN_ON`, signature check, page writes
+  (`CMD_PROGRAM_FLASH_ISP`), read-back and leave.
+- Leonardo (AVR109): a 1200-baud touch makes the sketch reset into Caterina, which shows up as a
+  new serial port within 8 seconds (nanoflash waits for it); then signature, block writes,
+  read-back, and `E` to leave.
+
+Limits of the Mega 2560: its bootloader never erases `0x3C000..0x3DFFF`, so the application ends at
+`0x3C000` (`hardware/mega2560/layout.toml`), and it erases pages in order, so images must start at
+`0x0` and be contiguous.
+
+When the bootloader does not answer, press the reset button just before flashing (the Uno's
+bootloader only listens for about a second after a reset). On the Leonardo, press reset once
+(the LED pulses) and pass the bootloader's port within 8 seconds.
+
+Recording: `test-hardware` records `target/hardware/<name>-flash.transcript`. Copy the ones worth
+keeping into `crates/nanoflash/tests/transcripts/avr/recorded/`, with a first comment line naming
+the board and its bootloader, and add a replay to the list of `replays_the_simavr_recordings`.
+
+#### Replacing avrdude
+
+`avrdude -p<mcu> -c<protocol> -P<port> -b<speed> -D -Uflash:w:<file>.hex:i` becomes
+`nanoflash flash --board <manifest> --port <port> --json`. `-D` (no chip erase) is the default
+behaviour: pages are erased as they are written. The baud rate, the chip and the protocol come
+from the manifest.
+
 ### Hardware workflow
 
 `.github/workflows/hardware.yml` (`Hardware`, started by hand with `workflow_dispatch`) runs
@@ -226,3 +276,7 @@ For the Nano 33 BLE, build its firmware as above and run `mise run web-demo` wit
 Nano's port, then answer the second button with the bootloader's port (`2341:005a`) when Chrome
 asks. The page asks for it once: Chrome remembers the grant, and the next Install finds the
 bootloader by itself.
+
+For the AVR boards, build their firmware as above and run `mise run web-demo` with
+`?manifest=/hardware/uno/manifest.json`, then `?manifest=/hardware/leonardo/manifest.json`
+(answer the second button with the Leonardo bootloader's port).
