@@ -19,10 +19,26 @@ button {
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 label { display: block; margin: 0.5em 0; }
 progress { display: block; width: 100%; accent-color: var(--nanoflash-progress-color, #1f6feb); }
-p { margin: 0.5em 0 0; }
+p { margin: 0.5em 0 0; white-space: pre-line; }
 `;
 
 const WORKING = ["connecting", "erasing", "writing", "verifying", "resetting"];
+
+/** What the done state says: the board, whether it was verified, and every warning. */
+function summary(report: FlashReport): string {
+  const unverified = report.warnings.find(
+    (warning) => warning.kind === "not-verified-in-secure-download-mode",
+  );
+  const lines = [
+    report.verified
+      ? `Done: ${report.board} was written and restarted.`
+      : `Done: ${report.board} was written and restarted, but not verified: ${unverified?.message ?? "verification was turned off"}.`,
+  ];
+  for (const warning of report.warnings) {
+    if (warning !== unverified) lines.push(`Warning: ${warning.message}.`);
+  }
+  return lines.join("\n");
+}
 
 function chooserClosed(error: unknown): boolean {
   return error instanceof NanoflashError && error.kind === "no-port-chosen";
@@ -134,8 +150,13 @@ export class NanoflashButton extends HTMLElement {
       eraseAll: this.hasAttribute("erase-all") || this.#checkbox.checked,
       onProgress: (event: ProgressEvent) => {
         this.#progress.value = event.total === 0 ? 0 : (event.done * 100) / event.total;
-        this.#render(event.stage, "");
+        // A note stays until the next stage.
+        const note = event.stage === this.dataset["state"] ? (this.#message.textContent ?? "") : "";
+        this.#render(event.stage, note);
         this.#emit("nanoflash-progress", event);
+      },
+      onMessage: (text: string) => {
+        this.#message.textContent = text;
       },
     };
   }
@@ -168,7 +189,7 @@ export class NanoflashButton extends HTMLElement {
     this.#render("connecting", "");
     flashing.then(
       (report) => {
-        this.#render("done", `Done: ${report.board} was written and restarted.`);
+        this.#render("done", summary(report));
         this.#emit("nanoflash-done", report);
       },
       (error: unknown) => {

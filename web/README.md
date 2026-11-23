@@ -108,7 +108,8 @@ Importing `nanoflash` does not register it.
 The manifest is ours or an esp-web-tools one, in JSON. Attributes: `manifest`, `label` (default
 `Install`) and `erase-all` (erase the whole flash first; without it, the element offers a check
 box when the manifest asks for it). The element asks for the port inside the click, shows the
-progress, the result and the errors (a broken module asks to reload the page), and in a browser
+progress and the notes of the library (`onMessage`), the result with what was not verified and
+every warning, and the errors (a broken module asks to reload the page), and in a browser
 without Web Serial it says so and points to the `nanoflash` command line. When the board comes back
 in its bootloader under another USB identity, it shows a second button, "Select the board in
 bootloader mode", which asks for that port.

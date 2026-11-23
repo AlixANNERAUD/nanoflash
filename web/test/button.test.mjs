@@ -243,6 +243,61 @@ test("shows errors", async () => {
   assert.equal(failures.length, 1);
 });
 
+test("shows the notes while flashing, and what was not verified and the warnings when done", async () => {
+  const { loadBackend } = await import("../dist/index.js");
+  const backend = await loadBackend("espressif");
+  const original = backend.flash;
+  let finish = null;
+  backend.flash = async (_manifest, _port, _options, _readFile, progress) => {
+    progress({ stage: "writing", offset: 0, done: 0, total: 10 });
+    progress({ message: "keeping 115200 baud instead of 921600: the bridge refused it" });
+    await new Promise((resolve) => {
+      finish = resolve;
+    });
+    return {
+      board: "esp32-s3-devkitc",
+      chip: { chip: "esp32-s3" },
+      images: [],
+      verified: false,
+      warnings: [
+        {
+          kind: "not-verified-in-secure-download-mode",
+          message: "the chip is in secure download mode: what was written was not verified",
+        },
+        {
+          kind: "partition-table-differs",
+          partition: "partition-table",
+          message: "the image for the partition \"partition-table\" differs from the layout",
+        },
+      ],
+    };
+  };
+  try {
+    const port = { close: async () => {} };
+    restoreNavigator = installNavigator([port], { onRequestPort: () => port });
+    mount("esp32-s3-usb.json");
+    await waitFor("ready");
+    part("button").click();
+    await until(() => finish !== null && part("message").textContent !== "", "the note");
+    assert.equal(state(), "writing");
+    assert.equal(
+      part("message").textContent,
+      "keeping 115200 baud instead of 921600: the bridge refused it",
+    );
+    finish();
+    await waitFor("done");
+    assert.equal(
+      part("message").textContent,
+      [
+        "Done: esp32-s3-devkitc was written and restarted, but not verified: the chip is in secure download mode: what was written was not verified.",
+        'Warning: the image for the partition "partition-table" differs from the layout.',
+      ].join("\n"),
+    );
+  } finally {
+    backend.flash = original;
+  }
+});
+
 // Last: the module it breaks stays broken.
 test("an uncaught trap during a flash breaks the module and asks to reload", async () => {
   const { loadBackend } = await import("../dist/index.js");
