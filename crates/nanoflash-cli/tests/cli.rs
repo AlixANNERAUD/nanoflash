@@ -616,6 +616,12 @@ fn host_matches(tokens: &[HostToken], bytes: &[u8]) -> bool {
                 };
                 position += 1 + length;
             }
+            HostToken::Count(count) => {
+                if position + count > bytes.len() {
+                    return false;
+                }
+                position += count;
+            }
         }
         index += 1;
     }
@@ -645,7 +651,9 @@ fn record_writes_the_transcript() {
                     .iter()
                     .map(|token| match token {
                         HostToken::Byte(byte) => *byte,
-                        HostToken::Any => panic!("a recorded line has no wildcard"),
+                        HostToken::Any | HostToken::Count(_) => {
+                            panic!("a recorded line has no wildcard")
+                        }
                     })
                     .collect();
                 assert!(host_matches(tokens, &bytes), "line {}", expected.line);

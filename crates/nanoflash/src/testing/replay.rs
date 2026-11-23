@@ -2,11 +2,11 @@
 
 use alloc::format;
 use alloc::rc::Rc;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use super::transcript::{Entry, Event, HostToken, Transcript};
+use super::transcript::{Entry, Event, HostToken, OpenFailure, Transcript};
 use crate::transport::{
     DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
 };
@@ -17,7 +17,7 @@ struct State {
     next: usize,
     /// Within a `>` event: the token the next byte is compared with.
     host_position: usize,
-    /// Within a `..` token: how many bytes it has taken.
+    /// Within a `..` or `..N` token: how many bytes it has taken.
     wildcard_count: usize,
     /// Within a `<` event: how many bytes were read.
     device_offset: usize,
@@ -37,6 +37,13 @@ fn step(
             Some(HostToken::Byte(next)) if count > 0 && *next == byte => Ok((position + 2, 0)),
             _ => Ok((position, count.saturating_add(1))),
         },
+        Some(HostToken::Count(total)) => {
+            if count.saturating_add(1) >= *total {
+                Ok((position + 1, 0))
+            } else {
+                Ok((position, count + 1))
+            }
+        }
         None => Err(format!("expected no more bytes, got {byte:02x}")),
     }
 }
@@ -244,6 +251,17 @@ impl PortProvider for ReplayProvider {
         _timeout: Duration,
     ) -> Result<ReplayPort, TransportError> {
         let mut state = self.state.borrow_mut();
+        if let Some(Event::OpenFails(failure)) =
+            state.events.get(state.next).map(|entry| &entry.event)
+        {
+            let filter = filter.to_string();
+            let error = match failure {
+                OpenFailure::NotFound => TransportError::NotFound { filter },
+                OpenFailure::NotGranted => TransportError::NotGranted { filter },
+            };
+            state.advance();
+            return Err(error);
+        }
         let identity = match state.events.get(state.next).map(|entry| &entry.event) {
             // The port of the transcript must be one the filter selects.
             Some(Event::Reopen(identity))
@@ -411,5 +429,47 @@ mod tests {
             block_on(port.write(&[1])),
             Err(TransportError::Disconnected)
         );
+    }
+
+    #[test]
+    fn counted_wildcard_takes_exactly_n_bytes() {
+        let (mut port, provider) = port("> 53 ..3 59");
+        block_on(port.write(&[0x53, 0xaa, 0xbb, 0xcc, 0x59])).unwrap();
+        provider.finish().unwrap();
+        let (mut port, _) = self::port("> 53 ..3 59");
+        match block_on(port.write(&[0x53, 0xaa, 0xbb, 0x59, 0x00])) {
+            Err(TransportError::Replay { line, message }) => {
+                assert_eq!(line, 1);
+                assert!(message.contains("expected 59, got 00"), "{message}");
+            }
+            other => panic!("{other:?}"),
+        }
+        // A literal inside the count is data, and a count may end the line.
+        let (mut port, provider) = self::port("> 53 ..2");
+        block_on(port.write(&[0x53, 0x59, 0x59])).unwrap();
+        provider.finish().unwrap();
+    }
+
+    #[test]
+    fn open_fails_as_told() {
+        let filter = DeviceFilter {
+            vendor: 0x2341,
+            product: Some(0x005a),
+            serial_number: None,
+        };
+        let (_, mut provider) = port("! open-fails not-granted\n! open-fails not-found");
+        assert_eq!(
+            block_on(provider.open(&filter, 115_200, TIMEOUT)).err(),
+            Some(TransportError::NotGranted {
+                filter: "2341:005a".into()
+            })
+        );
+        assert_eq!(
+            block_on(provider.open(&filter, 115_200, TIMEOUT)).err(),
+            Some(TransportError::NotFound {
+                filter: "2341:005a".into()
+            })
+        );
+        provider.finish().unwrap();
     }
 }

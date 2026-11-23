@@ -6,7 +6,7 @@ mod transcript;
 
 pub use record::{RecordingPort, RecordingProvider, record};
 pub use replay::{ReplayPort, ReplayProvider, replay};
-pub use transcript::{Entry, Event, HostToken, Transcript, TranscriptError};
+pub use transcript::{Entry, Event, HostToken, OpenFailure, Transcript, TranscriptError};
 
 /// Serves the files of a map as images, by path as written in the manifest.
 #[cfg(feature = "flash")]

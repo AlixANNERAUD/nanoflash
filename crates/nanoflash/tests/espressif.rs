@@ -524,7 +524,7 @@ fn compressed_blocks_inflate_to_the_image() {
             .iter()
             .map(|token| match token {
                 HostToken::Byte(byte) => *byte,
-                HostToken::Any => panic!("a recording has no wildcard"),
+                HostToken::Any | HostToken::Count(_) => panic!("a recording has no wildcard"),
             })
             .collect();
         let packet = slip_decode(&frame);

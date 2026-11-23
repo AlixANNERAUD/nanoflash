@@ -4,7 +4,7 @@ use alloc::rc::Rc;
 use alloc::vec::Vec;
 use core::cell::RefCell;
 
-use super::transcript::{Entry, Event, HostToken, Transcript};
+use super::transcript::{Entry, Event, HostToken, OpenFailure, Transcript};
 use crate::transport::{
     DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
 };
@@ -154,7 +154,23 @@ impl<P: PortProvider> PortProvider for RecordingProvider<P> {
         baud_rate: u32,
         timeout: Duration,
     ) -> Result<Self::Port, TransportError> {
-        let port = self.inner.open(filter, baud_rate, timeout).await?;
+        let port = match self.inner.open(filter, baud_rate, timeout).await {
+            Ok(port) => port,
+            Err(error) => {
+                let failure = match error {
+                    TransportError::NotFound { .. } => Some(OpenFailure::NotFound),
+                    TransportError::NotGranted { .. } => Some(OpenFailure::NotGranted),
+                    _ => None,
+                };
+                if let Some(failure) = failure {
+                    self.recording
+                        .borrow_mut()
+                        .events
+                        .push(Event::OpenFails(failure));
+                }
+                return Err(error);
+            }
+        };
         self.recording
             .borrow_mut()
             .events
@@ -184,7 +200,9 @@ mod tests {
              ! timeout\n\
              ! disconnect\n\
              ! reopen 303a:1001 abc\n\
-             < 01 02\n",
+             < 01 02\n\
+             ! open-fails not-found\n\
+             ! open-fails not-granted\n",
         )
         .unwrap();
         let (port, provider) = replay(transcript.clone());
@@ -214,6 +232,14 @@ mod tests {
             };
             let mut reopened = provider.open(&filter, 115_200, timeout).await.unwrap();
             assert_eq!(reopened.read(&mut buffer, timeout).await.unwrap(), 2);
+            assert!(matches!(
+                provider.open(&filter, 115_200, timeout).await,
+                Err(TransportError::NotFound { .. })
+            ));
+            assert!(matches!(
+                provider.open(&filter, 115_200, timeout).await,
+                Err(TransportError::NotGranted { .. })
+            ));
         });
         assert_eq!(provider.transcript(), transcript);
         provider.inner().finish().unwrap();
