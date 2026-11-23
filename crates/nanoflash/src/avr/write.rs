@@ -8,8 +8,8 @@
 //!
 //! Optiboot, ATmegaBOOT and Caterina erase the page they program. The wiring bootloader of the
 //! Mega 2560 (STK500v2) does not: it keeps an erase address of its own, 0x0 when it starts, and
-//! each `CMD_PROGRAM_FLASH_ISP` erases the page there and moves it one page on, up to the
-//! bootloader, wherever the programmed page goes (its chip erase only resets that address, and
+//! each `CMD_PROGRAM_FLASH_ISP` erases the page there and moves it one page on, up to 16 KiB
+//! under the end of flash (twice its 8 KiB), wherever the programmed page goes (its chip erase only resets that address, and
 //! answers `STATUS_CMD_FAILED`). [`EraseOrder`] follows that address, and the pages of a write or
 //! an erase that it would not erase first are refused before anything is sent.
 
@@ -59,7 +59,7 @@ fn is_multiple(value: u64, unit: u64) -> bool {
 #[derive(Debug, Clone, Default)]
 pub(super) struct EraseOrder {
     /// The page the bootloader erases at the next `CMD_PROGRAM_FLASH_ISP`, whatever page that
-    /// programs; it stops at `writable_to`.
+    /// programs; it stops at its `APP_END`, which is `writable_to` on STK500v2.
     next: u64,
     /// The pages below `next` programmed with something else than `0xFF` since they were erased:
     /// programming them again would not give the data.
@@ -134,6 +134,7 @@ impl Bounds {
                 what: what(),
                 end,
                 writable_to: self.writable_to,
+                protocol: self.protocol,
             });
         }
         if padded > self.address_limit {

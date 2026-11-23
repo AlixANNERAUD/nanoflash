@@ -273,6 +273,7 @@ fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(),
                     what: format!("{kind} \"{label}\""),
                     end,
                     writable_to,
+                    protocol: chip.protocol,
                 });
             }
         }
@@ -869,6 +870,7 @@ mod tests {
                 what: "image \"application\"".into(),
                 end: 0x7E01,
                 writable_to: 0x7E00,
+                protocol: Protocol::Stk500v1,
             }
         );
         assert_eq!(error.class(), ErrorClass::Input);
@@ -882,6 +884,7 @@ mod tests {
                 what: "erase entry \"bootloader\"".into(),
                 end: 0x8000,
                 writable_to: 0x7E00,
+                protocol: Protocol::Stk500v1,
             })
         );
         // Without `writable_to`, the flash is writable up to its size.

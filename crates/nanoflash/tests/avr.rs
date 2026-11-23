@@ -255,7 +255,7 @@ fn connects_to_a_mega_2560() {
             secure_download_mode: false,
             usb: identity(0x2341, 0x0042),
             writable_from: None,
-            writable_to: Some(0x3_E000),
+            writable_to: Some(0x3_C000),
             erases_to_end: false,
         }
     );
@@ -1111,6 +1111,7 @@ fn pages_above_the_bootloader_are_refused_before_sending() {
         what: "image \"application\"".into(),
         end: 0x7E80,
         writable_to: 0x7E00,
+        protocol: Protocol::Stk500v1,
     };
     assert_eq!(result.0, Err(above.clone()));
     assert_eq!(result.1, Err(above));
@@ -1120,6 +1121,7 @@ fn pages_above_the_bootloader_are_refused_before_sending() {
             what: "erase region at 0x7d80".into(),
             end: 0x7E80,
             writable_to: 0x7E00,
+            protocol: Protocol::Stk500v1,
         })
     );
     provider.finish().unwrap();
@@ -1324,7 +1326,7 @@ fn the_mega_2560_writes_anywhere_after_erasing_everything() {
     let mut lines = String::new();
     let mut sequence = 5_u8;
     let mut offset = 0;
-    while offset < 0x3_E000 {
+    while offset < 0x3_C000 {
         lines.push_str(&mega_program_lines(sequence, offset));
         sequence = sequence.wrapping_add(2);
         offset += 0x100;
@@ -1342,7 +1344,7 @@ fn the_mega_2560_writes_anywhere_after_erasing_everything() {
     let (result, provider, _) = run(&text, Protocol::Stk500v2, |backend, progress| {
         let region = Region {
             offset: 0,
-            size: 0x3_E000,
+            size: 0x3_C000,
         };
         block_on(backend.erase(region, progress))?;
         block_on(backend.write(&[segment], progress))?;
@@ -1354,7 +1356,7 @@ fn the_mega_2560_writes_anywhere_after_erasing_everything() {
         Err(Error::PageOutOfEraseOrder {
             what: "image \"application\"".into(),
             offset: 0x1000,
-            erases_next: 0x3_E000,
+            erases_next: 0x3_C000,
         })
     );
     provider.finish().unwrap();
@@ -1391,6 +1393,51 @@ fn a_failed_page_on_the_mega_2560_needs_a_new_connection() {
         result.1,
         Err(Error::NotConnected {
             protocol: Protocol::Stk500v2
+        })
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn the_mega_2560_writes_nothing_where_its_bootloader_does_not_erase() {
+    // The wiring bootloader erases no page from 0x3C000, 8 KiB below itself.
+    let data = [0x00; 0x200];
+    let segment = Segment {
+        label: "application",
+        offset: 0x3_BF00,
+        data: &data,
+    };
+    let (result, provider, _) = run(
+        &transcript("connect-mega2560"),
+        Protocol::Stk500v2,
+        |backend, progress| {
+            let write = block_on(backend.write(&[segment], progress));
+            let region = Region {
+                offset: 0x3_C000,
+                size: 0x2000,
+            };
+            let erase = block_on(backend.erase(region, progress));
+            (write, erase)
+        },
+    );
+    let error = result.0.unwrap_err();
+    assert_eq!(
+        error,
+        Error::AboveWritableFlash {
+            what: "image \"application\"".into(),
+            end: 0x3_C100,
+            writable_to: 0x3_C000,
+            protocol: Protocol::Stk500v2,
+        }
+    );
+    assert!(error.to_string().contains("16 KiB"), "{error}");
+    assert_eq!(
+        result.1,
+        Err(Error::AboveWritableFlash {
+            what: "erase region at 0x3c000".into(),
+            end: 0x3_E000,
+            writable_to: 0x3_C000,
+            protocol: Protocol::Stk500v2,
         })
     );
     provider.finish().unwrap();

@@ -59,6 +59,19 @@ pub(crate) fn bootloader_size(protocol: Protocol, baud_rate: u32) -> u64 {
     }
 }
 
+/// The end of the flash the bootloader of `protocol` leaves to the application: below the
+/// bootloader, and on STK500v2 below the last page the wiring bootloader erases, its `APP_END`,
+/// twice its size under the end of flash (16 KiB on the ATmega2560): it programs the pages
+/// above without erasing them.
+pub(crate) fn writable_to(chip: &Chip, protocol: Protocol, baud_rate: u32) -> u64 {
+    let size = bootloader_size(protocol, baud_rate);
+    let reserved = match protocol {
+        Protocol::Stk500v2 => size.saturating_mul(2),
+        Protocol::Stk500v1 | Protocol::Avr109 | Protocol::Espressif | Protocol::Samba => size,
+    };
+    chip.flash_size.saturating_sub(reserved)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,13 +106,35 @@ mod tests {
     }
 
     #[test]
+    fn writable_flash_ends_below_the_bootloader() {
+        let chip = |name| *CHIPS.iter().find(|chip| chip.name == name).unwrap();
+        assert_eq!(
+            writable_to(&chip("atmega328p"), Protocol::Stk500v1, 115_200),
+            0x7E00
+        );
+        assert_eq!(
+            writable_to(&chip("atmega328p"), Protocol::Stk500v1, 57_600),
+            0x7800
+        );
+        // The wiring bootloader erases nothing from 0x3C000, 16 KiB under the end of flash.
+        assert_eq!(
+            writable_to(&chip("atmega2560"), Protocol::Stk500v2, 115_200),
+            0x3_C000
+        );
+        assert_eq!(
+            writable_to(&chip("atmega32u4"), Protocol::Avr109, 57_600),
+            0x7000
+        );
+    }
+
+    #[test]
     fn bootloaders_leave_whole_pages() {
         // The page loop pads the last page of an image up to `writable_to`, never past it.
         for chip in CHIPS {
             for protocol in [Protocol::Stk500v1, Protocol::Stk500v2, Protocol::Avr109] {
                 for rate in [57_600, 115_200] {
-                    let writable_to = chip.flash_size - bootloader_size(protocol, rate);
-                    assert_eq!(writable_to % chip.page_size, 0, "{}", chip.name);
+                    let end = writable_to(&chip, protocol, rate);
+                    assert_eq!(end % chip.page_size, 0, "{}", chip.name);
                 }
             }
         }

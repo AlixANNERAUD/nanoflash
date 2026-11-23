@@ -360,6 +360,8 @@ pub enum Error {
         end: u64,
         /// The end of the flash the bootloader writes.
         writable_to: u64,
+        /// The protocol of the bootloader, which picks the explanation.
+        protocol: Protocol,
     },
     /// The flash read back differs from what was written.
     ReadBackDiffers {
@@ -866,6 +868,16 @@ impl fmt::Display for Error {
                 what,
                 end,
                 writable_to,
+                protocol: Protocol::Stk500v2,
+            } => write!(
+                formatter,
+                "the {what} ends at 0x{end:x}, past 0x{writable_to:x}: the STK500v2 bootloader of the Mega 2560 erases pages only below 0x{writable_to:x}, 16 KiB under the end of flash although it occupies only the last 8 KiB, so the pages past 0x{writable_to:x} would be programmed without being erased; remove it from the manifest or make it end at 0x{writable_to:x} or below"
+            ),
+            Error::AboveWritableFlash {
+                what,
+                end,
+                writable_to,
+                ..
             } => write!(
                 formatter,
                 "the {what} ends at 0x{end:x}, past 0x{writable_to:x}: the bootloader occupies the flash from 0x{writable_to:x} and does not write it; remove it from the manifest or make it end at 0x{writable_to:x} or below"
@@ -903,7 +915,7 @@ impl fmt::Display for Error {
                 erases_next,
             } => write!(
                 formatter,
-                "the {what} programs the page at 0x{offset:x}, but the STK500v2 bootloader of the Mega 2560 erases one page per page programmed, in order from 0x0 wherever the page goes, and erases 0x{erases_next:x} next: the page at 0x{offset:x} would not be erased, or another would be; nothing was written: write the images as one run from 0x0 in order of offset and erase only from 0x0, or erase the whole flash first (--erase-all)"
+                "the {what} programs the page at 0x{offset:x}, but the STK500v2 bootloader of the Mega 2560 erases one page per page programmed, in order from 0x0 wherever the page goes, and erases 0x{erases_next:x} next: the page at 0x{offset:x} would not be erased, or another would be; nothing was written: write the images as one run from 0x0 in order of offset and erase only from 0x0, or first erase every page the bootloader erases (--erase-all)"
             ),
         }
     }
@@ -1015,11 +1027,23 @@ mod tests {
             what: "image \"application\"".into(),
             end: 0x7E01,
             writable_to: 0x7E00,
+            protocol: Protocol::Stk500v1,
         };
         assert_eq!(above.class(), ErrorClass::Input);
         assert_eq!(
             above.to_string(),
             "the image \"application\" ends at 0x7e01, past 0x7e00: the bootloader occupies the flash from 0x7e00 and does not write it; remove it from the manifest or make it end at 0x7e00 or below"
+        );
+        let mega = Error::AboveWritableFlash {
+            what: "image \"application\"".into(),
+            end: 0x3_C100,
+            writable_to: 0x3_C000,
+            protocol: Protocol::Stk500v2,
+        };
+        assert_eq!(mega.class(), ErrorClass::Input);
+        assert_eq!(
+            mega.to_string(),
+            "the image \"application\" ends at 0x3c100, past 0x3c000: the STK500v2 bootloader of the Mega 2560 erases pages only below 0x3c000, 16 KiB under the end of flash although it occupies only the last 8 KiB, so the pages past 0x3c000 would be programmed without being erased; remove it from the manifest or make it end at 0x3c000 or below"
         );
         let short = Error::EraseShortOfFlashEnd {
             chip: "samd21g18a".into(),
@@ -1055,7 +1079,7 @@ mod tests {
         assert_eq!(error.class(), ErrorClass::Input);
         assert_eq!(
             error.to_string(),
-            "the image \"application\" programs the page at 0x100, but the STK500v2 bootloader of the Mega 2560 erases one page per page programmed, in order from 0x0 wherever the page goes, and erases 0x0 next: the page at 0x100 would not be erased, or another would be; nothing was written: write the images as one run from 0x0 in order of offset and erase only from 0x0, or erase the whole flash first (--erase-all)"
+            "the image \"application\" programs the page at 0x100, but the STK500v2 bootloader of the Mega 2560 erases one page per page programmed, in order from 0x0 wherever the page goes, and erases 0x0 next: the page at 0x100 would not be erased, or another would be; nothing was written: write the images as one run from 0x0 in order of offset and erase only from 0x0, or first erase every page the bootloader erases (--erase-all)"
         );
     }
 

@@ -26,7 +26,6 @@ use crate::error::Error;
 use crate::manifest::{Protocol, ResetSequence};
 use crate::touch;
 use crate::transport::{DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError};
-use chip::bootloader_size;
 
 /// The baud rates STK500v1 tries when none is requested: Optiboot's, then ATmegaBOOT's (the old
 /// bootloader of the Nano and the Pro Mini).
@@ -118,9 +117,7 @@ struct Session {
 impl Session {
     /// The end of the flash the bootloader of `protocol` leaves to the application.
     fn writable_to(&self, protocol: Protocol) -> u64 {
-        self.chip
-            .flash_size
-            .saturating_sub(bootloader_size(protocol, self.baud_rate))
+        chip::writable_to(self.chip, protocol, self.baud_rate)
     }
 }
 
@@ -142,9 +139,10 @@ type Check = for<'a> fn(&'a [u8], u8, u8) -> Result<&'a [u8], String>;
 ///
 /// Pages are written whole and checked by reading them back. On STK500v2, the wiring bootloader
 /// of the Mega 2560 erases one page per page programmed, in order from 0x0 since it started,
-/// wherever the page goes: after `connect`, a write must be one run of pages from 0x0 in order
-/// of offset and an erase must start at 0x0, unless the whole flash up to the bootloader was
-/// erased in this connection; other writes are refused with `PageOutOfEraseOrder` before anything
+/// wherever the page goes, and never past 0x3C000 (16 KiB under the end of flash, twice its own
+/// 8 KiB), so `connect` reports `writable_to` 0x3C000 and nothing is written above it. After
+/// `connect`, a write must be one run of pages from 0x0 in order of offset and an erase must
+/// start at 0x0, unless every page up to 0x3C000 was erased in this connection; other writes are refused with `PageOutOfEraseOrder` before anything
 /// is sent. That count restarts with the bootloader, at the reset `connect` makes: with the
 /// reset `none`, the bootloader must have just started.
 pub struct AvrBackend<'p, P: PortProvider> {
