@@ -153,7 +153,7 @@ run = [
   "npm --prefix web ci",
   "npm --prefix web run build",
   "echo 'Open http://localhost:8000/web/demo/?manifest=/hardware/esp32-s3/manifest.json'",
-  "python3 -m http.server 8000",
+  "python3 -m http.server 8000 --bind 127.0.0.1",
 ]
 
 [tasks.web]

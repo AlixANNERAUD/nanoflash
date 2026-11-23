@@ -42,6 +42,8 @@ export class NanoflashButton extends HTMLElement {
   #prepared: Prepared | undefined;
   /** Counts manifest loads, so a late answer for an old manifest is dropped. */
   #generation = 0;
+  /** Set once connected, so the attributes present at upgrade do not load the manifest twice. */
+  #started = false;
 
   constructor() {
     super();
@@ -73,12 +75,13 @@ export class NanoflashButton extends HTMLElement {
   }
 
   connectedCallback(): void {
+    this.#started = true;
     void this.#load();
   }
 
   attributeChangedCallback(name: string): void {
     if (name === "manifest") {
-      if (this.isConnected) void this.#load();
+      if (this.#started && this.isConnected) void this.#load();
     } else {
       this.#refresh();
     }
@@ -94,7 +97,8 @@ export class NanoflashButton extends HTMLElement {
     const state = this.dataset["state"] ?? "";
     const working = WORKING.includes(state);
     this.#button.textContent = this.getAttribute("label") ?? "Install";
-    this.#button.disabled = !(state === "ready" || state === "done" || state === "error");
+    this.#button.disabled =
+      this.#prepared === undefined || !(state === "ready" || state === "done" || state === "error");
     this.#erase.hidden = !(this.#prepared?.promptErase === true) || this.hasAttribute("erase-all");
     this.#checkbox.disabled = working;
     this.#progress.hidden = !working;
@@ -149,7 +153,8 @@ export class NanoflashButton extends HTMLElement {
     const serial = (navigator as { serial?: { requestPort(options: object): Promise<unknown> } }).serial;
     if (prepared === undefined || serial === undefined) return;
     this.#bootloader.disabled = true;
-    const chosen = serial.requestPort({ filters: prepared.bootloaderFilters });
+    const filters = prepared.bootloaderFilters;
+    const chosen = serial.requestPort(filters.length === 0 ? {} : { filters });
     void chosen.then(
       (port) => {
         this.#bootloader.disabled = false;

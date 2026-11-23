@@ -180,6 +180,42 @@ test("asks for the bootloader port when it was never granted", async () => {
   assert.deepEqual(requested[1], { filters: [{ usbVendorId: 0x303a, usbProductId: 0x1001 }] });
 });
 
+test("asks for any port when the manifest names no bootloader device", async () => {
+  const lost = mockPort(transcript("connect-reopen"));
+  const requested = [];
+  restoreNavigator = installNavigator([], {
+    onRequestPort: (options) => {
+      requested.push(options);
+      if (requested.length === 1) return lost.port;
+      throw new DOMException("No port selected by the user.", "NotFoundError");
+    },
+  });
+  mount("esp-web-tools.json");
+  await waitFor("ready");
+  part("button").click();
+  await waitFor("bootloader-permission");
+  part("bootloader-button").click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(requested[1], {});
+  assert.equal(state(), "bootloader-permission");
+});
+
+test("loads the manifest once when it is there at connection", async () => {
+  restoreNavigator = installNavigator([]);
+  const before = fetchRecord.urls.filter((url) => url.endsWith("esp32-s3-usb.json")).length;
+  mount("esp32-s3-usb.json");
+  await waitFor("ready");
+  const after = fetchRecord.urls.filter((url) => url.endsWith("esp32-s3-usb.json")).length;
+  assert.equal(after - before, 1);
+});
+
+test("a failed manifest leaves the button disabled", async () => {
+  restoreNavigator = installNavigator([]);
+  mount("missing.json");
+  await waitFor("error");
+  assert.equal(part("button").disabled, true);
+});
+
 test("shows errors", async () => {
   restoreNavigator = installNavigator([]);
   mount("missing.json");
