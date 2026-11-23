@@ -67,8 +67,7 @@ jobs:
       - uses: jdx/mise-action@v5
       - run: mise run deny
 
-  # Checks the writers against ESP-IDF's reference parser; works once the `external_parsers`
-  # test exists.
+  # Reads the generated tables back with ESP-IDF's gen_esp32part.py and sfdisk.
   external-parsers:
     name: External parsers
     runs-on: ubuntu-latest
