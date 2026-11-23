@@ -1,9 +1,36 @@
 {
   "name": "nanoflash",
   "version": "0.1.0",
+  "description": "Vendor-neutral toolkit to lay out the flash of a microcontroller board and write firmware to it, in the browser over Web Serial.",
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlixANNERAUD/nanoflash.git",
+    "directory": "web"
+  },
   "private": false,
   "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./button": {
+      "types": "./dist/button.d.ts",
+      "default": "./dist/button.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": [
+    "./dist/button.js"
+  ],
   "scripts": {
+    "build": "tsc -p tsconfig.json && rm -rf dist/wasm && cp -r src/wasm dist/wasm",
     "test": "node --test \"test/*.test.mjs\""
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

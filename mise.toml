@@ -141,6 +141,7 @@ depends = ["web-wasm"]
 tools = { node = "22" }
 run = [
   "npm --prefix web ci",
+  "npm --prefix web run build",
   "npm --prefix web test",
 ]
 

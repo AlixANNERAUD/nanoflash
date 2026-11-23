@@ -269,7 +269,7 @@ and resets into the application.
   manifest image targeting that partition wins, and `layout check` warns when it differs from the
   generated table.
 - It erases only the regions it writes (rounded to the erase unit). `--erase-all` (and
-  `erase: "all"` in the JavaScript API) erases the whole flash first. Data partitions such as
+  `eraseAll: true` in the JavaScript API) erases the whole flash first. Data partitions such as
   NVS or storage are never touched unless an image targets them.
 - On SAM-BA, where Arduino's `X` command erases from an address to the end of the application
   area, the backend erases from the lowest written address and says so in its progress events.
@@ -383,7 +383,7 @@ nanoflash detect --port <port> [--protocol <protocol>] [--json]
   fixed offsets; every writer round-trips through a parser: `esp-idf-part` and ESP-IDF's
   `gen_esp32part.py` in CI, `mbrman` and `sfdisk --dump`, `gpt` and `sgdisk` for GPT.
 - **WebAssembly:** the backends and the core build for `wasm32-unknown-unknown` in CI;
-  `wasm-bindgen-test` runs replay tests in headless Chromium.
+  replay tests run the WebAssembly modules in Node against a transcript-driven Web Serial mock; the hardware check in a browser is in `hardware/README.md`.
 - **Hardware in the loop (optional):** `hardware/` describes the boards attached to a runner;
   `mise run test-hardware` flashes, verifies and checks the board booted (a known string on its
   serial port). Tests are `#[ignore]`d unless `NANOFLASH_HARDWARE` is set; a
