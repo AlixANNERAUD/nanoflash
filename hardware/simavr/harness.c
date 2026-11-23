@@ -6,7 +6,8 @@
 // Prints `port <path>` once the pseudo-terminal is open, holds the reset button while the
 // application flash is blank, and when the program counter first runs below the bootloader with a
 // programmed flash writes the whole flash to the dump file, prints `application started` and
-// stops simulating. SIGTERM writes the dump (if not written yet) and exits 0.
+// stops simulating. SIGTERM writes the dump (if not written yet) and exits 0. It never outlives
+// its script: it gets SIGTERM when its parent exits, and SIGALRM ends it after 120 s.
 //
 // simavr is GPL-3.0-or-later: this file is written from its public headers only and calls its
 // exported functions. The binary links simavr statically, is built locally into target/ and is
@@ -14,6 +15,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/prctl.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
@@ -142,6 +144,10 @@ int main(int argc, char **argv) {
     avr_irq_register_notify(avr_io_getirq(avr, AVR_IOCTL_UART_GETIRQ('0'), UART_IRQ_OUT_XOFF),
                             on_xoff, NULL);
     signal(SIGTERM, on_terminate);
+    // Bounded lifetime: SIGTERM when the script that started it exits, and the default action
+    // of SIGALRM (termination) after 120 s, much longer than a scenario.
+    prctl(PR_SET_PDEATHSIG, SIGTERM);
+    alarm(120);
     printf("port %s\n", pty.pty.slavename);
     fflush(stdout);
 

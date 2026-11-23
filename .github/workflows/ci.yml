@@ -159,6 +159,7 @@ jobs:
       - uses: jdx/mr-boxington-action@v1
         with:
           cache-key-suffix: simavr
+      # run.sh fetches libsimavr-dev (136 KB) with apt-get download instead of installing it,
+      # which would pull mesa and LLVM.
       - run: sudo apt-get update
-      - run: sudo apt-get install -y --no-install-recommends libsimavr-dev
       - run: mise run test-simavr

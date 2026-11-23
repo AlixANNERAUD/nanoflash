@@ -22,7 +22,7 @@ for image in optiboot/optiboot_atmega328.hex atmega/ATmegaBOOT_168_atmega328.hex
     stk500v2/stk500boot_v2_mega2560.hex; do
     file=$directory/$(basename "$image")
     if [ ! -s "$file" ]; then
-        curl --fail --silent --show-error --location --output "$file" \
+        curl --fail --silent --show-error --location --max-time 60 --retry 2 --output "$file" \
             "https://raw.githubusercontent.com/arduino/ArduinoCore-avr/$ARDUINO_AVR_COMMIT/bootloaders/$image"
     fi
 done
@@ -37,15 +37,25 @@ if includedir=$(pkg-config --variable=includedir simavr 2>/dev/null) &&
     [ -f "$libdir/libsimavr.a" ] && [ -f "$libdir/libsimavrparts.a" ]; then
     :
 elif command -v apt-get >/dev/null && command -v dpkg-deb >/dev/null; then
-    if [ ! -d "$directory/root" ]; then
+    library=$(find "$directory/root" -name libsimavr.a 2>/dev/null | head -n 1)
+    if [ -z "$library" ]; then
+        rm -rf "$directory/debs" "$directory/root"
         mkdir -p "$directory/debs"
-        (cd "$directory/debs" && apt-get download libsimavr-dev)
+        if ! (cd "$directory/debs" && apt-get download libsimavr-dev); then
+            echo "apt-get download libsimavr-dev failed: run apt-get update, or install libsimavr-dev (Debian, Ubuntu)" >&2
+            exit 1
+        fi
         for package in "$directory"/debs/*.deb; do
             dpkg-deb -x "$package" "$directory/root"
         done
+        library=$(find "$directory/root" -name libsimavr.a | head -n 1)
+    fi
+    if [ -z "$library" ] || [ ! -f "$(dirname "$library")/libsimavrparts.a" ]; then
+        echo "the downloaded libsimavr-dev has no static libraries: install libsimavr-dev (Debian, Ubuntu)" >&2
+        exit 1
     fi
     includedir=$directory/root/usr/include
-    libdir=$(dirname "$(find "$directory/root" -name libsimavr.a | head -n 1)")
+    libdir=$(dirname "$library")
 else
     echo "simavr was not found: install libsimavr-dev (Debian, Ubuntu)" >&2
     exit 1
@@ -77,13 +87,16 @@ trap stop EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Waits up to $2 tenths of a second for the line $1 in the harness log $3.
+# Waits up to $2 tenths of a second for the line $1 in the harness log $3; fails at once when the
+# harness has exited.
 wait_for() {
     tenths=0
     until grep -q "$1" "$3"; do
         tenths=$((tenths + 1))
-        if [ "$tenths" -gt "$2" ]; then
-            return 1
+        if [ "$tenths" -gt "$2" ] || ! kill -0 "$harness_process" 2>/dev/null; then
+            # The line may have come just before the harness exited.
+            grep -q "$1" "$3"
+            return
         fi
         sleep 0.1
     done

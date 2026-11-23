@@ -109,7 +109,10 @@ simavr (GPL-3.0-or-later) and the bootloaders (GPL) are only downloaded or insta
 none of their code is in this repository, the harness is written from simavr's public headers,
 and the harness binary, which links simavr statically, is never distributed.
 
-The `simavr` job of `.github/workflows/ci.yml` installs `libsimavr-dev` with apt and runs this.
+The `simavr` job of `.github/workflows/ci.yml` runs this after `apt-get update`, without
+installing simavr: the script fetches `libsimavr-dev` (about 136 KB) with `apt-get download`.
+Installing the package instead would pull mesa and LLVM through `libsimavrparts1` (about 240 MB on
+a bare Ubuntu), which the statically linked harness does not need.
 It is allowed to fail: the images come from GitHub and simavr is not the chip. If it fails while
 nanoflash did not change, first check whether simavr (the package version) or the pinned images
 changed. To move to a newer ArduinoCore-avr, update `ARDUINO_AVR_COMMIT` (and the commit named in
