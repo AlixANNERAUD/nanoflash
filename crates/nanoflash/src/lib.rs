@@ -10,6 +10,8 @@
 extern crate alloc;
 
 pub mod layout;
+#[cfg(feature = "native")]
+pub mod native;
 pub mod quantity;
 #[cfg(any(
     feature = "table-espressif",
@@ -24,5 +26,5 @@ pub mod transport;
 #[cfg(feature = "build")]
 pub mod build;
 
-#[cfg(any(test, feature = "build"))]
+#[cfg(any(test, feature = "build", feature = "native"))]
 extern crate std;

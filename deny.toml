@@ -8,7 +8,13 @@ yanked = "deny"
 
 [licenses]
 version = 2
-allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+allow = [
+    "Apache-2.0",
+    "MIT",
+    # serialport, used as a dependency only (docs/prior-art.md)
+    "MPL-2.0",
+    "Unicode-3.0",
+]
 confidence-threshold = 0.9
 
 [bans]
