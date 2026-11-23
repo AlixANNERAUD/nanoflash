@@ -8,6 +8,8 @@ use core::fmt::Write as _;
 
 use md5::{Digest, Md5};
 use miniz_oxide::deflate::compress_to_vec_zlib;
+use miniz_oxide::inflate::stream::{InflateState, inflate};
+use miniz_oxide::{DataFormat, MZError, MZFlush};
 
 use super::command::{self, opcode, words};
 use super::{EspressifBackend, reset};
@@ -35,6 +37,35 @@ fn scaled_timeout(seconds_per_megabyte: u64, size: u32) -> Duration {
     let milliseconds =
         u64::from(size).saturating_mul(seconds_per_megabyte.saturating_mul(1000)) / 1_000_000;
     Duration::from_millis(milliseconds).max(MINIMUM_TIMEOUT)
+}
+
+/// The bytes each `BLOCK_SIZE` block of the zlib stream `compressed` inflates to, as the ROM
+/// loader inflates it block by block; `None` when the stream does not inflate.
+fn inflated_sizes(compressed: &[u8]) -> Option<Vec<u32>> {
+    let mut state = InflateState::new_boxed(DataFormat::Zlib);
+    let mut output = alloc::vec![0_u8; 0x8000];
+    let mut sizes = Vec::new();
+    for block in compressed.chunks(BLOCK_SIZE as usize) {
+        let mut input = block;
+        let mut inflated: u32 = 0;
+        // Every pass consumes input or produces output, both finite; a pass doing neither ends
+        // the block.
+        loop {
+            let result = inflate(&mut state, input, &mut output, MZFlush::None);
+            if let Err(error) = result.status {
+                if error != MZError::Buf {
+                    return None;
+                }
+            }
+            input = input.get(result.bytes_consumed..)?;
+            inflated = inflated.checked_add(u32::try_from(result.bytes_written).ok()?)?;
+            if result.bytes_consumed == 0 && result.bytes_written == 0 {
+                break;
+            }
+        }
+        sizes.push(inflated);
+    }
+    Some(sizes)
 }
 
 /// A segment checked against what the protocol can carry.
@@ -128,9 +159,16 @@ impl<P: PortProvider> EspressifBackend<'_, P> {
             scaled_timeout(ERASE_SECONDS_PER_MEGABYTE, segment.erase_size),
         )
         .await?;
-        let timeout = scaled_timeout(WRITE_SECONDS_PER_MEGABYTE, segment.padded_length);
+        // Each block is written once inflated: its timeout grows with what it inflates to, as in
+        // espflash. A stream that does not inflate here keeps the timeout of the whole image.
+        let inflated = inflated_sizes(&compressed).unwrap_or_default();
         let total = segment.data.len() as u64;
         for (sequence, chunk) in (0_u32..).zip(compressed.chunks(BLOCK_SIZE as usize)) {
+            let size = inflated
+                .get(sequence as usize)
+                .copied()
+                .unwrap_or(segment.padded_length);
+            let timeout = scaled_timeout(WRITE_SECONDS_PER_MEGABYTE, size);
             let (payload, checksum) = command::block(chunk, sequence);
             self.command_with(opcode::FLASH_DEFL_DATA, &payload, checksum, timeout)
                 .await?;
@@ -272,6 +310,24 @@ mod tests {
             scaled_timeout(40, u32::MAX),
             Duration::from_millis(171_798_691)
         );
+    }
+
+    #[test]
+    fn blocks_inflate_to_the_whole_image() {
+        let image = alloc::vec![0xFF_u8; 4 * 1024 * 1024];
+        let compressed = compress_to_vec_zlib(&image, COMPRESSION_LEVEL);
+        let sizes = inflated_sizes(&compressed).unwrap();
+        assert_eq!(sizes.len(), compressed.len().div_ceil(BLOCK_SIZE as usize));
+        assert!(sizes.len() > 1, "{sizes:?}");
+        assert_eq!(
+            sizes.iter().map(|&size| u64::from(size)).sum::<u64>(),
+            4 * 1024 * 1024
+        );
+        assert!(
+            sizes.iter().all(|&size| size < 4 * 1024 * 1024),
+            "{sizes:?}"
+        );
+        assert_eq!(inflated_sizes(&[0x78, 0x9C, 0xFF, 0xFF]), None);
     }
 
     #[test]

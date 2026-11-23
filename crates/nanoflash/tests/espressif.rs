@@ -772,3 +772,111 @@ fn a_frame_cut_by_the_drain_does_not_swallow_the_next_answer() {
     assert_eq!(result.unwrap().chip, "esp32-s3");
     provider.finish().unwrap();
 }
+
+/// A replayed port that records the timeout of every read with the opcode last written.
+struct TimedPort {
+    inner: nanoflash::testing::ReplayPort,
+    opcode: u8,
+    timeouts: Rc<RefCell<Vec<(u8, Duration)>>>,
+}
+
+impl SerialPort for TimedPort {
+    async fn read(
+        &mut self,
+        buffer: &mut [u8],
+        timeout: Duration,
+    ) -> Result<usize, TransportError> {
+        self.timeouts.borrow_mut().push((self.opcode, timeout));
+        self.inner.read(buffer, timeout).await
+    }
+
+    async fn write(&mut self, data: &[u8]) -> Result<(), TransportError> {
+        if let Some(&opcode) = data.get(2) {
+            self.opcode = opcode;
+        }
+        self.inner.write(data).await
+    }
+
+    async fn set_baud_rate(&mut self, baud_rate: u32) -> Result<(), TransportError> {
+        self.inner.set_baud_rate(baud_rate).await
+    }
+
+    async fn set_signals(&mut self, signals: Signals) -> Result<(), TransportError> {
+        self.inner.set_signals(signals).await
+    }
+
+    async fn sleep(&mut self, duration: Duration) {
+        self.inner.sleep(duration).await
+    }
+
+    fn identity(&self) -> Option<UsbIdentity> {
+        self.inner.identity()
+    }
+}
+
+#[test]
+fn each_compressed_block_waits_for_what_it_inflates_to() {
+    // 4 MiB of 0xFF compress to a few blocks, each inflating to about 1 MiB.
+    let image = vec![0xFF_u8; 4 * 1024 * 1024];
+    let blocks = miniz_oxide::deflate::compress_to_vec_zlib(&image, 9)
+        .len()
+        .div_ceil(0x400);
+    assert!(blocks >= 3, "{blocks}");
+    let mut text = transcript("connect-esp32s3-usb");
+    writeln!(
+        text,
+        "> c0 00 10 14 00 00 00 00 00 00 00 40 00 {blocks:02x} 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 c0\n\
+         < c0 01 10 04 00 00 00 00 00 00 00 00 00 c0"
+    )
+    .unwrap();
+    for _ in 0..blocks {
+        text.push_str("> c0 00 11 .. c0\n< c0 01 11 04 00 00 00 00 00 00 00 00 00 c0\n");
+    }
+    let (inner, provider) = replay(Transcript::parse(&text).unwrap());
+    let timeouts = Rc::new(RefCell::new(Vec::new()));
+    let port = TimedPort {
+        inner,
+        opcode: 0,
+        timeouts: Rc::clone(&timeouts),
+    };
+    struct Never;
+    impl PortProvider for Never {
+        type Port = TimedPort;
+        async fn open(
+            &mut self,
+            _filter: &DeviceFilter,
+            _baud_rate: u32,
+            _timeout: Duration,
+        ) -> Result<TimedPort, TransportError> {
+            Err(TransportError::Disconnected)
+        }
+    }
+    {
+        let mut never = Never;
+        let mut backend =
+            EspressifBackend::new(port, &mut never, None, EspressifOptions::default()).unwrap();
+        block_on(Backend::connect(&mut backend)).unwrap();
+        let segments = [Segment {
+            label: "blank",
+            offset: 0,
+            data: &image,
+        }];
+        block_on(backend.write(&segments, &mut ())).unwrap();
+    }
+    provider.finish().unwrap();
+    let data: Vec<Duration> = timeouts
+        .borrow()
+        .iter()
+        .filter(|(opcode, _)| *opcode == 0x11)
+        .map(|(_, timeout)| *timeout)
+        .collect();
+    assert_eq!(data.len(), blocks);
+    // 40 s per 1 000 000 bytes of the 4 MiB image would be 167.772 s for every block; each
+    // block only inflates to a part of it.
+    let whole = Duration::from_millis(167_772);
+    assert!(
+        data.iter()
+            .all(|timeout| *timeout < whole && *timeout >= Duration::from_secs(10)),
+        "{data:?}"
+    );
+}
