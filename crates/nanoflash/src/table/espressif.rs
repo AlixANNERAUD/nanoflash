@@ -128,14 +128,15 @@ pub fn write(layout: &ResolvedLayout) -> Result<Vec<u8>, TableError> {
         bytes.extend_from_slice(&label);
         bytes.extend_from_slice(&flags.to_le_bytes());
     }
-    if let Some(update) = first_update
-        && !has_otadata
-    {
-        return Err(TableError::MissingPartition {
-            writer: WRITER,
-            role: "otadata (data/ota)",
-            required_by: Some(update.into()),
-        });
+    match first_update {
+        Some(update) if !has_otadata => {
+            return Err(TableError::MissingPartition {
+                writer: WRITER,
+                role: "otadata (data/ota)",
+                required_by: Some(update.into()),
+            });
+        }
+        _ => {}
     }
 
     let digest = Md5::digest(&bytes);
@@ -285,9 +286,11 @@ mod tests {
     };
     use alloc::string::{String, ToString};
     use alloc::vec;
+    #[cfg(feature = "toml")]
     use md5::{Digest, Md5};
     use proptest::prelude::*;
 
+    #[cfg(feature = "toml")]
     fn fixture(name: &str) -> ResolvedLayout {
         let text = match name {
             "esp32-s3-8mb" => include_str!("../../tests/layouts/esp32-s3-8mb.toml"),
@@ -350,6 +353,7 @@ mod tests {
         esp_idf_part::PartitionTable::try_from_bytes(bytes.to_vec()).unwrap()
     }
 
+    #[cfg(feature = "toml")]
     #[test]
     fn esp32_fixture_round_trips_through_esp_idf_part() {
         let bytes = write(&fixture("esp32-s3-8mb")).unwrap();
@@ -385,6 +389,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[cfg(feature = "toml")]
     #[test]
     fn md5_row_follows_the_entries() {
         let bytes = write(&fixture("esp32-s3-8mb")).unwrap();
