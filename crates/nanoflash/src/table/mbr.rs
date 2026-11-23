@@ -3,6 +3,7 @@
 use super::TableError;
 use crate::layout::{ResolvedLayout, ResolvedPartition, Role};
 use alloc::vec::Vec;
+use mbrman::{CHS, MBRHeader};
 
 /// The size of the master boot record in flash.
 pub const TABLE_SIZE: usize = 512;
@@ -10,11 +11,15 @@ pub const TABLE_SIZE: usize = 512;
 const WRITER: &str = "mbr";
 const SECTOR: u64 = 512;
 const MAXIMUM_ENTRIES: usize = 4;
-const ENTRIES_START: usize = 0x1BE;
-const ENTRY_SIZE: usize = 16;
 const BOOTABLE: u8 = 0x80;
 const FAT32_LBA: u8 = 0x0C;
-const CHS_UNUSED: [u8; 3] = [0xFE, 0xFF, 0xFF];
+/// The CHS address of "beyond the CHS range" (cylinder 1023, head 254, sector 63), which is what
+/// `sfdisk` writes when the LBA fields alone are meaningful.
+const CHS_UNUSED: CHS = CHS {
+    cylinder: 1023,
+    head: 254,
+    sector: 63,
+};
 
 /// Write the master boot record of a layout.
 ///
@@ -40,11 +45,8 @@ pub fn write(layout: &ResolvedLayout) -> Result<[u8; TABLE_SIZE], TableError> {
         });
     }
 
-    let mut bytes = [0u8; TABLE_SIZE];
-    for (partition, slot) in partitions
-        .into_iter()
-        .zip(bytes[ENTRIES_START..].chunks_exact_mut(ENTRY_SIZE))
-    {
+    let mut header = MBRHeader::new([0; 4]);
+    for (index, partition) in partitions.into_iter().enumerate() {
         let name = partition.definition.name.as_str();
         let misaligned = |what, value| TableError::Misaligned {
             partition: name.into(),
@@ -97,16 +99,21 @@ pub fn write(layout: &ResolvedLayout) -> Result<[u8; TABLE_SIZE], TableError> {
             0x00
         };
 
-        slot[0] = status;
-        slot[1..4].copy_from_slice(&CHS_UNUSED);
-        slot[4] = kind;
-        slot[5..8].copy_from_slice(&CHS_UNUSED);
-        slot[8..12].copy_from_slice(&first.to_le_bytes());
-        slot[12..16].copy_from_slice(&count.to_le_bytes());
+        // The entry count is checked above, so the index is one of the four slots.
+        if let Some(entry) = header.get_mut(index + 1) {
+            entry.boot = status;
+            entry.first_chs = CHS_UNUSED;
+            entry.sys = kind;
+            entry.last_chs = CHS_UNUSED;
+            entry.starting_lba = first;
+            entry.sectors = count;
+        }
     }
-    bytes[510] = 0x55;
-    bytes[511] = 0xAA;
-    Ok(bytes)
+    // The boot flags written above are the only thing the encoder validates, and they are valid.
+    header.to_bytes().map_err(|_| TableError::OutOfRange {
+        partition: alloc::string::String::new(),
+        writer: WRITER,
+    })
 }
 
 #[cfg(test)]
