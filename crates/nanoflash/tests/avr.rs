@@ -1476,19 +1476,24 @@ fn run_flash(
     source: &mut MemorySource,
     progress: &mut Recorder,
 ) -> (Result<FlashReport, Error>, ReplayProvider) {
+    run_flash_with(manifest, text, source, progress, &FlashOptions::default())
+}
+
+/// [`run_flash`] with `options`.
+fn run_flash_with(
+    manifest: &Manifest,
+    text: &str,
+    source: &mut MemorySource,
+    progress: &mut Recorder,
+    options: &FlashOptions,
+) -> (Result<FlashReport, Error>, ReplayProvider) {
     let (port, mut provider) = replay(Transcript::parse(text).unwrap());
     let hooks = Hooks {
         source,
         verifier: &mut (),
         progress,
     };
-    let result = block_on(flash(
-        manifest,
-        port,
-        &mut provider,
-        hooks,
-        &FlashOptions::default(),
-    ));
+    let result = block_on(flash(manifest, port, &mut provider, hooks, options));
     (result, provider)
 }
 
@@ -1801,5 +1806,115 @@ fn a_bridge_needs_a_protocol() {
         }
     );
     assert_eq!(error.class(), ErrorClass::Input);
+    provider.finish().unwrap();
+}
+
+/// A Mega 2560 board without a layout that writes `first.bin` (one page of `0x00`) at 0x0 and
+/// `second.bin` (16 bytes of `0x11`) at `second`, with `extra` at the end of the board; and the
+/// source of both images.
+fn mega_two_images(second: u64, extra: &str) -> (Manifest, MemorySource) {
+    let text = format!(
+        "[[board]]\nidentifier = \"mega\"\nprotocol = \"stk500v2\"\nchip = \"atmega2560\"\n\
+         application-devices = [{{ vendor = 0x2341, product = 0x0042 }}]\n\
+         [[board.image]]\noffset = 0\npath = \"first.bin\"\n\
+         [[board.image]]\noffset = 0x{second:x}\npath = \"second.bin\"\n{extra}"
+    );
+    let mut source = MemorySource::default();
+    source.files.insert("first.bin".into(), vec![0x00; 0x100]);
+    source.files.insert("second.bin".into(), vec![0x11; 0x10]);
+    (Manifest::from_toml(&text).unwrap(), source)
+}
+
+/// The STK500v2 lines of `CMD_LEAVE_PROGMODE_ISP` as message `sequence`.
+fn mega_leave_lines(sequence: u8) -> String {
+    format!(
+        "> {}\n< {}\n",
+        hexadecimal(&message(sequence, &[0x11, 0x01, 0x01])),
+        hexadecimal(&message(sequence, &[0x11, 0x00]))
+    )
+}
+
+#[test]
+fn a_mega_2560_flash_out_of_erase_order_is_refused_before_any_byte() {
+    // Two images with a gap: the first would be written, then the second refused.
+    let (manifest, mut source) = mega_two_images(0x200, "");
+    let text = transcript("connect-mega2560") + &mega_leave_lines(5);
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(&manifest, &text, &mut source, &mut recorder);
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::PageOutOfEraseOrder {
+            what: "image \"image at 0x200\"".into(),
+            offset: 0x200,
+            erases_next: 0x100,
+        }
+    );
+    assert!(error.to_string().contains("nothing was written"), "{error}");
+    // Connected, then left the bootloader: no page was programmed.
+    provider.finish().unwrap();
+    assert_eq!(stages(&recorder), [Stage::Connecting, Stage::Resetting]);
+
+    // An erase entry from 0x0 moves the bootloader's erase address past the image at 0x0: the
+    // sixteen pages would be blanked, then the image refused.
+    let (manifest, mut source) =
+        mega_two_images(0x100, "[[board.erase]]\noffset = 0\nsize = 0x1000\n");
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(&manifest, &text, &mut source, &mut recorder);
+    assert_eq!(
+        result.unwrap_err(),
+        Error::PageOutOfEraseOrder {
+            what: "image \"image at 0x0\"".into(),
+            offset: 0,
+            erases_next: 0x1000,
+        }
+    );
+    provider.finish().unwrap();
+    assert_eq!(stages(&recorder), [Stage::Connecting, Stage::Resetting]);
+
+    // An erase entry that does not start at 0x0 is refused as well, before the images.
+    let (manifest, mut source) =
+        mega_two_images(0x100, "[[board.erase]]\noffset = 0x1000\nsize = 0x100\n");
+    let (result, provider) = run_flash(&manifest, &text, &mut source, &mut Recorder::default());
+    assert_eq!(
+        result.unwrap_err(),
+        Error::PageOutOfEraseOrder {
+            what: "erase region at 0x1000".into(),
+            offset: 0x1000,
+            erases_next: 0,
+        }
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn a_mega_2560_writes_images_anywhere_after_erase_all() {
+    // --erase-all programs every page up to 0x3C000 with 0xFF: then the images may leave gaps.
+    let (manifest, mut source) = mega_two_images(0x200, "");
+    let mut text = transcript("connect-mega2560");
+    let mut sequence = 5_u8;
+    let pages = (0..0x3_C000).step_by(0x100).chain([0, 0x200]);
+    for offset in pages {
+        text.push_str(&mega_program_lines(sequence, offset));
+        sequence = sequence.wrapping_add(2);
+    }
+    text.push_str(&mega_leave_lines(sequence));
+    let options = FlashOptions {
+        erase_all: true,
+        verify: false,
+        ..FlashOptions::default()
+    };
+    let (result, provider) = run_flash_with(
+        &manifest,
+        &text,
+        &mut source,
+        &mut Recorder::default(),
+        &options,
+    );
+    let report = result.unwrap();
+    assert_eq!(
+        images(&report),
+        [("image at 0x0", 0, 0x100), ("image at 0x200", 0x200, 0x10)]
+    );
     provider.finish().unwrap();
 }

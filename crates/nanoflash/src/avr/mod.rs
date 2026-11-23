@@ -142,9 +142,10 @@ type Check = for<'a> fn(&'a [u8], u8, u8) -> Result<&'a [u8], String>;
 /// wherever the page goes, and never past 0x3C000 (16 KiB under the end of flash, twice its own
 /// 8 KiB), so `connect` reports `writable_to` 0x3C000 and nothing is written above it. After
 /// `connect`, a write must be one run of pages from 0x0 in order of offset and an erase must
-/// start at 0x0, unless every page up to 0x3C000 was erased in this connection; other writes are refused with `PageOutOfEraseOrder` before anything
-/// is sent. That count restarts with the bootloader, at the reset `connect` makes: with the
-/// reset `none`, the bootloader must have just started.
+/// start at 0x0, unless every page up to 0x3C000 was erased in this connection; other writes are
+/// refused with `PageOutOfEraseOrder` before anything is sent, and `check_plan` refuses a whole
+/// flash that would be refused part-way. That count restarts with the bootloader, at the reset
+/// `connect` makes: with the reset `none`, the bootloader must have just started.
 pub struct AvrBackend<'p, P: PortProvider> {
     /// The open port; `None` while the board re-enumerates after the 1200-baud touch, and after
     /// it failed to reappear.

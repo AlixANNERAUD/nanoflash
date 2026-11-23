@@ -88,6 +88,40 @@ impl EraseOrder {
         }
         Ok(())
     }
+
+    /// Accounts for erasing `region`, a whole number of pages, by programming each with `0xFF`.
+    fn erase(&mut self, region: Region, bounds: &Bounds) -> Result<(), Error> {
+        let end = region.offset.saturating_add(region.size);
+        let mut offset = region.offset;
+        while offset < end {
+            self.program(offset, true, bounds).map_err(|erases_next| {
+                Error::PageOutOfEraseOrder {
+                    what: format!("erase region at 0x{:x}", region.offset),
+                    offset,
+                    erases_next,
+                }
+            })?;
+            offset = offset.saturating_add(bounds.page_size);
+        }
+        Ok(())
+    }
+
+    /// Accounts for writing `segment` page by page.
+    fn write(&mut self, segment: &Segment<'_>, bounds: &Bounds) -> Result<(), Error> {
+        let mut offset = segment.offset;
+        for chunk in segment.data.chunks(bounds.page_length()?) {
+            let blank = chunk.iter().all(|byte| *byte == 0xFF);
+            self.program(offset, blank, bounds).map_err(|erases_next| {
+                Error::PageOutOfEraseOrder {
+                    what: format!("image \"{}\"", segment.label),
+                    offset,
+                    erases_next,
+                }
+            })?;
+            offset = offset.saturating_add(bounds.page_size);
+        }
+        Ok(())
+    }
 }
 
 /// Where pages may go, from what `connect` found.
@@ -448,18 +482,7 @@ impl<P: PortProvider> Backend for AvrBackend<'_, P> {
         }
         bounds.check_region(region)?;
         if let Some(mut order) = self.erase_order() {
-            let mut offset = region.offset;
-            let end = region.offset.saturating_add(region.size);
-            while offset < end {
-                order
-                    .program(offset, true, &bounds)
-                    .map_err(|erases_next| Error::PageOutOfEraseOrder {
-                        what: format!("erase region at 0x{:x}", region.offset),
-                        offset,
-                        erases_next,
-                    })?;
-                offset = offset.saturating_add(bounds.page_size);
-            }
+            order.erase(region, &bounds)?;
             self.keep_erase_order(order);
         }
         let result = self.erase_pages(&bounds, region, progress).await;
@@ -483,20 +506,8 @@ impl<P: PortProvider> Backend for AvrBackend<'_, P> {
             bounds.check_segment(segment)?;
         }
         if let Some(mut order) = self.erase_order() {
-            let page_length = bounds.page_length()?;
             for segment in segments {
-                let mut offset = segment.offset;
-                for chunk in segment.data.chunks(page_length) {
-                    let blank = chunk.iter().all(|byte| *byte == 0xFF);
-                    order
-                        .program(offset, blank, &bounds)
-                        .map_err(|erases_next| Error::PageOutOfEraseOrder {
-                            what: format!("image \"{}\"", segment.label),
-                            offset,
-                            erases_next,
-                        })?;
-                    offset = offset.saturating_add(bounds.page_size);
-                }
+                order.write(segment, &bounds)?;
             }
             self.keep_erase_order(order);
         }
@@ -541,6 +552,37 @@ impl<P: PortProvider> Backend for AvrBackend<'_, P> {
                 offset = offset.saturating_add(bounds.page_size);
                 done = done.saturating_add(size_of(chunk));
                 report(progress, Stage::Verifying, segment.offset, done, total);
+            }
+        }
+        Ok(())
+    }
+
+    /// Checks every erase region and image as `erase` and `write` would, in the order `flash`
+    /// sends them, without sending anything. On the Mega 2560, the pages of every call follow
+    /// where the bootloader erases from the state `connect` and earlier calls left: a flash that
+    /// `write` would refuse after an erase or an earlier image already went through is refused
+    /// before the first of them.
+    fn check_plan(
+        &self,
+        erase_all: Option<Region>,
+        erases: &[Region],
+        segments: &[Segment<'_>],
+    ) -> Result<(), Error> {
+        let bounds = self.bounds()?;
+        let mut order = self.erase_order();
+        for region in erase_all.into_iter().chain(erases.iter().copied()) {
+            if region.size == 0 {
+                continue;
+            }
+            bounds.check_region(region)?;
+            if let Some(order) = order.as_mut() {
+                order.erase(region, &bounds)?;
+            }
+        }
+        for segment in segments {
+            bounds.check_segment(segment)?;
+            if let Some(order) = order.as_mut() {
+                order.write(segment, &bounds)?;
             }
         }
         Ok(())

@@ -137,6 +137,21 @@ pub trait Backend {
 
     /// Leaves the bootloader and starts the application.
     async fn reset_to_application(&mut self) -> Result<(), Error>;
+
+    /// Checks, after `connect` and before anything is erased or written, a whole flash as
+    /// [`flash`](crate::flash::flash) sends it: `erase_all` (`--erase-all`), then `erases` in
+    /// order, then `segments` in order, one `write` each. A backend whose bootloader only takes
+    /// erases and writes in some order (the Mega 2560's) refuses here a flash it would refuse
+    /// part-way; the others accept any, and check each call again.
+    fn check_plan(
+        &self,
+        erase_all: Option<Region>,
+        erases: &[Region],
+        segments: &[Segment<'_>],
+    ) -> Result<(), Error> {
+        let _ = (erase_all, erases, segments);
+        Ok(())
+    }
 }
 
 /// How every backend connects.
@@ -321,6 +336,26 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
             #[cfg(feature = "avr")]
             Backends::Avr(backend) => backend.reset_to_application().await,
             Backends::Unavailable(never, _) => match *never {},
+        }
+    }
+
+    fn check_plan(
+        &self,
+        erase_all: Option<Region>,
+        erases: &[Region],
+        segments: &[Segment<'_>],
+    ) -> Result<(), Error> {
+        match self {
+            #[cfg(feature = "espressif")]
+            Backends::Espressif(backend) => backend.check_plan(erase_all, erases, segments),
+            #[cfg(feature = "samba")]
+            Backends::Samba(backend) => backend.check_plan(erase_all, erases, segments),
+            #[cfg(feature = "avr")]
+            Backends::Avr(backend) => backend.check_plan(erase_all, erases, segments),
+            Backends::Unavailable(never, _) => {
+                let _ = (erase_all, erases, segments);
+                match *never {}
+            }
         }
     }
 }

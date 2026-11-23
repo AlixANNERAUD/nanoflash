@@ -452,14 +452,13 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
     // is checked against.
     check_against_chip(&prepared, &chip)?;
     let erases_to_end = erases_to_end_warning(&prepared, &chip, options.erase_all);
-    if options.erase_all {
+    let erase_all = if options.erase_all {
         let bootloader_start = bootloader_above_application(prepared.layout.as_ref());
-        let region = erase_all_region(&chip, layout_size, bootloader_start)?;
-        erase(backend, region, progress).await?;
-    }
-    for entry in &prepared.erase {
-        erase(backend, entry.region, progress).await?;
-    }
+        Some(erase_all_region(&chip, layout_size, bootloader_start)?)
+    } else {
+        None
+    };
+    let erases: Vec<Region> = prepared.erase.iter().map(|entry| entry.region).collect();
     let mut images: Vec<&PreparedImage> = prepared.images.iter().collect();
     images.sort_by_key(|image| image.offset);
     let segments: Vec<Segment<'_>> = images
@@ -470,6 +469,16 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
             data: &image.bytes,
         })
         .collect();
+    // The backend sees the whole flash, in the order it is sent, before the first erase: a
+    // bootloader that erases in its own order (the Mega 2560's) would otherwise refuse an image
+    // after the erases and the images before it went through.
+    backend.check_plan(erase_all, &erases, &segments)?;
+    if let Some(region) = erase_all {
+        erase(backend, region, progress).await?;
+    }
+    for region in &erases {
+        erase(backend, *region, progress).await?;
+    }
     // One segment at a time, so that a failure names the image.
     for segment in &segments {
         backend
