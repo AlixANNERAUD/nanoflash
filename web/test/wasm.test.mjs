@@ -190,6 +190,56 @@ test("a lost device is a device error", async () => {
   assert.equal(port.isOpen, false);
 });
 
+/**
+ * `port`, whose `readable` gives, while `errors` (names of DOMException) last, a stream that
+ * fails with the next one, as Web Serial replaces its stream after a break or a framing error.
+ */
+function withReadErrors(port, errors) {
+  const left = [...errors];
+  return {
+    get readable() {
+      const name = left.shift();
+      if (name === undefined || port.readable === null) return port.readable;
+      return new ReadableStream({
+        start(controller) {
+          controller.error(new DOMException(`a ${name} on the line`, name));
+        },
+      });
+    },
+    get writable() {
+      return port.writable;
+    },
+    get isOpen() {
+      return port.isOpen;
+    },
+    open: (options) => port.open(options),
+    close: () => port.close(),
+    setSignals: (signals) => port.setSignals(signals),
+    getInfo: () => port.getInfo(),
+  };
+}
+
+test("takes a new reader after a break or a parity error on the line", async () => {
+  const { detect } = await loadModule("espressif");
+  const { port, finish } = mockPort(transcript("detect-esp32s3-usb"));
+  const flaky = withReadErrors(port, ["BreakError", "ParityError"]);
+  const chip = await detect(flaky, JSON.stringify({ protocol: null }), () => {});
+  assert.equal(chip.chip, "esp32-s3");
+  finish();
+  assert.equal(port.isOpen, false);
+});
+
+test("a line that keeps failing is an io error", async () => {
+  const { detect } = await loadModule("espressif");
+  const { port } = mockPort(transcript("detect-esp32s3-usb"));
+  const failing = withReadErrors(port, Array(8).fill("FramingError"));
+  const error = await rejection(detect(failing, JSON.stringify({ protocol: null }), () => {}));
+  assert.equal(error.kind, "transport");
+  assert.equal(error.error.kind, "io");
+  assert.match(error.error.message, /FramingError on the line/);
+  assert.equal(port.isOpen, false);
+});
+
 test("a write that never completes times out", async () => {
   const { detect } = await loadModule("espressif");
   const { port } = mockPort(transcript("detect-esp32s3-usb"), { stallWrites: true });

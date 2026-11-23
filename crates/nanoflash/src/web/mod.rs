@@ -26,6 +26,18 @@ const OPEN_RETRY_INTERVAL: Duration = Duration::from_millis(100);
 /// How many times to open again a port that is still open or closing.
 const OPEN_RETRIES: u32 = 10;
 
+/// The read errors after which Web Serial gives a new `readable` stream: a break, a framing or
+/// parity error, or an overflow of the receive buffer.
+const RECOVERABLE_READ_ERRORS: [&str; 4] = [
+    "BreakError",
+    "FramingError",
+    "ParityError",
+    "BufferOverrunError",
+];
+
+/// How many recoverable errors one read gets over, each with a new reader.
+const READ_RECOVERIES: u32 = 3;
+
 /// How often the provider looks for a device that has not appeared yet.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
@@ -304,6 +316,26 @@ impl WebSerialPort {
         }
     }
 
+    /// Unlocks the reader, which a recoverable error left errored, and locks the new stream Web
+    /// Serial gives in `port.readable`.
+    fn renew_reader(&mut self) -> Result<(), TransportError> {
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.release_lock();
+        }
+        let readable = self.port.readable();
+        if !readable.is_object() {
+            return Err(TransportError::Io {
+                message: "the port has no stream: it is not open".to_string(),
+            });
+        }
+        let readable: bindings::ReadableStream = readable.unchecked_into();
+        let reader = readable
+            .get_reader()
+            .map_err(|error| transport_error(&error))?;
+        self.reader = Some(reader);
+        Ok(())
+    }
+
     /// Copies the start of `chunk` into `buffer` and keeps the rest.
     fn take_from(&mut self, chunk: Uint8Array, buffer: &mut [u8]) -> usize {
         let length = chunk.length();
@@ -350,21 +382,31 @@ impl SerialPort for WebSerialPort {
         if let Some(leftover) = self.leftover.take() {
             return Ok(self.take_from(leftover, buffer));
         }
-        let pending = match self.pending.take() {
-            Some(pending) => pending,
-            None => {
-                let reader = self.reader.as_ref().ok_or_else(WebSerialPort::not_open)?;
-                reader.read().map_err(|error| transport_error(&error))?
-            }
-        };
-        // Kept until it settles, so that a read dropped while waiting loses nothing.
-        self.pending = Some(pending.clone());
-        let result = match bounded(&pending, timeout).await {
-            Ok(None) => return Ok(0),
-            Ok(Some(result)) => result,
-            Err(error) => {
-                self.pending = None;
-                return Err(transport_error(&error));
+        let mut recoveries = 0;
+        let result = loop {
+            let pending = match self.pending.take() {
+                Some(pending) => pending,
+                None => {
+                    let reader = self.reader.as_ref().ok_or_else(WebSerialPort::not_open)?;
+                    reader.read().map_err(|error| transport_error(&error))?
+                }
+            };
+            // Kept until it settles, so that a read dropped while waiting loses nothing.
+            self.pending = Some(pending.clone());
+            match bounded(&pending, timeout).await {
+                Ok(None) => return Ok(0),
+                Ok(Some(result)) => break result,
+                Err(error) => {
+                    self.pending = None;
+                    let recoverable = error_name(&error)
+                        .is_some_and(|name| RECOVERABLE_READ_ERRORS.contains(&name.as_str()));
+                    // The bytes of the error are lost; the protocol retries what it misses.
+                    if !recoverable || recoveries >= READ_RECOVERIES || self.renew_reader().is_err()
+                    {
+                        return Err(transport_error(&error));
+                    }
+                    recoveries += 1;
+                }
             }
         };
         self.pending = None;
