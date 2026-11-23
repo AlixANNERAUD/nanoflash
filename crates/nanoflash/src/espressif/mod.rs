@@ -271,7 +271,8 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
         Ok(false)
     }
 
-    /// Discards the extra SYNC replies and anything else until the line is quiet.
+    /// Discards the extra SYNC replies and anything else until the line is quiet, then starts a
+    /// new decoder: a frame cut short by the quiet line must not take in the next answer.
     async fn drain(&mut self) -> Result<(), Error> {
         let mut received: usize = 0;
         loop {
@@ -284,6 +285,8 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
             }
             let count = self.read_chunk(DRAIN_TIMEOUT).await?;
             if count == 0 {
+                self.frames.clear();
+                self.decoder = slip::Decoder::new();
                 return Ok(());
             }
             received = received.saturating_add(count);

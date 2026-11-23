@@ -756,3 +756,19 @@ fn reopening_picks_the_board_with_the_same_serial_number() {
     other_session.finish().unwrap();
     assert_eq!(provider.ports.len(), 1);
 }
+
+#[test]
+fn a_frame_cut_by_the_drain_does_not_swallow_the_next_answer() {
+    // The second SYNC answer stops halfway; the line then goes quiet.
+    let full = transcript("connect-esp32s3-usb");
+    let answer = "< c0 01 08 04 00 00 00 00 00 00 00 00 00 c0\n";
+    let first = full.find(answer).unwrap() + answer.len();
+    let text = format!(
+        "{}{}",
+        &full[..first],
+        full[first..].replacen(answer, "< c0 01 08 04 00\n", 1)
+    );
+    let (result, provider, _, _) = run_text(&text, None, EspressifOptions::default());
+    assert_eq!(result.unwrap().chip, "esp32-s3");
+    provider.finish().unwrap();
+}
