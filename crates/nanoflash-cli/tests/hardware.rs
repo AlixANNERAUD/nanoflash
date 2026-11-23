@@ -86,10 +86,19 @@ fn path_text(path: &Path) -> &str {
 
 /// Reads the port until `expect` appears or `BANNER_WAIT` passes.
 fn wait_for_text(port: &str, expect: &str) -> Result<(), String> {
-    let mut serial = NativeSerialPort::open(port, 115_200).map_err(|error| error.to_string())?;
+    let start = Instant::now();
+    // The USB-Serial-JTAG port re-enumerates after the reset: retry the open.
+    let mut serial = loop {
+        match NativeSerialPort::open(port, 115_200) {
+            Ok(serial) => break serial,
+            Err(error) if start.elapsed() >= BANNER_WAIT => {
+                return Err(format!("{port} could not be opened: {error}"));
+            }
+            Err(_) => std::thread::sleep(Duration::from_millis(500)),
+        }
+    };
     let mut seen = Vec::new();
     let mut buffer = [0u8; 256];
-    let start = Instant::now();
     while start.elapsed() < BANNER_WAIT {
         let count = pollster::block_on(serial.read(&mut buffer, Duration::from_millis(500)))
             .map_err(|error| error.to_string())?;

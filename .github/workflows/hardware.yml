@@ -10,11 +10,20 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
 
+concurrency:
+  group: hardware
+  cancel-in-progress: false
+
 jobs:
   hardware:
     name: Boards on the runner
     runs-on: [self-hosted, nanoflash-hardware]
+    timeout-minutes: 20
     steps:
+      # Keep the git-ignored boards.toml and firmware placed in the checkout.
       - uses: actions/checkout@v7
+        with:
+          clean: false
+          persist-credentials: false
       - uses: jdx/mise-action@v5
       - run: mise run test-hardware

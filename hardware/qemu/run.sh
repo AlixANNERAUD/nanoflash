@@ -48,12 +48,21 @@ socat_process=
 stop() {
     for process in $socat_process $qemu_process; do
         kill "$process" 2>/dev/null || true
+        # A short grace period, then no mercy.
+        grace=0
+        while kill -0 "$process" 2>/dev/null && [ "$grace" -lt 10 ]; do
+            grace=$((grace + 1))
+            sleep 1
+        done
+        kill -KILL "$process" 2>/dev/null || true
         wait "$process" 2>/dev/null || true
     done
     qemu_process=
     socat_process=
 }
-trap stop EXIT INT TERM
+trap stop EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Flags of the esp32 and esp32c3 pages of https://github.com/espressif/esp-toolchain-docs/tree/main/qemu
 # (strap modes: 0x0f UART download on the ESP32, 0x02 UART0 download on the ESP32-C3).
@@ -62,7 +71,7 @@ esp32)
     "$binary" -nographic -machine esp32 \
         -drive "file=$qemu_directory/flash.bin,if=mtd,format=raw" \
         -global driver=esp32.gpio,property=strap_mode,value=0x0f \
-        -serial tcp::5555,server,nowait </dev/null &
+        -serial tcp:127.0.0.1:5555,server,nowait </dev/null &
     ;;
 esp32c3)
     head -c 1024 /dev/zero >"$qemu_directory/efuse.bin"
@@ -71,7 +80,7 @@ esp32c3)
         -drive "file=$qemu_directory/efuse.bin,if=none,format=raw,id=efuse" \
         -global driver=nvram.esp32c3.efuse,property=drive,value=efuse \
         -global driver=esp32c3.gpio,property=strap_mode,value=0x02 \
-        -serial tcp::5555,server,nowait </dev/null &
+        -serial tcp:127.0.0.1:5555,server,nowait </dev/null &
     ;;
 esac
 qemu_process=$!
