@@ -55,7 +55,8 @@ pub struct FlashOptions {
     /// The board of the manifest to flash, when the device cannot tell.
     pub board_identifier: Option<String>,
     /// Whether to erase the whole flash before writing: the size the chip reports, else the
-    /// flash size of the layout, from the lowest offset the bootloader writes.
+    /// flash size of the layout, from the lowest offset the bootloader writes; a bootloader at
+    /// the top of the flash (AVR) stops it at `writable_to`, or at its partition of the layout.
     pub erase_all: bool,
     /// Whether to check what was written.
     pub verify: bool,
@@ -358,9 +359,16 @@ fn erases_to_end_warning(
 }
 
 /// Where the lowest bootloader partition at or above the application starts, when the layout
-/// has both: a bootloader the chip does not report as protected (an Optiboot of 512 bytes in a
-/// boot section of 2 KiB) still keeps its partition.
-fn bootloader_above_application(layout: Option<&ResolvedLayout>) -> Option<u64> {
+/// has both and the bootloader sits at the top of the flash (`writable_to`, AVR): a bootloader
+/// the chip does not report as protected (an Optiboot of 512 bytes in a boot section of 2 KiB)
+/// still keeps its partition. A bootloader below the application (SAM-BA, Espressif) leaves the
+/// end of `--erase-all` to the chip: a partition of the layout that calls itself a bootloader
+/// above the application does not shorten it.
+fn bootloader_above_application(
+    chip: &ChipInformation,
+    layout: Option<&ResolvedLayout>,
+) -> Option<u64> {
+    chip.writable_to?;
     let layout = layout?;
     let application = layout
         .partitions
@@ -453,7 +461,7 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
     check_against_chip(&prepared, &chip)?;
     let erases_to_end = erases_to_end_warning(&prepared, &chip, options.erase_all);
     let erase_all = if options.erase_all {
-        let bootloader_start = bootloader_above_application(prepared.layout.as_ref());
+        let bootloader_start = bootloader_above_application(&chip, prepared.layout.as_ref());
         Some(erase_all_region(&chip, layout_size, bootloader_start)?)
     } else {
         None
@@ -939,17 +947,18 @@ mod tests {
                 .unwrap()
                 .resolve()
                 .unwrap();
-        let start = bootloader_above_application(Some(&layout));
+        let nano = avr(0x8000, 0x7E00);
+        let start = bootloader_above_application(&nano, Some(&layout));
         assert_eq!(start, Some(0x7800));
         assert_eq!(
-            erase_all_region(&avr(0x8000, 0x7E00), Some(0x8000), start),
+            erase_all_region(&nano, Some(0x8000), start),
             Ok(Region {
                 offset: 0,
                 size: 0x7800,
             })
         );
         // Without a layout, the chip's limit stands.
-        assert_eq!(bootloader_above_application(None), None);
+        assert_eq!(bootloader_above_application(&nano, None), None);
         // A bootloader below the application (SAMD21, nRF52) is not at the top.
         let below = crate::layout::Layout::from_toml(
             "[flash]\nsize = \"256 KiB\"\n\n\
@@ -959,7 +968,42 @@ mod tests {
         .unwrap()
         .resolve()
         .unwrap();
-        assert_eq!(bootloader_above_application(Some(&below)), None);
+        assert_eq!(bootloader_above_application(&nano, Some(&below)), None);
+    }
+
+    #[test]
+    fn erase_all_of_a_bootloader_below_the_application_ignores_the_layout() {
+        // A SAMD21 layout that names a partition above the application a bootloader: the
+        // SAM-BA bootloader sits below 0x2000 and reports no `writable_to`, so --erase-all still
+        // reaches the end of flash.
+        let layout = crate::layout::Layout::from_toml(
+            "[flash]\nsize = \"256 KiB\"\n\n\
+             [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x0\nsize = 0x2000\n\n\
+             [[partition]]\nname = \"application\"\nrole = \"firmware\"\nsize = 0x3_C000\n\n\
+             [[partition]]\nname = \"second-stage\"\nrole = \"bootloader\"\nsize = 0x2000\n",
+        )
+        .unwrap()
+        .resolve()
+        .unwrap();
+        let samd21 = ChipInformation {
+            chip: "samd21g18a".into(),
+            erases_to_end: true,
+            ..chip(Some(0x4_0000), Some(0x2000))
+        };
+        let start = bootloader_above_application(&samd21, Some(&layout));
+        assert_eq!(start, None);
+        assert_eq!(
+            erase_all_region(&samd21, Some(0x4_0000), start),
+            Ok(Region {
+                offset: 0x2000,
+                size: 0x3_E000,
+            })
+        );
+        // The same layout on a chip whose bootloader sits at the top does stop there.
+        assert_eq!(
+            bootloader_above_application(&avr(0x4_0000, 0x3_C000), Some(&layout)),
+            Some(0x3_E000)
+        );
     }
 
     #[test]
