@@ -272,13 +272,14 @@ fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(),
     }
     // Where the bootloader erases from an offset to the end of flash, an erase entry ending
     // earlier would also erase what follows it. `--erase-all` ends there, but runs first: every
-    // entry is checked before it.
+    // entry is checked before it. An empty entry erases nothing.
     if let (true, Some(flash_size)) = (chip.erases_to_end, chip.flash_size) {
         for entry in &prepared.erase {
             let end = entry.region.offset.saturating_add(entry.region.size);
-            if end != flash_size {
+            if entry.region.size != 0 && end != flash_size {
                 return Err(Error::EraseShortOfFlashEnd {
                     chip: chip.chip.clone(),
+                    entry: entry.label.clone(),
                     offset: entry.region.offset,
                     end,
                     flash_size,
@@ -599,10 +600,16 @@ mod tests {
             check_against_chip(&prepared(&[], &[to_the_end, short]), &samd21),
             Err(Error::EraseShortOfFlashEnd {
                 chip: "samd21g18a".into(),
+                entry: "short".into(),
                 offset: 0x8000,
                 end: 0x9000,
                 flash_size: 0x4_0000,
             })
+        );
+        // An empty entry erases nothing, wherever it lies.
+        assert_eq!(
+            check_against_chip(&prepared(&[], &[("empty", 0x8000, 0)]), &samd21),
+            Ok(())
         );
         // Where erases stop at the end of the region, a short entry is fine.
         let region_erases = chip(Some(0x4_0000), Some(0x2000));

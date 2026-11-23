@@ -115,13 +115,14 @@ fn check_segment(family: &Family, segment: &Segment<'_>) -> Result<(), Error> {
 /// Checks that `region` lies in the writable flash on whole write units and, where `X` erases
 /// to the end of flash, that it ends there.
 fn check_region(family: &Family, region: Region) -> Result<(), Error> {
-    let what = || format!("erase region at 0x{:x}", region.offset);
+    let entry = || format!("region at 0x{:x}", region.offset);
+    let what = || format!("erase {}", entry());
     let end = check_range(family, &what, "erase", region.offset, region.size)?;
     if !is_multiple(region.offset, family.write_unit)
         || !is_multiple(region.size, family.write_unit)
     {
         return Err(Error::MisalignedErase {
-            entry: format!("region at 0x{:x}", region.offset),
+            entry: entry(),
             offset: region.offset,
             size: region.size,
             required: family.write_unit,
@@ -130,6 +131,7 @@ fn check_region(family: &Family, region: Region) -> Result<(), Error> {
     if family.erase_to_end && end != family.flash_size {
         return Err(Error::EraseShortOfFlashEnd {
             chip: family.chip.into(),
+            entry: entry(),
             offset: region.offset,
             end,
             flash_size: family.flash_size,

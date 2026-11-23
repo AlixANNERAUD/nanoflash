@@ -334,6 +334,8 @@ pub enum Error {
     EraseShortOfFlashEnd {
         /// The chip, such as `samd21g18a`.
         chip: String,
+        /// The erase entry: its partition, or `region at 0x<offset>`.
+        entry: String,
         /// The flash offset of the region.
         offset: u64,
         /// Its exclusive end.
@@ -722,12 +724,13 @@ impl fmt::Display for Error {
             ),
             Error::EraseShortOfFlashEnd {
                 chip,
+                entry,
                 offset,
                 end,
                 flash_size,
             } => write!(
                 formatter,
-                "the bootloader of the {chip} erases from an offset to the end of flash, so erasing 0x{offset:x}..0x{end:x} would also erase 0x{end:x}..0x{flash_size:x}; this region was not erased: make the erase entry end at 0x{flash_size:x}, or remove it from the manifest"
+                "the erase entry \"{entry}\" covers 0x{offset:x}..0x{end:x}, and the bootloader of the {chip} erases from an offset to the end of flash, so erasing it would also erase 0x{end:x}..0x{flash_size:x}; it was not erased: make the erase entry end at 0x{flash_size:x}, or remove it from the manifest"
             ),
             Error::ImageBelowWritten {
                 chip,
@@ -819,6 +822,7 @@ mod tests {
         );
         let short = Error::EraseShortOfFlashEnd {
             chip: "samd21g18a".into(),
+            entry: "storage".into(),
             offset: 0x8000,
             end: 0x9000,
             flash_size: 0x4_0000,
@@ -826,7 +830,7 @@ mod tests {
         assert_eq!(short.class(), ErrorClass::Input);
         assert_eq!(
             short.to_string(),
-            "the bootloader of the samd21g18a erases from an offset to the end of flash, so erasing 0x8000..0x9000 would also erase 0x9000..0x40000; this region was not erased: make the erase entry end at 0x40000, or remove it from the manifest"
+            "the erase entry \"storage\" covers 0x8000..0x9000, and the bootloader of the samd21g18a erases from an offset to the end of flash, so erasing it would also erase 0x9000..0x40000; it was not erased: make the erase entry end at 0x40000, or remove it from the manifest"
         );
         let order = Error::ImageBelowWritten {
             chip: "samd21g18a".into(),

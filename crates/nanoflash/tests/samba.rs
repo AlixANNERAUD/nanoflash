@@ -1064,6 +1064,7 @@ fn a_samd21_region_must_reach_the_end_of_flash() {
         error,
         Error::EraseShortOfFlashEnd {
             chip: "samd21g18a".into(),
+            entry: "region at 0x8000".into(),
             offset: 0x8000,
             end: 0x9000,
             flash_size: 0x4_0000,
@@ -1502,6 +1503,7 @@ fn erase_all_and_a_short_erase_entry_are_refused_before_erasing() {
         error,
         Error::EraseShortOfFlashEnd {
             chip: "samd21g18a".into(),
+            entry: "region at 0x8000".into(),
             offset: 0x8000,
             end: 0x9000,
             flash_size: 0x4_0000,
@@ -1509,7 +1511,9 @@ fn erase_all_and_a_short_erase_entry_are_refused_before_erasing() {
     );
     assert_eq!(error.class(), ErrorClass::Input);
     assert!(
-        error.to_string().contains("this region was not erased"),
+        error
+            .to_string()
+            .contains("the erase entry \"region at 0x8000\""),
         "{error}"
     );
     assert_eq!(stages(&recorder), [Stage::Connecting, Stage::Resetting]);
@@ -1526,6 +1530,7 @@ fn a_short_erase_entry_after_one_reaching_the_end_is_refused_before_erasing() {
         error,
         Error::EraseShortOfFlashEnd {
             chip: "samd21g18a".into(),
+            entry: "region at 0x8000".into(),
             offset: 0x8000,
             end: 0x9000,
             flash_size: 0x4_0000,
