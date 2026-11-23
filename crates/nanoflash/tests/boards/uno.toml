@@ -1,0 +1,18 @@
+[[board]]
+identifier = "arduino-uno-r3"
+name = "Arduino Uno R3"
+protocol = "stk500v1"
+chip = "atmega328p"
+layout = "../layouts/uno.toml"
+application-devices = [
+  { vendor = 0x2341, product = 0x0043 },
+  { vendor = 0x2341, product = 0x0001 },
+  { vendor = 0x2a03, product = 0x0043 },
+  { vendor = 0x2341, product = 0x0243 },
+  { vendor = 0x2341, product = 0x006a },
+]
+
+[[board.image]]
+partition = "application"
+path = "../images/avr-application.hex"
+sha256 = "c4ba8536e262509cb35fbe5da801c89d3695d5f5d46c99cccae49aae6b8152da"

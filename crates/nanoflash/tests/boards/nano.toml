@@ -1,0 +1,11 @@
+# A Nano or a clone behind a serial bridge (CH340, FT232R): no USB identity of its own, so it
+# suits any bridge.
+[[board]]
+identifier = "arduino-nano"
+name = "Arduino Nano"
+protocol = "stk500v1"
+chip = "atmega328p"
+
+[[board.image]]
+offset = 0
+path = "../images/avr-application.hex"

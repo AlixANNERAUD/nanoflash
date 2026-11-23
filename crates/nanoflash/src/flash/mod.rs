@@ -911,11 +911,13 @@ mod tests {
                 size: 0x7E00,
             })
         );
+        // The Mega 2560: its bootloader erases nothing from 0x3C000, twice its size under the
+        // end of flash.
         assert_eq!(
-            erase_all_region(&avr(0x4_0000, 0x3_E000), None, None),
+            erase_all_region(&avr(0x4_0000, 0x3_C000), None, None),
             Ok(Region {
                 offset: 0,
-                size: 0x3_E000,
+                size: 0x3_C000,
             })
         );
     }

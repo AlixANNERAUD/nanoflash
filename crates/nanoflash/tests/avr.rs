@@ -1,14 +1,15 @@
 //! Transcript tests of the AVR backend.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 
 use nanoflash::avr::{AvrBackend, AvrOptions};
 use nanoflash::backend::{Backend, ChipInformation, ProgressEvent, Region, Segment, Stage};
-use nanoflash::flash::decode_intel_hex;
-use nanoflash::manifest::{Protocol, ResetSequence, ResetStep};
+use nanoflash::flash::{FlashOptions, FlashReport, Hooks, decode_intel_hex, detect, flash};
+use nanoflash::manifest::{Manifest, Protocol, ResetSequence, ResetStep};
 use nanoflash::testing::{
-    Event, HostToken, RecordingProvider, ReplayProvider, Transcript, record, replay,
+    Event, HostToken, MemorySource, RecordingProvider, ReplayProvider, Transcript, record, replay,
 };
 use nanoflash::transport::{Duration, UsbIdentity};
 use nanoflash::{Error, ErrorClass};
@@ -1440,5 +1441,365 @@ fn the_mega_2560_writes_nothing_where_its_bootloader_does_not_erase() {
             protocol: Protocol::Stk500v2,
         })
     );
+    provider.finish().unwrap();
+}
+
+fn fixture(relative: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join(relative);
+    std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// The text of `tests/boards/<name>.toml`.
+fn board_text(name: &str) -> String {
+    String::from_utf8(fixture(&format!("boards/{name}.toml"))).unwrap()
+}
+
+fn board(name: &str) -> Manifest {
+    Manifest::from_toml(&board_text(name)).unwrap()
+}
+
+/// The layout and the image of the fixture boards, under the paths their manifests use.
+fn fixture_source() -> MemorySource {
+    let mut files = BTreeMap::new();
+    for path in ["../layouts/uno.toml", "../images/avr-application.hex"] {
+        files.insert(path.to_string(), fixture(&path[3..]));
+    }
+    MemorySource { files }
+}
+
+/// Flashes `manifest` over a replay of `text`.
+fn run_flash(
+    manifest: &Manifest,
+    text: &str,
+    source: &mut MemorySource,
+    progress: &mut Recorder,
+) -> (Result<FlashReport, Error>, ReplayProvider) {
+    let (port, mut provider) = replay(Transcript::parse(text).unwrap());
+    let hooks = Hooks {
+        source,
+        verifier: &mut (),
+        progress,
+    };
+    let result = block_on(flash(
+        manifest,
+        port,
+        &mut provider,
+        hooks,
+        &FlashOptions::default(),
+    ));
+    (result, provider)
+}
+
+fn images(report: &FlashReport) -> Vec<(&str, u64, u64)> {
+    report
+        .images
+        .iter()
+        .map(|image| (image.label.as_str(), image.offset, image.size))
+        .collect()
+}
+
+fn stages(recorder: &Recorder) -> Vec<Stage> {
+    let mut stages: Vec<Stage> = Vec::new();
+    for event in &recorder.events {
+        if stages.last() != Some(&event.stage) {
+            stages.push(event.stage);
+        }
+    }
+    stages
+}
+
+/// Flashes the fixture board `name` over `flash-<transcript>` and checks the run: connected,
+/// written, verified and reset, with nothing left of the transcript and no message.
+fn flashes(name: &str, transcript_name: &str) -> FlashReport {
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &board(name),
+        &transcript(&format!("flash-{transcript_name}")),
+        &mut fixture_source(),
+        &mut recorder,
+    );
+    let report = result.unwrap();
+    provider.finish().unwrap();
+    assert!(report.verified);
+    assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+    assert_eq!(
+        stages(&recorder),
+        [
+            Stage::Connecting,
+            Stage::Writing,
+            Stage::Verifying,
+            Stage::Resetting
+        ]
+    );
+    assert!(recorder.messages.is_empty(), "{:?}", recorder.messages);
+    report
+}
+
+#[test]
+fn committed_flash_and_detect_transcripts_are_their_parts() {
+    let leave_uno = "> 51 20\n< 14 10\n";
+    let leave_leonardo = "> \"E\"\n< \"\\r\"\n";
+    for (name, parts) in [
+        ("flash-uno", ["connect-uno", "write-uno"]),
+        ("flash-nano", ["connect-nano-old-bootloader", "write-uno"]),
+        ("flash-mega2560", ["connect-mega2560", "write-mega2560"]),
+        ("flash-leonardo", ["connect-leonardo", "write-leonardo"]),
+    ] {
+        let committed = Transcript::parse(&transcript(name)).unwrap();
+        let expected = Transcript::parse(&(transcript(parts[0]) + &transcript(parts[1]))).unwrap();
+        assert_eq!(committed.identity, expected.identity, "{name}");
+        assert_eq!(events(&committed), events(&expected), "{name}");
+    }
+    for (name, connect, leave) in [
+        ("detect-uno", "connect-uno", leave_uno),
+        ("detect-leonardo", "connect-leonardo", leave_leonardo),
+    ] {
+        let committed = Transcript::parse(&transcript(name)).unwrap();
+        let expected = Transcript::parse(&(transcript(connect) + leave)).unwrap();
+        assert_eq!(committed.identity, expected.identity, "{name}");
+        assert_eq!(events(&committed), events(&expected), "{name}");
+    }
+    // The read-back transcript is flash-uno with byte 5 of the second page read changed, which
+    // ends the verification: the third page is not read, and STK_LEAVE_PROGMODE follows.
+    let image = application();
+    let page = &image[0x80..0x100];
+    let mut changed = page.to_vec();
+    changed[5] = 0xff;
+    let third = format!(
+        "> 55 80 00 20\n< 14 10\n> 74 00 80 46 20\n< 14 {} 10\n",
+        hexadecimal(&pages(&image, 128)[2])
+    );
+    let flash_uno = transcript("flash-uno");
+    let read_back = flash_uno
+        .replace(
+            &format!("< 14 {} 10", hexadecimal(page)),
+            &format!("< 14 {} 10", hexadecimal(&changed)),
+        )
+        .replacen(&third, "", 1);
+    assert_eq!(flash_uno.matches(&third).count(), 1);
+    assert_eq!(
+        events(&Transcript::parse(&transcript("flash-uno-read-back")).unwrap()),
+        events(&Transcript::parse(&read_back).unwrap())
+    );
+}
+
+#[test]
+fn flashes_the_uno_fixture() {
+    let report = flashes("uno", "uno");
+    assert_eq!(report.board, "arduino-uno-r3");
+    assert_eq!(report.chip.protocol, Protocol::Stk500v1);
+    assert_eq!(report.chip.chip, "atmega328p");
+    assert_eq!(report.chip.writable_to, Some(0x7E00));
+    assert_eq!(report.chip.usb, identity(0x2341, 0x0043));
+    assert_eq!(images(&report), [("application", 0, 300)]);
+}
+
+#[test]
+fn flashes_a_nano_clone_behind_a_bridge() {
+    // 1a86:7523 is a CH340: no board lists it, and the Nano, which lists no identity, suits a
+    // bridge. Its old bootloader answers at 57600 and keeps 2 KiB.
+    let report = flashes("nano", "nano");
+    assert_eq!(report.board, "arduino-nano");
+    assert_eq!(report.chip.chip, "atmega328p");
+    assert_eq!(report.chip.usb, identity(0x1a86, 0x7523));
+    assert_eq!(report.chip.writable_to, Some(0x7800));
+    assert_eq!(images(&report), [("image at 0x0", 0, 300)]);
+}
+
+#[test]
+fn flashes_a_mega_2560() {
+    let report = flashes("mega2560", "mega2560");
+    assert_eq!(report.board, "arduino-mega-2560");
+    assert_eq!(report.chip.protocol, Protocol::Stk500v2);
+    assert_eq!(report.chip.chip, "atmega2560");
+    assert_eq!(report.chip.flash_size, Some(0x4_0000));
+    assert_eq!(report.chip.writable_to, Some(0x3_C000));
+    assert_eq!(images(&report), [("image at 0x0", 0, 300)]);
+}
+
+#[test]
+fn flashes_a_leonardo_through_the_touch() {
+    // The bootloader devices come from the manifest: the board reappears as 2341:0036.
+    let report = flashes("leonardo", "leonardo");
+    assert_eq!(report.board, "arduino-leonardo");
+    assert_eq!(report.chip.protocol, Protocol::Avr109);
+    assert_eq!(report.chip.chip, "atmega32u4");
+    assert_eq!(report.chip.usb, identity(0x2341, 0x0036));
+    assert_eq!(report.chip.writable_to, Some(0x7000));
+    assert_eq!(images(&report), [("image at 0x0", 0, 300)]);
+
+    // A Leonardo of the 2A03 vendor reappears as the manifest's 2a03:0036.
+    let text = transcript("flash-leonardo")
+        .replace("! identity 2341:8036", "! identity 2a03:8036")
+        .replace("! reopen 2341:0036", "! reopen 2a03:0036");
+    let (result, provider) = run_flash(
+        &board("leonardo"),
+        &text,
+        &mut fixture_source(),
+        &mut Recorder::default(),
+    );
+    assert_eq!(result.unwrap().chip.usb, identity(0x2a03, 0x0036));
+    provider.finish().unwrap();
+}
+
+#[test]
+fn a_read_back_difference_still_resets() {
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(
+        &board("uno"),
+        &transcript("flash-uno-read-back"),
+        &mut fixture_source(),
+        &mut recorder,
+    );
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::ReadBackDiffers {
+            label: "application".into(),
+            offset: 0x85,
+            expected: 0xa4,
+            actual: 0xff,
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Verification);
+    // STK_LEAVE_PROGMODE was sent and answered: nothing is left of the transcript.
+    provider.finish().unwrap();
+    assert_eq!(stages(&recorder).last(), Some(&Stage::Resetting));
+    assert!(recorder.messages.is_empty(), "{:?}", recorder.messages);
+}
+
+#[test]
+fn with_bootloader_hex_is_refused_before_writing() {
+    // Arduino's `.with_bootloader.hex`: the sketch, then Optiboot up to its version bytes
+    // (4.4) at 0x7FFE, so the image spans the whole 32 KiB.
+    let hex = String::from_utf8(fixture("images/avr-application.hex")).unwrap();
+    let hex = hex.replace(":00000001FF", ":027FFE00040479\n:00000001FF");
+    let text = board_text("uno")
+        .replace("../images/avr-application.hex", "with-bootloader.hex")
+        .replace(
+            "sha256 = \"c4ba8536e262509cb35fbe5da801c89d3695d5f5d46c99cccae49aae6b8152da\"\n",
+            "",
+        );
+    let manifest = Manifest::from_toml(&text).unwrap();
+    let mut source = fixture_source();
+    source
+        .files
+        .insert("with-bootloader.hex".to_string(), hex.into_bytes());
+    let mut recorder = Recorder::default();
+    // The device is never touched: the replay holds its identity only.
+    let (result, provider) = run_flash(
+        &manifest,
+        "! identity 2341:0043\n",
+        &mut source,
+        &mut recorder,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Error::ImageTooLarge {
+            label: "application".into(),
+            partition: "application".into(),
+            image_size: 0x8000,
+            partition_size: 0x7E00,
+        }
+    );
+    provider.finish().unwrap();
+    assert!(recorder.events.is_empty(), "{:?}", recorder.events);
+}
+
+/// The Uno test board without its layout (a layout-less STK500v1 board), writing `image.bin` at
+/// 0x0.
+fn layout_less_uno_with(image: &[u8]) -> (Manifest, MemorySource) {
+    let original = board_text("uno");
+    let text = original
+        .replace("layout = \"../layouts/uno.toml\"\n", "")
+        .replace("partition = \"application\"", "offset = 0")
+        .replace("../images/avr-application.hex", "image.bin")
+        .replace(
+            "sha256 = \"c4ba8536e262509cb35fbe5da801c89d3695d5f5d46c99cccae49aae6b8152da\"\n",
+            "",
+        );
+    assert!(
+        !text.contains("layout") && !text.contains("sha256"),
+        "{text}"
+    );
+    let mut source = MemorySource::default();
+    source.files.insert("image.bin".to_string(), image.to_vec());
+    (Manifest::from_toml(&text).unwrap(), source)
+}
+
+#[test]
+fn image_ending_at_the_bootloader() {
+    // Up to 0x7E00, where Optiboot starts: 252 pages, written and read back.
+    let image: Vec<u8> = (0..0x7E00_u32).map(|index| (index % 251) as u8).collect();
+    let (manifest, mut source) = layout_less_uno_with(&image);
+    let text = transcript("connect-uno") + &session(Protocol::Stk500v1, &image, 0x80);
+    let (result, provider) = run_flash(&manifest, &text, &mut source, &mut Recorder::default());
+    let report = result.unwrap();
+    assert_eq!(images(&report), [("image at 0x0", 0, 0x7E00)]);
+    assert!(report.verified);
+    provider.finish().unwrap();
+
+    // One page more reaches Optiboot: refused once the chip is known, before any page is
+    // programmed, and the board is reset.
+    let mut longer = image;
+    longer.resize(0x7E80, 0xA5);
+    let (manifest, mut source) = layout_less_uno_with(&longer);
+    let text = transcript("connect-uno") + "> 51 20\n< 14 10\n";
+    let mut recorder = Recorder::default();
+    let (result, provider) = run_flash(&manifest, &text, &mut source, &mut recorder);
+    assert_eq!(
+        result.unwrap_err(),
+        Error::AboveWritableFlash {
+            what: "image \"image at 0x0\"".into(),
+            end: 0x7E80,
+            writable_to: 0x7E00,
+            protocol: Protocol::Stk500v1,
+        }
+    );
+    provider.finish().unwrap();
+    assert_eq!(stages(&recorder), [Stage::Connecting, Stage::Resetting]);
+}
+
+#[test]
+fn detects_without_a_manifest() {
+    for (name, protocol, chip, usb) in [
+        // 2341:0043 is an Uno: STK500v1 at 115200.
+        (
+            "detect-uno",
+            Protocol::Stk500v1,
+            "atmega328p",
+            identity(0x2341, 0x0043),
+        ),
+        // 2341:8036 is a Leonardo: AVR109 after the touch, on the built-in 2341:0036.
+        (
+            "detect-leonardo",
+            Protocol::Avr109,
+            "atmega32u4",
+            identity(0x2341, 0x0036),
+        ),
+    ] {
+        let (port, mut provider) = replay(Transcript::parse(&transcript(name)).unwrap());
+        let information = block_on(detect(port, &mut provider, None, &mut ())).unwrap();
+        assert_eq!(information.protocol, protocol, "{name}");
+        assert_eq!(information.chip, chip, "{name}");
+        assert_eq!(information.usb, usb, "{name}");
+        provider.finish().unwrap();
+    }
+}
+
+#[test]
+fn a_bridge_needs_a_protocol() {
+    // A CH340 may carry any board: nothing is sent before the protocol is known.
+    let (port, mut provider) = replay(Transcript::parse("! identity 1a86:7523\n").unwrap());
+    let error = block_on(detect(port, &mut provider, None, &mut ())).unwrap_err();
+    assert_eq!(
+        error,
+        Error::ProtocolRequired {
+            identity: identity(0x1a86, 0x7523),
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Input);
     provider.finish().unwrap();
 }

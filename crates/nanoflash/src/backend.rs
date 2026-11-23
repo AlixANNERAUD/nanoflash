@@ -7,6 +7,8 @@ use core::marker::PhantomData;
 
 use serde::Serialize;
 
+#[cfg(feature = "avr")]
+use crate::avr::{AvrBackend, AvrOptions};
 use crate::error::Error;
 #[cfg(feature = "espressif")]
 use crate::espressif::{EspressifBackend, EspressifOptions};
@@ -142,7 +144,9 @@ pub trait Backend {
 pub struct BackendOptions {
     /// The baud rate to switch to after connecting; `None` lets the backend choose. The
     /// Espressif backend then uses 460800 through a USB-to-UART bridge, and 115200 on
-    /// USB-Serial-JTAG and the ESP32-C2, which keep 115200 whatever is requested.
+    /// USB-Serial-JTAG and the ESP32-C2, which keep 115200 whatever is requested. On STK500v1
+    /// and STK500v2, the rate of the bootloader (by default 115200, then 57600 on STK500v1);
+    /// ignored on AVR109.
     pub baud_rate: Option<u32>,
     /// The USB identities the board shows in its bootloader, for resets that re-enumerate;
     /// `flash` fills it from the manifest when empty.
@@ -157,6 +161,9 @@ pub enum Backends<'p, P: PortProvider> {
     /// Arduino's SAM-BA bootloaders.
     #[cfg(feature = "samba")]
     Samba(SambaBackend<'p, P>),
+    /// The STK500v1, STK500v2 and AVR109 bootloaders of Arduino's AVR boards.
+    #[cfg(feature = "avr")]
+    Avr(AvrBackend<'p, P>),
     /// No backend: keeps the type parameters used when every backend is left out.
     #[doc(hidden)]
     Unavailable(Infallible, PhantomData<&'p mut P>),
@@ -189,11 +196,13 @@ impl<'p, P: PortProvider> Backends<'p, P> {
                 };
                 SambaBackend::new(port, provider, reset, options).map(Backends::Samba)
             }
-            // No backend speaks the AVR protocols yet.
             #[cfg(feature = "avr")]
-            protocol @ (Protocol::Stk500v1 | Protocol::Stk500v2 | Protocol::Avr109) => {
-                let _ = (port, provider, reset, options);
-                Err(Error::ProtocolNotEnabled { protocol })
+            Protocol::Stk500v1 | Protocol::Stk500v2 | Protocol::Avr109 => {
+                let options = AvrOptions {
+                    baud_rate: options.baud_rate,
+                    bootloader_devices: options.bootloader_devices.clone(),
+                };
+                AvrBackend::new(protocol, port, provider, reset, options).map(Backends::Avr)
             }
             // With every backend compiled in, every protocol is matched above and this arm would
             // be unreachable.
@@ -213,6 +222,8 @@ impl<'p, P: PortProvider> Backends<'p, P> {
             Backends::Espressif(backend) => backend.connect(progress).await,
             #[cfg(feature = "samba")]
             Backends::Samba(backend) => backend.connect(progress).await,
+            #[cfg(feature = "avr")]
+            Backends::Avr(backend) => backend.connect(progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = progress;
                 match *never {}
@@ -232,6 +243,9 @@ impl<'p, P: PortProvider> Backends<'p, P> {
             // SAM-BA changes no baud rate: identifying is connecting.
             #[cfg(feature = "samba")]
             Backends::Samba(backend) => backend.connect(progress).await,
+            // The AVR backend keeps the rate its bootloader answered at: identifying is connecting.
+            #[cfg(feature = "avr")]
+            Backends::Avr(backend) => backend.connect(progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = progress;
                 match *never {}
@@ -251,6 +265,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
             Backends::Espressif(backend) => backend.erase(region, progress).await,
             #[cfg(feature = "samba")]
             Backends::Samba(backend) => backend.erase(region, progress).await,
+            #[cfg(feature = "avr")]
+            Backends::Avr(backend) => backend.erase(region, progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = (region, progress);
                 match *never {}
@@ -268,6 +284,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
             Backends::Espressif(backend) => backend.write(segments, progress).await,
             #[cfg(feature = "samba")]
             Backends::Samba(backend) => backend.write(segments, progress).await,
+            #[cfg(feature = "avr")]
+            Backends::Avr(backend) => backend.write(segments, progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = (segments, progress);
                 match *never {}
@@ -285,6 +303,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
             Backends::Espressif(backend) => backend.verify(segments, progress).await,
             #[cfg(feature = "samba")]
             Backends::Samba(backend) => backend.verify(segments, progress).await,
+            #[cfg(feature = "avr")]
+            Backends::Avr(backend) => backend.verify(segments, progress).await,
             Backends::Unavailable(never, _) => {
                 let _ = (segments, progress);
                 match *never {}
@@ -298,6 +318,8 @@ impl<P: PortProvider> Backend for Backends<'_, P> {
             Backends::Espressif(backend) => backend.reset_to_application().await,
             #[cfg(feature = "samba")]
             Backends::Samba(backend) => backend.reset_to_application().await,
+            #[cfg(feature = "avr")]
+            Backends::Avr(backend) => backend.reset_to_application().await,
             Backends::Unavailable(never, _) => match *never {},
         }
     }
