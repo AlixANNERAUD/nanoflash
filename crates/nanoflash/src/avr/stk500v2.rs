@@ -1,4 +1,6 @@
-// Command bytes and answers from Atmel's application notes AVR061, AVR068 and AVR109, and from observing avrdude (GPL-2.0-or-later) and the Arduino bootloaders (Optiboot, ATmegaBOOT, the wiring bootloader, Caterina); behaviour references only, no code is taken from any of them.
+// Command bytes and answers from Atmel's application notes AVR061, AVR068 and AVR109, and from
+// observing avrdude (GPL-2.0-or-later) and the Arduino bootloaders (Optiboot, ATmegaBOOT, the
+// wiring bootloader, Caterina); behaviour references only, no code is taken from any of them.
 
 //! The STK500v2 messages of the wiring bootloader of the Mega 2560.
 

@@ -1,4 +1,6 @@
-// Command bytes and answers from Atmel's application notes AVR061, AVR068 and AVR109, and from observing avrdude (GPL-2.0-or-later) and the Arduino bootloaders (Optiboot, ATmegaBOOT, the wiring bootloader, Caterina); behaviour references only, no code is taken from any of them.
+// Command bytes and answers from Atmel's application notes AVR061, AVR068 and AVR109, and from
+// observing avrdude (GPL-2.0-or-later) and the Arduino bootloaders (Optiboot, ATmegaBOOT, the
+// wiring bootloader, Caterina); behaviour references only, no code is taken from any of them.
 
 //! The AVR chips the bootloaders flash: what their signature says about the flash.
 

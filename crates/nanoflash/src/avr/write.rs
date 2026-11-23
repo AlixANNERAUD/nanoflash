@@ -1,4 +1,6 @@
-// Command bytes and answers from Atmel's application notes AVR061, AVR068 and AVR109, and from observing avrdude (GPL-2.0-or-later) and the Arduino bootloaders (Optiboot, ATmegaBOOT, the wiring bootloader, Caterina); behaviour references only, no code is taken from any of them.
+// Command bytes and answers from Atmel's application notes AVR061, AVR068 and AVR109, and from
+// observing avrdude (GPL-2.0-or-later) and the Arduino bootloaders (Optiboot, ATmegaBOOT, the
+// wiring bootloader, Caterina); behaviour references only, no code is taken from any of them.
 
 //! Writing, reading back, erasing and resetting through the AVR bootloaders, page by page.
 //!
@@ -9,9 +11,10 @@
 //! Optiboot, ATmegaBOOT and Caterina erase the page they program. The wiring bootloader of the
 //! Mega 2560 (STK500v2) does not: it keeps an erase address of its own, 0x0 when it starts, and
 //! each `CMD_PROGRAM_FLASH_ISP` erases the page there and moves it one page on, up to 16 KiB
-//! under the end of flash (twice its 8 KiB), wherever the programmed page goes (its chip erase only resets that address, and
-//! answers `STATUS_CMD_FAILED`). [`EraseOrder`] follows that address, and the pages of a write or
-//! an erase that it would not erase first are refused before anything is sent.
+//! under the end of flash (twice its 8 KiB), wherever the programmed page goes (its chip erase
+//! only resets that address, and answers `STATUS_CMD_FAILED`). [`EraseOrder`] follows that
+//! address, and the pages of a write or an erase that it would not erase first are refused
+//! before anything is sent; `check_plan` replays it over a whole flash.
 
 use alloc::collections::BTreeSet;
 use alloc::format;

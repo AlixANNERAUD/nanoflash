@@ -1,4 +1,5 @@
-// Intel HEX as Intel's "Hexadecimal Object File Format Specification" (1988) defines it; written for nanoflash, no code taken from elsewhere.
+// Intel HEX as Intel's "Hexadecimal Object File Format Specification" (1988) defines it; written
+// for nanoflash, no code taken from elsewhere.
 //! Reading Intel HEX text into the flat image it describes.
 //!
 //! Arduino, PlatformIO and `objcopy` write firmware as Intel HEX (`.hex`); the decoder turns it
