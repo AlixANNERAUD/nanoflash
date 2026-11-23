@@ -22,6 +22,8 @@ pub mod manifest;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod quantity;
+#[cfg(feature = "samba")]
+pub mod samba;
 #[cfg(any(
     feature = "table-espressif",
     feature = "table-mbr",

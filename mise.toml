@@ -30,7 +30,7 @@ run = [
 ]
 
 [tasks.features]
-description = "Test the library with no feature, with each table writer alone, with the flashing interface and the Espressif backend, and with the manifest readers"
+description = "Test the library with no feature, with each table writer alone, with the flashing interface and the Espressif and SAM-BA backends, and with the manifest readers"
 env.RUSTFLAGS = "-D warnings"
 run = [
   "cargo test -p nanoflash --no-default-features",
@@ -40,6 +40,7 @@ run = [
   "cargo test -p nanoflash --no-default-features --features testing",
   "cargo test -p nanoflash --no-default-features --features flash",
   "cargo test -p nanoflash --no-default-features --features espressif",
+  "cargo test -p nanoflash --no-default-features --features samba",
   "cargo test -p nanoflash --no-default-features --features toml,json",
   "cargo test -p nanoflash --no-default-features --features web",
 ]
@@ -56,8 +57,8 @@ run = [
 description = "Build the library for Cortex-M4F and WebAssembly with every no_std feature"
 env.RUSTFLAGS = "-D warnings"
 run = [
-  "cargo build -p nanoflash --lib --target thumbv7em-none-eabihf --features toml,json,table-espressif,table-mbr,table-linker,testing,flash,espressif",
-  "cargo build -p nanoflash --lib --target wasm32-unknown-unknown --features toml,json,table-espressif,table-mbr,table-linker,testing,flash,espressif,web",
+  "cargo build -p nanoflash --lib --target thumbv7em-none-eabihf --features toml,json,table-espressif,table-mbr,table-linker,testing,flash,espressif,samba",
+  "cargo build -p nanoflash --lib --target wasm32-unknown-unknown --features toml,json,table-espressif,table-mbr,table-linker,testing,flash,espressif,samba,web",
 ]
 
 [tasks.deny]

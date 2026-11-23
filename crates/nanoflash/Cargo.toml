@@ -25,6 +25,8 @@ table-linker = []
 flash = ["toml", "table-espressif", "dep:sha2"]
 # The Espressif ROM loader backend.
 espressif = ["table-espressif", "flash", "dep:miniz_oxide"]
+# The SAM-BA bootloader backend of the Arduino Nano 33 BLE and SAMD21 boards.
+samba = ["flash", "dep:crc"]
 # Replay and record serial sessions from transcripts.
 testing = []
 # The serial transport of the host, over the `serialport` crate (needs the standard library).
@@ -37,6 +39,7 @@ web = ["dep:wasm-bindgen", "dep:js-sys", "dep:wasm-bindgen-futures"]
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 mbrman = { version = "0.7", optional = true, default-features = false }
+crc = { version = "3", optional = true, default-features = false }
 md-5 = { version = "0.11", optional = true, default-features = false }
 miniz_oxide = { version = "0.8", optional = true, default-features = false, features = ["with-alloc"] }
 sha2 = { version = "0.10", optional = true, default-features = false }
