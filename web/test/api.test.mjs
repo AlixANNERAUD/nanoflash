@@ -155,6 +155,58 @@ test("a refused chooser is port-request-refused, a closed one no-port-chosen", a
   assert.equal(closed.errorClass, "input");
 });
 
+/** Serves a manifest with an ESP32-S3 board (303a:1001) and an Arduino Nano 33 BLE (SAM-BA). */
+function serveMixedManifest() {
+  const espressif = JSON.parse(repositoryFile(`${TESTS}/boards/esp32-s3-usb.json`)).board[0];
+  const manifest = {
+    board: [
+      espressif,
+      {
+        identifier: "arduino-nano-33-ble",
+        protocol: "samba",
+        chip: "nrf52840",
+        reset: "touch-1200",
+        "application-devices": [{ vendor: "0x2341", product: "0x805a" }],
+        "bootloader-devices": [{ vendor: "0x2341", product: "0x005a" }],
+        image: [{ offset: "0x10000", path: "../images/application.bin" }],
+      },
+    ],
+  };
+  const served = globalThis.fetch;
+  globalThis.fetch = async (input) =>
+    String(input) === `${BASE}/mixed.json` ? new Response(JSON.stringify(manifest)) : served(input);
+  return `${BASE}/mixed.json`;
+}
+
+test("a manifest of several protocols flashes the board the port identifies", async () => {
+  const url = serveMixedManifest();
+  const { port, finish } = mockPort(transcript("flash-esp32s3-usb"));
+  restoreNavigator = installNavigator([port]);
+  const prepared = await prepare(url);
+  assert.deepEqual(prepared.protocols, ["espressif", "samba"]);
+  const report = await prepared.flash();
+  assert.equal(report.board, "esp32-s3-devkitc");
+  assert.equal(report.verified, true);
+  finish();
+});
+
+test("a manifest of several protocols loads the module of the port it is given", async () => {
+  const prepared = await prepare(serveMixedManifest());
+  const port = (usbVendorId, usbProductId) => ({
+    getInfo: () => (usbVendorId === undefined ? {} : { usbVendorId, usbProductId }),
+    open: async () => assert.fail("the port must not be opened"),
+  });
+  const samba = await rejection(prepared.flash({ port: port(0x2341, 0x005a) }));
+  assert.equal(samba.kind, "protocol-not-enabled");
+  const unknown = await rejection(prepared.flash({ port: port(0x1a86, 0x7523) }));
+  assert.equal(unknown.kind, "no-matching-board");
+  assert.equal(unknown.errorClass, "input");
+  assert.match(unknown.message, /1a86:7523/);
+  const bridge = await rejection(prepared.flash({ port: port() }));
+  assert.equal(bridge.kind, "no-matching-board");
+  assert.match(bridge.message, /without a USB identity/);
+});
+
 test("uses the port of the options without asking", async () => {
   const { port, finish } = mockPort(transcript("flash-esp32s3-usb"));
   restoreNavigator = installNavigator([], {

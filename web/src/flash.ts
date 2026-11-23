@@ -90,13 +90,21 @@ function dedupe(filters: SerialPortFilter[]): SerialPortFilter[] {
   });
 }
 
+interface BoardReading {
+  identifier: string;
+  protocol: Protocol;
+  /** Its application and bootloader devices. */
+  devices: SerialPortFilter[];
+  /** Whether it may sit behind a serial bridge: no device listed, and a reset a bridge can do. */
+  suitsBridge: boolean;
+}
+
 interface Reading {
   protocols: Protocol[];
   filters: SerialPortFilter[];
   bootloaderFilters: SerialPortFilter[];
   promptErase: boolean;
-  /** The protocol of each board, by identifier. */
-  boards: Map<string, Protocol>;
+  boards: BoardReading[];
 }
 
 function read(value: unknown): Reading {
@@ -106,7 +114,7 @@ function read(value: unknown): Reading {
       filters: [],
       bootloaderFilters: [],
       promptErase: value["new_install_prompt_erase"] === true,
-      boards: new Map(),
+      boards: [],
     };
   }
   if (!isJson(value) || !Array.isArray(value["board"]) || value["board"].length === 0) {
@@ -115,7 +123,7 @@ function read(value: unknown): Reading {
     );
   }
   const protocols: Protocol[] = [];
-  const boards = new Map<string, Protocol>();
+  const boards: BoardReading[] = [];
   const application: SerialPortFilter[] = [];
   const bootloader: SerialPortFilter[] = [];
   let everyBoardHasDevices = true;
@@ -130,9 +138,17 @@ function read(value: unknown): Reading {
       );
     }
     if (!protocols.includes(protocol as Protocol)) protocols.push(protocol as Protocol);
-    boards.set(identifier, protocol as Protocol);
     const own = parseDevices(identifier, "application-devices", board["application-devices"]);
     const boot = parseDevices(identifier, "bootloader-devices", board["bootloader-devices"]);
+    const reset = board["reset"];
+    boards.push({
+      identifier,
+      protocol: protocol as Protocol,
+      devices: [...own, ...boot],
+      suitsBridge:
+        own.length + boot.length === 0 &&
+        (reset === undefined || reset === null || reset === "espressif-classic" || reset === "none" || isJson(reset)),
+    });
     if (own.length + boot.length === 0) everyBoardHasDevices = false;
     application.push(...own);
     bootloader.push(...boot);
@@ -144,6 +160,48 @@ function read(value: unknown): Reading {
     promptErase: value["prompt-erase"] === true,
     boards,
   };
+}
+
+/**
+ * The protocol of the boards that may be the device on `port`, as the library selects them: the
+ * boards that list its USB identity, else those that suit a serial bridge.
+ */
+function protocolOf(reading: Reading, port: SerialPortLike): Protocol {
+  const { usbVendorId: vendor, usbProductId: product } = port.getInfo();
+  const listed =
+    vendor === undefined || product === undefined
+      ? []
+      : reading.boards.filter((board) =>
+          board.devices.some(
+            (device) =>
+              device.usbVendorId === vendor &&
+              (device.usbProductId === undefined || device.usbProductId === product),
+          ),
+        );
+  const boards = listed.length > 0 ? listed : reading.boards.filter((board) => board.suitsBridge);
+  const protocols = [...new Set(boards.map((board) => board.protocol))];
+  const [only, ...others] = protocols;
+  if (only !== undefined && others.length === 0) return only;
+  const device =
+    vendor === undefined || product === undefined
+      ? "a device without a USB identity"
+      : `the device ${hex(vendor)}:${hex(product)}`;
+  if (only === undefined) {
+    throw new NanoflashError(
+      "no-matching-board",
+      "input",
+      `no board of the manifest suits ${device}: give the boardIdentifier of the board to flash, or list the device in the manifest`,
+    );
+  }
+  throw new NanoflashError(
+    "several-protocols",
+    "input",
+    `the boards of the manifest that suit ${device} speak several protocols (${protocols.join(", ")}): give the boardIdentifier of the board to flash`,
+  );
+}
+
+function hex(identifier: number): string {
+  return identifier.toString(16).padStart(4, "0");
 }
 
 function describe(error: unknown): string {
@@ -226,16 +284,12 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
     loadBackend(reading.protocols[0]).catch(() => undefined);
   }
 
-  const chooseProtocol = (boardIdentifier: string | undefined): Protocol => {
-    const chosen = boardIdentifier === undefined ? undefined : reading.boards.get(boardIdentifier);
-    if (chosen !== undefined) return chosen;
+  // The protocol known before the port: the one of the named board, or the only one.
+  const knownProtocol = (boardIdentifier: string | undefined): Protocol | undefined => {
+    const named = reading.boards.find((board) => board.identifier === boardIdentifier);
+    if (named !== undefined) return named.protocol;
     const [only, ...others] = reading.protocols;
-    if (only !== undefined && others.length === 0) return only;
-    throw new NanoflashError(
-      "several-protocols",
-      "input",
-      `the manifest has boards for several protocols (${reading.protocols.join(", ")}): give the boardIdentifier of the board to flash`,
-    );
+    return others.length === 0 ? only : undefined;
   };
 
   return {
@@ -245,10 +299,13 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
     bootloaderFilters: reading.bootloaderFilters,
     promptErase: reading.promptErase,
     async flash(options: FlashOptions = {}): Promise<FlashReport> {
-      const protocol = chooseProtocol(options.boardIdentifier);
-      assertUsable(protocol);
+      const known = knownProtocol(options.boardIdentifier);
+      if (known !== undefined) assertUsable(known);
       // The first await: a click handler loses its user activation after others.
       const port = options.port ?? (await requestPort(reading.filters));
+      // With several protocols, the USB identity of the port picks the module to load.
+      const protocol = known ?? protocolOf(reading, port);
+      assertUsable(protocol);
       const backend = await loadBackend(protocol);
       const readFile = async (path: string): Promise<Uint8Array> => {
         const file = new URL(path, url);

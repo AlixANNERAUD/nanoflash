@@ -51,6 +51,12 @@ which asks for the port before its first `await`.
 `FlashOptions` are `port`, `boardIdentifier`, `eraseAll`, `verify` (default `true`), `baudRate`,
 `onProgress` and `onMessage`. Paths in the manifest are resolved against the manifest URL.
 
+A manifest may mix protocols. Then the USB identity of the chosen port, matched against the
+`application-devices` and `bootloader-devices` of each board, picks the boards and so the module
+to load (with none listed, the boards a serial bridge suits); a port that suits no board fails
+with `no-matching-board`, and one that suits boards of several protocols with
+`several-protocols`: give `boardIdentifier`.
+
 ### Manifests
 
 The browser reads **JSON** manifests: either nanoflash's (the keys of the TOML manifest, with
