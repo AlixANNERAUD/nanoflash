@@ -15,9 +15,14 @@ use crate::layout::{Layout, ResolvedLayout, Role};
 use crate::manifest::{Board, EraseTarget, ImageTarget, Manifest, Protocol};
 use crate::table::espressif::{TABLE_SIZE, write};
 
-/// The erase unit of the Espressif ROM loader: images start at a multiple of it, and the sectors
-/// an image ends in are erased whole.
-const ERASE_UNIT: u64 = 0x1000;
+/// The erase unit of a protocol: images start at a multiple of it, and the sectors an image ends
+/// in are erased whole. The Espressif ROM loader erases sectors of 4 KiB; 1 puts no constraint.
+fn erase_unit(protocol: Protocol) -> u64 {
+    match protocol {
+        Protocol::Espressif => 0x1000,
+        Protocol::Samba => 1,
+    }
+}
 
 /// An image ready to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +47,14 @@ pub enum Warning {
         /// The partition of the table.
         partition: String,
     },
+    /// An image of the manifest replaces the partition table, and the table could not be generated
+    /// from the layout to compare with.
+    PartitionTableNotChecked {
+        /// The partition of the table.
+        partition: String,
+        /// Why the table cannot be generated.
+        message: String,
+    },
 }
 
 impl fmt::Display for Warning {
@@ -50,6 +63,10 @@ impl fmt::Display for Warning {
             Warning::PartitionTableDiffers { partition } => write!(
                 formatter,
                 "the image for the partition \"{partition}\" differs from the partition table generated from the layout: the board will boot with the table of the image"
+            ),
+            Warning::PartitionTableNotChecked { partition, message } => write!(
+                formatter,
+                "the image for the partition \"{partition}\" was not compared with the partition table of the layout, which cannot be generated: {message}"
             ),
         }
     }
@@ -139,34 +156,38 @@ fn find_partition<'l>(
         })
 }
 
-fn round_up(value: u64) -> u64 {
-    value.saturating_add(ERASE_UNIT - 1) & !(ERASE_UNIT - 1)
+fn round_up(value: u64, unit: u64) -> u64 {
+    match value.checked_add(unit - 1) {
+        Some(value) => value / unit * unit,
+        None => u64::MAX,
+    }
 }
 
 /// The first problem of the plan, checking the images in order, then their neighbours.
 fn check_plan(
+    unit: u64,
     layout: &Option<ResolvedLayout>,
     images: &[PreparedImage],
     sizes: &[Option<u64>],
 ) -> Result<(), Error> {
     for (image, partition_size) in images.iter().zip(sizes) {
         let size = u64::try_from(image.bytes.len()).unwrap_or(u64::MAX);
-        if image.offset % ERASE_UNIT != 0 {
+        if image.offset % unit != 0 {
             return Err(Error::MisalignedImage {
                 label: image.label.clone(),
                 offset: image.offset,
-                required: ERASE_UNIT,
+                required: unit,
             });
         }
-        if let (Some(partition), Some(partition_size)) = (&image.partition, partition_size)
-            && size > *partition_size
-        {
-            return Err(Error::ImageTooLarge {
-                label: image.label.clone(),
-                partition: partition.clone(),
-                image_size: size,
-                partition_size: *partition_size,
-            });
+        if let (Some(partition), Some(partition_size)) = (&image.partition, partition_size) {
+            if size > *partition_size {
+                return Err(Error::ImageTooLarge {
+                    label: image.label.clone(),
+                    partition: partition.clone(),
+                    image_size: size,
+                    partition_size: *partition_size,
+                });
+            }
         }
         if let Some(layout) = layout {
             let end = image.offset.saturating_add(size);
@@ -184,7 +205,7 @@ fn check_plan(
     for pair in order.windows(2) {
         let [first, second] = pair else { continue };
         let size = u64::try_from(first.bytes.len()).unwrap_or(u64::MAX);
-        let first_end = round_up(first.offset.saturating_add(size));
+        let first_end = round_up(first.offset.saturating_add(size), unit);
         if first_end > second.offset {
             return Err(Error::OverlappingImages {
                 first: first.label.clone(),
@@ -242,22 +263,36 @@ pub async fn prepare<S: ImageSource>(
     }
 
     let mut warnings = Vec::new();
-    // The index of the image that replaces the generated table, with the table.
-    let mut table_image: Option<(usize, Vec<u8>)> = None;
-    if board.protocol == Protocol::Espressif
-        && let Some(layout) = &layout
-        && let Some(table) = layout
+    // The image that replaces the generated table: its index, the name of the table partition and
+    // the generated table, when it could be generated.
+    let mut table_image: Option<(usize, String, Option<Vec<u8>>)> = None;
+    let table_partition = match (&layout, board.protocol) {
+        (Some(layout), Protocol::Espressif) => layout
             .partitions
             .iter()
             .find(|partition| partition.definition.role == Role::PartitionTable)
-    {
-        let generated = write(layout).map_err(|error| Error::Table { error })?;
+            .map(|table| (layout, table)),
+        _ => None,
+    };
+    if let Some((layout, table)) = table_partition {
+        let name = table.definition.name.clone();
+        let generated = write(layout);
         match placements
             .iter()
             .position(|placement| placement.offset == table.offset)
         {
-            Some(index) => table_image = Some((index, generated)),
+            Some(index) => match generated {
+                Ok(generated) => table_image = Some((index, name, Some(generated))),
+                Err(error) => {
+                    warnings.push(Warning::PartitionTableNotChecked {
+                        partition: name.clone(),
+                        message: error.to_string(),
+                    });
+                    table_image = Some((index, name, None));
+                }
+            },
             None => {
+                let generated = generated.map_err(|error| Error::Table { error })?;
                 let position = placements
                     .iter()
                     .position(|placement| placement.offset > table.offset)
@@ -265,8 +300,8 @@ pub async fn prepare<S: ImageSource>(
                 placements.insert(
                     position,
                     Placement {
-                        label: table.definition.name.clone(),
-                        partition: Some(table.definition.name.clone()),
+                        label: name.clone(),
+                        partition: Some(name),
                         offset: table.offset,
                         partition_size: Some(table.size),
                         origin: Origin::Generated(generated),
@@ -308,14 +343,14 @@ pub async fn prepare<S: ImageSource>(
                 bytes
             }
         };
-        if let Some((table_index, generated)) = &table_image
-            && *table_index == index
-        {
-            let (head, rest) = bytes.split_at(bytes.len().min(TABLE_SIZE));
-            if head != generated.as_slice() || rest.iter().any(|byte| *byte != 0xFF) {
-                warnings.push(Warning::PartitionTableDiffers {
-                    partition: placement.label.clone(),
-                });
+        if let Some((table_index, name, Some(generated))) = &table_image {
+            if *table_index == index {
+                let (head, rest) = bytes.split_at(bytes.len().min(TABLE_SIZE));
+                if head != generated.as_slice() || rest.iter().any(|byte| *byte != 0xFF) {
+                    warnings.push(Warning::PartitionTableDiffers {
+                        partition: name.clone(),
+                    });
+                }
             }
         }
         sizes.push(placement.partition_size);
@@ -327,7 +362,7 @@ pub async fn prepare<S: ImageSource>(
         });
     }
 
-    check_plan(&layout, &images, &sizes)?;
+    check_plan(erase_unit(board.protocol), &layout, &images, &sizes)?;
 
     let mut erase = Vec::with_capacity(board.erase.len());
     for target in &board.erase {
@@ -503,7 +538,7 @@ mod tests {
         assert_eq!(
             prepared.warnings,
             [Warning::PartitionTableDiffers {
-                partition: "image at 0x8000".into()
+                partition: "partition-table".into()
             }]
         );
         assert!(prepared.warnings[0].to_string().contains("differs"));
@@ -659,6 +694,40 @@ mod tests {
                 message: "no such file".into()
             }
         );
+    }
+
+    #[test]
+    fn an_ungeneratable_table_only_fails_without_a_table_image() {
+        let mut source = fixture_source();
+        source.files.insert(
+            "../layouts/esp32-s3-8mb.toml".into(),
+            LAYOUT
+                .replace("subtype = \"nvs\"", "subtype = \"bogus\"")
+                .into_bytes(),
+        );
+        source
+            .files
+            .insert("table.bin".into(), alloc::vec![0xFF; 0xC00]);
+        let replaced =
+            prepare_with(&board(&offset_image("0x8000", "table.bin")), &mut source).unwrap();
+        assert!(matches!(
+            replaced.warnings.as_slice(),
+            [Warning::PartitionTableNotChecked { partition, .. }] if partition == "partition-table"
+        ));
+        assert!(matches!(
+            prepare_with(&board(""), &mut source),
+            Err(Error::Table { .. })
+        ));
+    }
+
+    #[test]
+    fn the_erase_unit_depends_on_the_protocol() {
+        let mut source = fixture_source();
+        source.files.insert("small.bin".into(), alloc::vec![0; 16]);
+        let mut samba = board(&offset_image("0x1800", "small.bin"));
+        samba.protocol = Protocol::Samba;
+        samba.layout = None;
+        assert!(prepare_with(&samba, &mut source).is_ok());
     }
 
     #[test]
