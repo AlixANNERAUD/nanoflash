@@ -21,8 +21,10 @@ Goals:
   The esp-web-tools manifest is accepted as is.
 - One **asynchronous** code path for every backend, running natively and in WebAssembly over a
   transport trait.
-- Backends, in order: Espressif ROM loader, SAM-BA (with Arduino's bossac dialect), USB DFU, UF2,
-  then CMSIS-DAP and Nordic serial DFU.
+- Backends, in order: Espressif ROM loader, SAM-BA (with Arduino's bossac dialect), the
+  STK500v1, STK500v2 and AVR109 bootloaders of Arduino's AVR boards, USB DFU, UF2, then
+  CMSIS-DAP and Nordic serial DFU.
+- Binary and Intel HEX images for every backend.
 - A `build` crate so firmware `build.rs` scripts read the same layout file (single source of
   truth).
 - CI-friendly command line: clear errors, `--json`, no prompts unless asked.
@@ -74,6 +76,8 @@ as code: they weigh on the WebAssembly bundle and on `no_std`):
 | --- | --- | --- |
 | Espressif ROM loader | `miniz_oxide` (compression), `md-5` | SLIP framing, commands, a ~40-line chip table copied from `espflash` (MIT OR Apache-2.0, attributed), asynchronous loop, reset sequences, orchestration. No flasher stub at first: the ROM already supports compressed writes and MD5, the stub is only a speed-up and can come later. The ESP32 is written uncompressed: its ROM programs a whole 32 KiB inflate window after every compressed image (seen in Espressif's QEMU). |
 | SAM-BA | none usable in the browser | our own code, written from the protocol (Microchip's SAM-BA documentation, observed bootloader behaviour); BOSSA (BSD-3-Clause) is a behaviour reference only, no code ported |
+| STK500v1, STK500v2, AVR109 (Arduino AVR) | none: no crate is `no_std`, asynchronous over our transport and permissively licensed (see [`prior-art.md`](prior-art.md)) | our own code, written from Atmel's application notes AVR061, AVR068 and AVR109 and from observing the bootloaders; avrdude, Optiboot, ATmegaBOOT, the wiring bootloader and Caterina (GPL) are behaviour references only, no code ported |
+| Intel HEX | `ihex` as a test-only dependency, to read the fixture back | a decoder of about 300 lines: `ihex` needs `std` |
 | Espressif partition table | `md-5` | ~100 lines: 32-byte entries and the MD5 row. `esp-idf-part` (needs `std`, `regex`, `deku`) is a test-only dependency to read our output back. |
 | MBR | none | ~50 lines: four 16-byte entries and the signature. `mbrman` is a test-only dependency. |
 | USB DFU (later) | `dfu-core` (`no_std`, sans-I/O) | glue to the USB transport, DfuSe |
@@ -98,7 +102,7 @@ page leaves out.
 
 | Crate | Role |
 | --- | --- |
-| `nanoflash` (`crates/nanoflash`) | The library, `no_std` + `alloc` by default. Modules: `layout` (model, resolution, checks, report), `manifest` (board manifest, esp-web-tools conversion), `transport` (traits), `table` (writers), `espressif`, `samba`, `build` (constants and `memory.x` for `build.rs`), `native` and `web` (transports), `testing` (transcript replay and recording). |
+| `nanoflash` (`crates/nanoflash`) | The library, `no_std` + `alloc` by default. Modules: `layout` (model, resolution, checks, report), `manifest` (board manifest, esp-web-tools conversion), `transport` (traits), `table` (writers), `flash` (orchestration, Intel HEX), `espressif`, `samba`, `avr`, `touch` (the 1200-baud touch SAM-BA and AVR109 share), `build` (constants and `memory.x` for `build.rs`), `native` and `web` (transports), `testing` (transcript replay and recording). |
 | `nanoflash-cli` (`crates/nanoflash-cli`) | The `nanoflash` command. |
 | `nanoflash-web` (`crates/nanoflash-web`) | `wasm-bindgen` bindings, built once per backend into separate WebAssembly modules. |
 
@@ -107,7 +111,7 @@ Features of `nanoflash` (every one only adds):
 | Feature | Enables | Needs `std` |
 | --- | --- | --- |
 | `toml`, `json` | parsing layouts and manifests | no |
-| `espressif`, `samba` | backends | no |
+| `espressif`, `samba`, `avr` (STK500v1, STK500v2 and AVR109) | backends | no |
 | `table-espressif`, `table-mbr`, `table-linker` | writers | no |
 | `build` | helpers for `build.rs` (implies `toml`, `table-linker`) | yes |
 | `native` | `serialport` transport, port listing | yes |
@@ -254,12 +258,14 @@ pub trait Backend {
     async fn write(&mut self, segments: &[Segment<'_>], progress: &mut dyn Progress) -> Result<(), Error>;
     async fn verify(&mut self, segments: &[Segment<'_>], progress: &mut dyn Progress) -> Result<(), Error>;
     async fn reset_to_application(&mut self) -> Result<(), Error>;
+    // The whole flash in the order `flash` sends it, before the first erase; `Ok` by default.
+    fn check_plan(&self, erase_all: Option<Region>, erases: &[Region], segments: &[Segment<'_>]) -> Result<(), Error>;
 }
 ```
 
 The facade dispatches over an enum of the enabled backends (`async fn` in traits is not
 object-safe). Each backend detects the chip when the protocol allows, checks it against the
-manifest, writes, verifies (MD5 on Espressif, CRC through `Z` on SAM-BA, read-back otherwise),
+manifest, writes, verifies (MD5 on Espressif, CRC through `Z` on SAM-BA, read-back otherwise, as on AVR),
 and resets into the application.
 
 ### What `flash` writes and erases (builder's calls, to be confirmed)
@@ -283,6 +289,22 @@ and resets into the application.
     `erases-to-end` warning to the report, naming the partitions of the layout it erased that no
     image is written to. Erase entries must end at the end of flash, and images are written in
     order of offset.
+- On AVR (STK500v1, STK500v2, AVR109), the bootloaders have no usable chip erase (Optiboot
+  ignores it, Arduino never sends it): "erased" means "programmed with `0xFF`". Optiboot,
+  ATmegaBOOT and Caterina erase each page as they program it; an erase entry or `--erase-all`
+  programs `0xFF` over its pages. The bootloader sits at the top of the flash, which `connect`
+  reports as `writable_to` (`0x7E00` on an Uno with Optiboot): nothing at or above it is
+  written, and `--erase-all` stops at `writable_to`, or at the bootloader partition of the
+  layout above the application when it starts lower (the Nano's layout keeps 2 KiB for the old
+  bootloader, while Optiboot takes 512 bytes).
+- The wiring bootloader of the Mega 2560 (STK500v2) erases one page per page programmed, at an
+  erase address of its own that starts at 0x0 and moves one page on each time, wherever the
+  programmed page goes, and erases nothing from its `APP_END`, 0x3C000 (16 KiB under the end of
+  flash, twice its 8 KiB). So `writable_to` is 0x3C000, and before the first erase or write the
+  backend replays that address over the whole flash (`--erase-all`, the erase entries, then the
+  images in order of offset): images must start at 0x0 and follow each other, and an erase entry
+  must start at 0x0, unless `--erase-all` erased every page first. A flash that breaks the order
+  is refused before anything is written.
 - It does not initialise `otadata` and does not patch the Espressif bootloader header (flash
   size, mode, frequency): both are image formats, which nanoflash leaves to the caller. A
   manifest that wants `otadata` reset lists an image for it, or an `erase` entry for its
@@ -301,6 +323,14 @@ and resets into the application.
   Arduino `0x2341`, Raspberry Pi `0x2e8a`, ST `0x0483` in DFU mode...) to pick the backend, and
   requires `--protocol` otherwise. It never probes several protocols on the same port, because
   each probe resets the board differently.
+- Arduino's AVR boards share the vendors of its SAM-BA boards, so the table lists their products
+  from Arduino's `boards.txt` before the vendor rule: the Uno (`2341:0043`, `2341:0001`,
+  `2a03:0043`, `2341:0243`, `2341:006a`) speaks STK500v1, the Mega 2560 (`2341:0010`,
+  `2341:0042` and their `2a03` and `02xx` variants) STK500v2, and the Leonardo, Micro and other
+  ATmega32U4 boards (`2341:8036` with the sketch, `2341:0036` in Caterina, and their kin, with
+  Adafruit's and SparkFun's) AVR109. A Nano or a Pro Mini sits behind a serial bridge (FTDI,
+  CH340) that tells nothing: the manifest's board without devices, or `--protocol`, decides. The
+  protocols may be named `arduino` (STK500v1) and `wiring` (STK500v2), as in `boards.txt`.
 - In the browser, only the module of the chosen backend is loaded, so the 250 KiB budget holds
   for `detect()` too.
 
@@ -392,8 +422,11 @@ nanoflash detect --port <port> [--protocol <protocol>] [--json]
   comments. the `testing` feature provides a replay transport that fails on any divergence, and a
   recording transport behind `--record`.
 - **Sources of transcripts:** Espressif's QEMU (ESP32 and ESP32-C3 in download mode) in CI;
-  arduino/BOSSA's SAM-BA emulator for SAM-BA; recordings from real boards added as they are
-  made. Hand-written transcripts cover error paths (timeouts, bad checksums, wrong chip).
+  arduino/BOSSA's SAM-BA emulator for SAM-BA; simavr (GPL-3.0, installed or downloaded at test
+  time, never committed or distributed) running Optiboot, ATmegaBOOT and the Mega 2560's wiring
+  bootloader from ArduinoCore-avr, through `hardware/simavr/run.sh` (`mise run test-simavr`);
+  recordings from real boards added as they are made. Hand-written transcripts cover error
+  paths (timeouts, bad checksums, wrong chip).
 - **Property tests** (`proptest`): resolution never yields overlap or misalignment and keeps
   fixed offsets; every writer round-trips through a parser: `esp-idf-part` and ESP-IDF's
   `gen_esp32part.py` in CI, `mbrman` and `sfdisk --dump`, `gpt` and `sgdisk` for GPT.
@@ -421,6 +454,9 @@ One pull request each, stacked:
 4. The SAM-BA backend for the Arduino Nano 33 BLE, under the same hardware caveat. Arduino's
    SAMD bootloaders speak the same dialect (`X`, `Y`, `Z`), so their family data comes along,
    tested against transcripts only.
+5. The AVR backend (STK500v1, STK500v2, AVR109) for the Arduino Uno, Nano, Mega 2560 and
+   Leonardo, with Intel HEX images for every protocol and an `avr` WebAssembly module; tested
+   against transcripts and simavr, with the boards in the hardware in the loop.
 
 Afterwards, in this order unless reprioritised: GPT writer and file system images, USB DFU, UF2,
 CMSIS-DAP, Nordic serial DFU.

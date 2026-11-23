@@ -12,9 +12,9 @@ licences come from crates.io, npm and the projects' repositories on that date.
 - The building blocks exist and are permissively licensed: `espflash` (without its serial port
   layer), `dfu-core`, `nusb` (now with a WebUSB backend), `mbrman`, `gpt_disk_types`,
   `esp-idf-part`, `uf2_block`.
-- Two protocols have no reusable Rust implementation: the Espressif ROM loader over an
-  asynchronous transport, and SAM-BA. nanoflash writes those, using `espflash` and BOSSA as
-  references.
+- Some protocols have no reusable Rust implementation: the Espressif ROM loader over an
+  asynchronous transport, SAM-BA, and the STK500v1, STK500v2 and AVR109 bootloaders of Arduino's
+  AVR boards. nanoflash writes those, using `espflash`, BOSSA and avrdude as references.
 
 ## Multi-protocol flashers
 
@@ -91,6 +91,40 @@ MIT OR Apache-2.0. A binding to BOSSA works natively only: its serial I/O is blo
 exceptions, so running it in the browser would need a separate C++ to WebAssembly build and
 Chromium's JSPI to suspend on Web Serial. That would mean a second toolchain and module to replace
 about 700 lines of Rust.
+
+### STK500 and AVR109 (Arduino's AVR boards)
+
+Surveyed on 2026-11-23. Arduino's `boards.txt` (ArduinoCore-avr) uploads every AVR board with
+avrdude: `upload.protocol=arduino` (STK500v1: Optiboot on the Uno, ATmegaBOOT on the old Nano and
+Pro Mini), `wiring` (STK500v2: the Mega 2560's bootloader) or `avr109` (Caterina on the
+Leonardo, Micro and other ATmega32U4 boards, after a 1200-baud touch).
+
+- The protocols are documented by Atmel: application notes AVR061 (STK500 communication
+  protocol), AVR068 (STK500v2) and AVR109 (self-programming).
+- [avrdude](https://github.com/avrdudes/avrdude): **GPL-2.0-or-later**, C, the reference
+  uploader. nanoflash does not port from it.
+- Rust crates: none fits. [ravedude](https://crates.io/crates/ravedude) 0.3.0 (MIT OR
+  Apache-2.0, avr-hal) runs the avrdude binary; [avrisp](https://crates.io/crates/avrisp) 0.3.1
+  (BSD-2-Clause, `no_std`) holds the SPI instructions of in-system programming, not the
+  bootloaders' serial protocols; [avr-boot](https://crates.io/crates/avr-boot) 0.3.2 (MIT) is
+  for firmware that programs its own flash. Nothing speaks STK500v1, STK500v2 or AVR109 over an
+  asynchronous transport, natively or in the browser.
+- The bootloaders run on the board and are behaviour references only: Optiboot (GPL-2.0),
+  ATmegaBOOT and the wiring bootloader of the Mega 2560 (GPL-2.0-or-later, `stk500boot.c` in
+  ArduinoCore-avr), and Caterina, derived from LUFA's CDC bootloader. The wiring bootloader
+  erases one page per page programmed, in order from 0x0, and never from 0x3C000 (its
+  `APP_END`): nanoflash follows that order.
+- [simavr](https://github.com/buserror/simavr): **GPL-3.0**, an AVR simulator; it runs the
+  bootloaders from ArduinoCore-avr in `mise run test-simavr`, as a test tool installed or
+  downloaded at test time, never committed or distributed with nanoflash.
+- Intel HEX, the format of Arduino's images: [ihex](https://crates.io/crates/ihex) 3.0.0 (MIT
+  OR Apache-2.0) needs `std`; nanoflash decodes it itself (`no_std`, fallible allocation) and
+  uses `ihex` in its tests.
+
+**Decision:** write the three protocols in Rust from Atmel's application notes and from
+observing the bootloaders (and avrdude) on simavr and on boards, sharing the 1200-baud touch
+with SAM-BA: no code is ported from avrdude, Optiboot, ATmegaBOOT, the wiring bootloader,
+Caterina or simavr, and each file of `src/avr/` says so in its first comment.
 
 ### USB DFU
 
@@ -177,6 +211,12 @@ in [`src/const.ts`](https://github.com/esphome/esp-web-tools/blob/main/src/const
 | esp-flasher-stub | Apache-2.0 OR MIT | stubs, later |
 | BOSSA, arduino/BOSSA | BSD-3-Clause | behaviour reference, no code ported |
 | ArduinoCore-samd bootloader | LGPL-2.1 | protocol reference only, not vendored |
+| avrdude | GPL-2.0-or-later | behaviour reference only, no code ported |
+| Optiboot | GPL-2.0 | behaviour reference only (on the board), no code ported |
+| ATmegaBOOT, the wiring bootloader (ArduinoCore-avr) | GPL-2.0-or-later | behaviour reference only (on the board), no code ported |
+| Caterina (ArduinoCore-avr) | derived from LUFA | behaviour reference only (on the board), no code ported |
+| simavr | GPL-3.0 | test tool only, installed or downloaded at test time, never distributed |
+| ihex | MIT OR Apache-2.0 | test-only dependency |
 | dfu-core | MIT OR Apache-2.0 | dependency |
 | microsoft/uf2 | MIT | specification and family identifiers |
 | pico-sdk | BSD-3-Clause | family identifiers (cross-check) |

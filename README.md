@@ -18,20 +18,25 @@ and a drop-in web component).
 - **One board manifest**: protocol, chip, layout, images, reset sequence, optional SHA-256.
   Existing [esp-web-tools](https://esphome.github.io/esp-web-tools/) manifests work unchanged.
 - **One asynchronous engine per protocol**, the same natively and in the browser: Espressif ROM
-  bootloader, SAM-BA (Arduino's bossac dialect), then USB DFU, UF2, CMSIS-DAP and Nordic serial
-  DFU.
+  bootloader, SAM-BA (Arduino's bossac dialect), the STK500v1, STK500v2 and AVR109 bootloaders
+  of Arduino's AVR boards, then USB DFU, UF2, CMSIS-DAP and Nordic serial DFU.
+- **Binary and Intel HEX images** (`.hex`, as Arduino, PlatformIO and `objcopy` write them), for
+  every protocol.
 - **Project-agnostic**: no operating system, image format or signing scheme is built in; callers
   supply them through hooks.
 
 > **Status:** layout checks and the table writers (Espressif, MBR, linker regions and constants)
 > are available, in the library and in the `nanoflash` command, and so is flashing, natively and
 > in the browser: Espressif chips (ESP32, -S2, -S3, -C2, -C3, -C5, -C6, -H2, -P4) through their
-> ROM loader, and through Arduino's SAM-BA bootloaders the Arduino Nano 33 BLE (nRF52840) and the
-> Arduino SAMD21 boards (such as the MKR WiFi 1010). The flashing is verified against recorded
-> transcripts, Espressif's QEMU (ESP32 and ESP32-C3) and arduino/BOSSA's emulated SAM-BA
-> bootloader. The browser package ([`web/`](web/README.md)) flashes the same chips over Web
-> Serial, through a TypeScript API and a `<nanoflash-button>` web component, tested in Node
-> against a mocked port; it is not published on npm yet. The other protocols come next. See
+> ROM loader, through Arduino's SAM-BA bootloaders the Arduino Nano 33 BLE (nRF52840) and the
+> Arduino SAMD21 boards (such as the MKR WiFi 1010), and through their STK500 and AVR109
+> bootloaders Arduino's AVR boards: the Uno, Nano and Pro Mini (ATmega328P, STK500v1), the Mega
+> 2560 (STK500v2) and the Leonardo, Micro and Pro Micro (ATmega32U4, AVR109). The flashing is
+> verified against recorded transcripts, Espressif's QEMU (ESP32 and ESP32-C3), arduino/BOSSA's
+> emulated SAM-BA bootloader and the Arduino STK500 bootloaders emulated by simavr. The browser
+> package ([`web/`](web/README.md)) flashes the same chips over Web Serial, through a TypeScript
+> API and a `<nanoflash-button>` web component, tested in Node against a mocked port; it is not
+> published on npm yet. The other protocols come next. See
 > [`docs/design.md`](docs/design.md) and [`docs/prior-art.md`](docs/prior-art.md).
 
 ## Layout file
@@ -165,10 +170,34 @@ verified
 The SAMD21 bootloader erases from the lowest image to the end of flash before writing: what was
 stored after it is gone, and nanoflash warns about it, naming the partitions it took.
 
+Arduino's AVR boards take the `.hex` the Arduino IDE builds. The protocol is `stk500v1` (Uno,
+Nano, Pro Mini: a pulse on DTR resets them into Optiboot or the older ATmegaBOOT), `stk500v2`
+(Mega 2560, its wiring bootloader) or `avr109` (Leonardo, Micro, Pro Micro: a 1200-baud touch
+starts Caterina, which shows up on its own port); manifests may also name the first two
+`arduino` and `wiring`, as Arduino's `boards.txt` does. Pages are written whole and read back
+to check them; the bootloader at the top of the flash is never written.
+
+```console
+$ nanoflash flash --board hardware/uno/manifest.toml
+connecting
+writing at 0x0
+verifying
+resetting
+flashed arduino-uno-r3 (atmega328p, 32 KiB)
+  0x0  application  300 B
+verified
+```
+
+The Mega 2560's bootloader erases one page per page programmed, in order from 0x0, and never
+above 0x3C000: its images must start at 0x0 and follow each other, unless `--erase-all` erased
+every page first.
+
 The port is the only one that suits the board, or `--port`. `--erase-all` erases the flash
-first, from the lowest offset the bootloader writes to the end (a protected bootloader stays),
-`--no-verify` skips the MD5 or CRC-16 checks, `--baud-rate` changes the speed (460800 through a
-UART bridge by default; the SAM-BA bootloader ignores it), `--json` prints one JSON document.
+first, from the lowest offset the bootloader writes to the end (a protected bootloader stays; on
+AVR, pages are programmed with `0xFF` up to where the bootloader starts), `--no-verify` skips
+the MD5, CRC-16 or read-back checks, `--baud-rate` changes the speed (460800 through a UART
+bridge by default; the rate of the bootloader on STK500, which tries 115200 then 57600; the
+SAM-BA and AVR109 bootloaders ignore it), `--json` prints one JSON document.
 The exit code is 0 on success, 1 for an input error, 2 for a device or connection error and 3
 when the flash does not read back as written.
 
