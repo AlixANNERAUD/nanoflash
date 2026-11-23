@@ -1,5 +1,6 @@
 //! The layout model: the flash of a board and its named partitions.
 
+mod changes;
 mod error;
 mod growth;
 #[cfg(test)]
@@ -7,6 +8,7 @@ mod legacy;
 mod report;
 mod resolve;
 
+pub use changes::{GrownPartition, LayoutChanges, MovedPartition};
 pub use error::{LayoutError, LayoutErrors};
 pub use report::{ImageSize, PartitionReport, Report};
 pub use resolve::{ResolvedLayout, ResolvedPartition};

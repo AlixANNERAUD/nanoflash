@@ -19,6 +19,9 @@ pub struct ImageSize {
 pub struct Report {
     /// Total size of the flash in bytes.
     pub flash_size: u64,
+    /// The minimum flash size of a layout that detects it.
+    #[serde(default)]
+    pub minimum_flash_size: Option<u64>,
     /// The number of bytes of flash that no partition uses.
     pub unallocated: u64,
     /// One entry per partition, in file order.
@@ -38,6 +41,18 @@ pub struct PartitionReport {
     pub end: u64,
     /// Size in bytes.
     pub size: u64,
+    /// The least size, for a partition whose size depends on the flash.
+    #[serde(default)]
+    pub minimum_size: Option<u64>,
+    /// The bytes above the minimum size, for such a partition.
+    #[serde(default)]
+    pub growth: Option<u64>,
+    /// Whether its size depends on the flash of the device.
+    #[serde(default)]
+    pub grows_with_flash: bool,
+    /// Whether its offset depends on the flash of the device.
+    #[serde(default)]
+    pub moves_with_flash: bool,
     /// The size of the image, if one was given.
     pub image_size: Option<u64>,
     /// The bytes left after the image, if one was given.
@@ -87,12 +102,19 @@ impl ResolvedLayout {
                     let percent = u128::from(headroom) * 100 / u128::from(partition.size.max(1));
                     u8::try_from(percent).unwrap_or(100)
                 });
+                let minimum_size = partition
+                    .grows_with_flash
+                    .then(|| partition.definition.size.minimum());
                 PartitionReport {
                     name: name.clone(),
                     role: partition.definition.role,
                     offset: partition.offset,
                     end: partition.end(),
                     size: partition.size,
+                    minimum_size,
+                    growth: minimum_size.map(|minimum| partition.size.saturating_sub(minimum)),
+                    grows_with_flash: partition.grows_with_flash,
+                    moves_with_flash: partition.moves_with_flash,
                     image_size,
                     headroom,
                     headroom_percent,
@@ -101,6 +123,7 @@ impl ResolvedLayout {
             .collect();
         Ok(Report {
             flash_size: self.flash.size,
+            minimum_flash_size: self.minimum_flash_size,
             unallocated: self.unallocated(),
             partitions,
         })
@@ -110,7 +133,9 @@ impl ResolvedLayout {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::{Flash, Layout, Partition, Size};
+    use crate::layout::{
+        Flash, GrownPartition, Layout, LayoutChanges, MovedPartition, Partition, Size,
+    };
     use alloc::string::ToString;
     use alloc::vec;
 
@@ -152,6 +177,115 @@ mod tests {
                 assert_eq!(entry.headroom_percent, None, "{}", entry.name);
             }
         }
+    }
+
+    #[cfg(feature = "toml")]
+    const LAYOUT_A: &str = r#"
+[flash]
+size = "detect"
+minimum = "4 MiB"
+alignment = "4 KiB"
+
+[[partition]]
+name = "bootloader"
+role = "bootloader"
+offset = 0x0
+size = "32 KiB"
+
+[[partition]]
+name = "partition-table"
+role = "partition-table"
+offset = 0x8000
+size = "4 KiB"
+
+[[partition]]
+name = "application"
+role = "firmware"
+alignment = "64 KiB"
+size = "1 MiB"
+
+[[partition]]
+name = "data"
+role = "custom"
+size = { minimum = "1 MiB", grow = 1 }
+
+[[partition]]
+name = "storage"
+role = "storage"
+size = { minimum = "1 MiB", grow = 3 }
+
+[[partition]]
+name = "coredump"
+role = "crash-record"
+size = "64 KiB"
+"#;
+
+    #[cfg(feature = "toml")]
+    fn layout_a(flash_size: Option<u64>) -> ResolvedLayout {
+        Layout::from_toml(LAYOUT_A)
+            .unwrap()
+            .resolve_for(flash_size)
+            .unwrap()
+    }
+
+    #[cfg(feature = "toml")]
+    #[test]
+    fn reports_minimum_and_growth() {
+        let report = layout_a(Some(0x1000000)).report(&[]).unwrap();
+        assert_eq!(report.minimum_flash_size, Some(0x400000));
+        assert_eq!(report.flash_size, 0x1000000);
+        let find = |name: &str| report.partitions.iter().find(|p| p.name == name).unwrap();
+        let storage = find("storage");
+        assert_eq!(storage.minimum_size, Some(0x100000));
+        assert_eq!(storage.growth, Some(0x9A8000));
+        assert!(storage.grows_with_flash && storage.moves_with_flash);
+        let coredump = find("coredump");
+        assert!(coredump.moves_with_flash && !coredump.grows_with_flash);
+        assert_eq!((coredump.minimum_size, coredump.growth), (None, None));
+    }
+
+    #[cfg(feature = "toml")]
+    #[test]
+    fn fixed_layouts_report_as_before() {
+        let report = esp32().report(&[image("application", 0xC0000)]).unwrap();
+        assert_eq!(report.minimum_flash_size, None);
+        for entry in &report.partitions {
+            assert_eq!((entry.minimum_size, entry.growth), (None, None));
+            assert!(!entry.grows_with_flash && !entry.moves_with_flash);
+        }
+    }
+
+    #[cfg(feature = "toml")]
+    #[test]
+    fn changes_list_what_grew_and_moved() {
+        let minimum = layout_a(None);
+        let changes = layout_a(Some(0x1000000)).changes_from(&minimum);
+        let grown = |name: &str, from, to| GrownPartition {
+            name: name.into(),
+            size_at_minimum: from,
+            size: to,
+        };
+        let moved = |name: &str, from, to| MovedPartition {
+            name: name.into(),
+            offset_at_minimum: from,
+            offset: to,
+        };
+        assert_eq!(
+            changes.grown,
+            vec![
+                grown("data", 0x138000, 0x438000),
+                grown("storage", 0x1A8000, 0xAA8000)
+            ]
+        );
+        assert_eq!(
+            changes.moved,
+            vec![
+                moved("storage", 0x248000, 0x548000),
+                moved("coredump", 0x3F0000, 0xFF0000)
+            ]
+        );
+        assert!(!changes.is_empty());
+        assert!(minimum.changes_from(&minimum).is_empty());
     }
 
     #[cfg(feature = "toml")]
@@ -273,6 +407,7 @@ mod tests {
         assert_eq!(serde_json::from_str::<ImageSize>(&text).unwrap(), image);
         let report = Report {
             flash_size: 0x1000,
+            minimum_flash_size: Some(0x800),
             unallocated: 0x800,
             partitions: vec![PartitionReport {
                 name: "application".into(),
@@ -280,6 +415,10 @@ mod tests {
                 offset: 0,
                 end: 0x800,
                 size: 0x800,
+                minimum_size: Some(0x400),
+                growth: Some(0x400),
+                grows_with_flash: true,
+                moves_with_flash: false,
                 image_size: Some(0x400),
                 headroom: Some(0x400),
                 headroom_percent: Some(50),
@@ -287,6 +426,30 @@ mod tests {
         };
         let text = serde_json::to_string(&report).unwrap();
         assert_eq!(serde_json::from_str::<Report>(&text).unwrap(), report);
+        let changes = LayoutChanges {
+            grown: vec![GrownPartition {
+                name: "data".into(),
+                size_at_minimum: 1,
+                size: 2,
+            }],
+            moved: vec![MovedPartition {
+                name: "log".into(),
+                offset_at_minimum: 3,
+                offset: 4,
+            }],
+        };
+        let text = serde_json::to_string(&changes).unwrap();
+        assert_eq!(
+            serde_json::from_str::<LayoutChanges>(&text).unwrap(),
+            changes
+        );
+        let old = r#"{"flash_size":1,"unallocated":0,"partitions":[]}"#;
+        assert_eq!(
+            serde_json::from_str::<Report>(old)
+                .unwrap()
+                .minimum_flash_size,
+            None
+        );
         let error = crate::layout::ParseError {
             message: "bad".into(),
         };
