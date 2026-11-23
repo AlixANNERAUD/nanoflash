@@ -27,7 +27,9 @@ and a drop-in web component).
 > are available, in the library and in the `nanoflash` command, and so is flashing Espressif
 > chips (ESP32, -S2, -S3, -C2, -C3, -C5, -C6, -H2, -P4) natively through their ROM loader. The
 > flashing is verified against recorded transcripts and Espressif's QEMU (ESP32 and ESP32-C3),
-> not yet on hardware. The browser package and the other protocols come next. See
+> not yet on hardware. The browser package ([`web/`](web/README.md)) flashes the same chips over
+> Web Serial, through a TypeScript API and a `<nanoflash-button>` web component, tested in Node
+> against a mocked port; it is not published on npm yet. The other protocols come next. See
 > [`docs/design.md`](docs/design.md) and [`docs/prior-art.md`](docs/prior-art.md).
 
 ## Layout file
@@ -193,8 +195,10 @@ INCLUDE nanoflash_memory.x
 
 ## Browser support
 
-Web Serial and WebUSB are implemented by Chromium-based browsers only (Chrome, Edge, Opera...).
-Elsewhere, use the `nanoflash` command.
+The browser package flashes over Web Serial, which only Chromium-based browsers implement
+(Chrome, Edge, Opera...), on a secure origin (`https:` or `localhost`); so does WebUSB, for the
+protocols that will need it. Elsewhere, use the `nanoflash` command, which flashes the same
+manifests. See [`web/README.md`](web/README.md) for the package and its component.
 
 ## Licence
 

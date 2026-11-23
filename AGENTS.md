@@ -13,8 +13,14 @@ the headroom of every partition, and writes the table each family needs. See `RE
 
 | Crate | Role |
 | --- | --- |
-| `nanoflash` (`crates/nanoflash`) | The library, `no_std` with `alloc`. Features: `toml`, `json`, `table-espressif`, `table-mbr`, `table-linker`, `flash`, `espressif`, `testing`, `native`, `build`. |
+| `nanoflash` (`crates/nanoflash`) | The library, `no_std` with `alloc`. Features: `toml`, `json`, `table-espressif`, `table-mbr`, `table-linker`, `flash`, `espressif`, `testing`, `native`, `build`, `web`. |
 | `nanoflash-cli` (`crates/nanoflash-cli`) | The `nanoflash` command: `layout check`, `layout write`, `flash`, `detect`, `image build`. |
+| `nanoflash-web` (`crates/nanoflash-web`) | The WebAssembly modules of the browser package (`publish = false`): `core` (layouts), and one module per backend feature (`espressif`) that adds `flash` and `detect`. |
+
+The browser package is the npm package `nanoflash` in `web/`: TypeScript (`strict`), ES modules,
+no runtime dependency, the `<nanoflash-button>` component in `web/src/button.ts`, a demo in
+`web/demo`, and Node tests over a mocked Web Serial port in `web/test`. `mise run web-wasm`
+builds the modules into `web/src/wasm`.
 
 Modules of the library:
 
@@ -27,6 +33,7 @@ Modules of the library:
 | `flash` | Board selection, image preparation and checks, the flash and detect orchestration, `image_build` (`flash`). |
 | `espressif` | The ROM loader backend: SLIP, commands, chip table, resets, writes (`espressif`). |
 | `native` | The host serial port over `serialport` (`native`, needs `std`). |
+| `web` | The serial port of the browser over Web Serial, and the provider that finds a device again among the granted ports (`web`, `no_std`, through `wasm-bindgen` and `js-sys`, without `web-sys`). |
 | `testing` | Transcript replay and recording, `MemorySource` (`testing`). |
 | `build` | Constants and linker regions for a firmware's `build.rs` (`build`, needs `std`). |
 
@@ -40,7 +47,7 @@ the loop.
 - `crates/nanoflash` is `#![no_std]` with `extern crate alloc`; only the `build` and `native`
   features enable `std`. It must build for `thumbv7em-none-eabihf` and `wasm32-unknown-unknown` with every no_std
   feature.
-- `#![forbid(unsafe_code)]` in both crates.
+- `#![forbid(unsafe_code)]` in every crate.
 - No panics on any input or device answer: checked arithmetic for every offset and size
   (`u64`), no indexing that can fail, no `unwrap` outside tests, fallible allocation for buffers
   sized by the input.
@@ -53,6 +60,8 @@ the loop.
   APIs are single-threaded).
 - Spell words out in identifiers, docs and messages (`device`, `directory`, `configuration`),
   unless an external format forces otherwise.
+- Every WebAssembly module of the browser package is at most 256000 bytes once compressed with
+  `gzip -9`; `mise run web-size` (and CI) fails above it.
 - Never use em or en dashes in any text; use hyphens or commas.
 - Conventional commits; no co-author lines.
 - Features only add; never gate code on the absence of a feature. `default = []`.
@@ -61,4 +70,6 @@ the loop.
 
 ## Before pushing
 
-Run `mise run check` (format, clippy, tests, cross builds) and `mise run deny`.
+Run `mise run check` (format, clippy, tests, cross builds) and `mise run deny`. After a change to
+the browser package, the `web` feature or `nanoflash-web`, also run `mise run web` (builds the
+modules, checks their size, type-checks the package and runs its Node tests).
