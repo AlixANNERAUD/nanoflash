@@ -7,36 +7,70 @@ use crate::error::Error;
 use crate::manifest::{Board, Manifest, Protocol, ResetSequence};
 use crate::transport::UsbIdentity;
 
-/// The Arduino AVR boards by USB identity, as `boards.txt` of ArduinoCore-avr lists them: the
-/// Arduino vendors `0x2341` and `0x2A03` (pairs `boards.txt` does not list for `0x2A03` are left
-/// out) and SparkFun's Pro Micro. Other Arduino products run SAM-BA.
+/// The Arduino AVR boards by USB identity, as `boards.txt` of ArduinoCore-avr (11b9130) lists
+/// them under `vid.N` and `pid.N`: the Arduino vendors `0x2341` and `0x2A03` (a pair
+/// `boards.txt` does not list is left out, so `2A03:0242` is not here) and the SparkFun, LilyPad
+/// and Adafruit vendors. Other Arduino products run SAM-BA.
 const ARDUINO_AVR: &[(u16, u16, Protocol)] = &[
-    // The Uno and the Uno Mini: Optiboot.
+    // `uno`: Optiboot.
     (0x2341, 0x0043, Protocol::Stk500v1),
     (0x2341, 0x0001, Protocol::Stk500v1),
+    (0x2A03, 0x0043, Protocol::Stk500v1),
     (0x2341, 0x0243, Protocol::Stk500v1),
     (0x2341, 0x006A, Protocol::Stk500v1),
-    (0x2A03, 0x0043, Protocol::Stk500v1),
-    // The Mega 2560: the wiring bootloader.
+    // `unomini`.
+    (0x2341, 0x0062, Protocol::Stk500v1),
+    // `mega` (the wiring bootloader).
     (0x2341, 0x0010, Protocol::Stk500v2),
     (0x2341, 0x0042, Protocol::Stk500v2),
-    (0x2341, 0x0210, Protocol::Stk500v2),
-    (0x2341, 0x0242, Protocol::Stk500v2),
     (0x2A03, 0x0010, Protocol::Stk500v2),
     (0x2A03, 0x0042, Protocol::Stk500v2),
-    (0x2A03, 0x0242, Protocol::Stk500v2),
-    // The Leonardo, the Micro and their Ethernet variants: Caterina.
+    (0x2341, 0x0210, Protocol::Stk500v2),
+    (0x2341, 0x0242, Protocol::Stk500v2),
+    // `megaADK`.
+    (0x2341, 0x003F, Protocol::Stk500v2),
+    (0x2341, 0x0044, Protocol::Stk500v2),
+    (0x2A03, 0x003F, Protocol::Stk500v2),
+    (0x2A03, 0x0044, Protocol::Stk500v2),
+    // Caterina boards: `leonardo` 0036/8036, `micro` 0037/8037 and 0237/8237 (2341 only).
     (0x2341, 0x0036, Protocol::Avr109),
     (0x2341, 0x8036, Protocol::Avr109),
     (0x2341, 0x0037, Protocol::Avr109),
     (0x2341, 0x8037, Protocol::Avr109),
-    (0x2341, 0x0237, Protocol::Avr109),
-    (0x2341, 0x8237, Protocol::Avr109),
     (0x2A03, 0x0036, Protocol::Avr109),
     (0x2A03, 0x8036, Protocol::Avr109),
     (0x2A03, 0x0037, Protocol::Avr109),
     (0x2A03, 0x8037, Protocol::Avr109),
-    // The SparkFun Pro Micro, in its application and in its bootloader.
+    (0x2341, 0x0237, Protocol::Avr109),
+    (0x2341, 0x8237, Protocol::Avr109),
+    // `leonardoeth`, `yunmini` and `chiwawa` (Industrial 101): 2A03 only.
+    (0x2A03, 0x0040, Protocol::Avr109),
+    (0x2A03, 0x8040, Protocol::Avr109),
+    (0x2A03, 0x0050, Protocol::Avr109),
+    (0x2A03, 0x8050, Protocol::Avr109),
+    (0x2A03, 0x0056, Protocol::Avr109),
+    (0x2A03, 0x8056, Protocol::Avr109),
+    // `yun` 0041/8041, `esplora` 003C/803C, `robotControl` 0038/8038, `robotMotor` 0039/8039.
+    (0x2341, 0x0041, Protocol::Avr109),
+    (0x2341, 0x8041, Protocol::Avr109),
+    (0x2341, 0x003C, Protocol::Avr109),
+    (0x2341, 0x803C, Protocol::Avr109),
+    (0x2341, 0x0038, Protocol::Avr109),
+    (0x2341, 0x8038, Protocol::Avr109),
+    (0x2341, 0x0039, Protocol::Avr109),
+    (0x2341, 0x8039, Protocol::Avr109),
+    (0x2A03, 0x0041, Protocol::Avr109),
+    (0x2A03, 0x8041, Protocol::Avr109),
+    (0x2A03, 0x003C, Protocol::Avr109),
+    (0x2A03, 0x803C, Protocol::Avr109),
+    (0x2A03, 0x0038, Protocol::Avr109),
+    (0x2A03, 0x8038, Protocol::Avr109),
+    (0x2A03, 0x0039, Protocol::Avr109),
+    (0x2A03, 0x8039, Protocol::Avr109),
+    // `circuitplay32u4cat` (Adafruit), `LilyPadUSB` (SparkFun) and the SparkFun Pro Micro.
+    (0x239A, 0x8011, Protocol::Avr109),
+    (0x1B4F, 0x9207, Protocol::Avr109),
+    (0x1B4F, 0x9208, Protocol::Avr109),
     (0x1B4F, 0x9203, Protocol::Avr109),
     (0x1B4F, 0x9204, Protocol::Avr109),
     (0x1B4F, 0x9205, Protocol::Avr109),
@@ -396,6 +430,19 @@ path = "a.bin"
             (0x2341, 0x8036, Some(Protocol::Avr109)),
             (0x1b4f, 0x9206, Some(Protocol::Avr109)),
             (0x2341, 0x805a, Some(Protocol::Samba)),
+            (0x2341, 0x006a, Some(Protocol::Stk500v1)),
+            (0x2341, 0x0062, Some(Protocol::Stk500v1)),
+            (0x2341, 0x0044, Some(Protocol::Stk500v2)),
+            (0x2a03, 0x003f, Some(Protocol::Stk500v2)),
+            (0x2341, 0x0041, Some(Protocol::Avr109)),
+            (0x2a03, 0x8056, Some(Protocol::Avr109)),
+            (0x239a, 0x8011, Some(Protocol::Avr109)),
+            (0x1b4f, 0x9207, Some(Protocol::Avr109)),
+            // Pairs boards.txt does not list: the vendor decides.
+            (0x2a03, 0x0242, None),
+            (0x2a03, 0x0001, None),
+            (0x2a03, 0x0057, None),
+            (0x2341, 0x0040, Some(Protocol::Samba)),
             (0x1a86, 0x7523, None),
         ] {
             assert_eq!(
