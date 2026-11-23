@@ -14,21 +14,37 @@
   <body>
     <h1>nanoflash</h1>
     <p>Flash the board described by a manifest, over Web Serial (Chrome or Edge).</p>
+    <p>Manifest: <code id="manifest"></code></p>
     <nanoflash-button id="button"></nanoflash-button>
     <pre id="log"></pre>
     <script type="module">
       import "../dist/button.js";
 
-      const manifest = new URLSearchParams(location.search).get("manifest") ?? "../../hardware/esp32-s3/manifest.json";
+      const requested = new URLSearchParams(location.search).get("manifest") ?? "../../hardware/esp32-s3/manifest.json";
       const button = document.getElementById("button");
       const log = document.getElementById("log");
+      const shown = document.getElementById("manifest");
       for (const name of ["nanoflash-progress", "nanoflash-done", "nanoflash-error"]) {
         button.addEventListener(name, (event) => {
           const detail = event.detail instanceof Error ? event.detail.message : JSON.stringify(event.detail);
           log.textContent += `${name} ${detail}\n`;
         });
       }
-      button.setAttribute("manifest", manifest);
+      // Only manifests of this origin: a link to this page must not flash firmware from elsewhere.
+      let manifest = null;
+      try {
+        manifest = new URL(requested, location.href);
+      } catch {
+        log.textContent = `"${requested}" is not a URL.\n`;
+      }
+      if (manifest !== null) {
+        shown.textContent = manifest.href;
+        if (manifest.origin === location.origin) {
+          button.setAttribute("manifest", manifest.href);
+        } else {
+          log.textContent = `This demo only flashes manifests of ${location.origin}, not ${manifest.origin}.\n`;
+        }
+      }
     </script>
   </body>
 </html>
