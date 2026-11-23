@@ -93,11 +93,56 @@ mise run test-hardware
 For each board the test flashes with `--record target/hardware/<name>-flash.transcript`, checks
 the report is verified, reads the port for up to 15 seconds until `expect` appears, and runs
 `nanoflash detect` with `--record target/hardware/<name>-detect.transcript`, which must name the
-chip of the manifest. Copy transcripts worth keeping into
-`crates/nanoflash/tests/transcripts/espressif/recorded/`.
+chip of the manifest. Transcripts worth keeping go next to the others in
+`crates/nanoflash/tests/transcripts/<protocol>/` (the QEMU recordings are
+`espressif/flash-esp32-qemu.transcript` and `espressif/flash-esp32c3-qemu.transcript`; the
+emulator's is `samba/recorded/emulator-nano33ble.transcript`).
 
 The test is `#[ignore]`d: `cargo test` skips it, and it does nothing unless `NANOFLASH_HARDWARE`
 names the boards file.
+
+### Arduino Nano 33 BLE
+
+Build the hello sketch (it prints `Hello world!` on the USB serial port every 500 ms):
+
+```sh
+arduino-cli core install arduino:mbed_nano
+arduino-cli compile --fqbn arduino:mbed_nano:nano33ble \
+  --output-dir hardware/nano33ble/firmware hardware/nano33ble/hello
+```
+
+This gives `hardware/nano33ble/firmware/hello.ino.bin`, linked at `0x10000`, which
+`hardware/nano33ble/manifest.toml` flashes. Then add the `arduino-nano-33-ble` entry of
+`hardware/boards.example.toml` to `hardware/boards.toml`.
+
+What a flash does: a 1200-baud touch on the sketch (`2341:805a`), up to 15 seconds for the
+bootloader (`2341:005a`) to appear, then `N#`, `V#`, `I#`, `X`, buffered `S`/`Y` writes per
+4 KiB, `Z` (checksum) per 4 KiB, and `K#` (reset). If no bootloader appears, double-tap the reset
+button (the orange LED pulses) and pass the bootloader's port. The test reopens the port for 15
+seconds, which covers the sketch coming back after `K#`; its `detect` touches the sketch again.
+
+#### Replacing bossac in nanoglia
+
+nanoglia flashes its Nano 33 BLE in `hardware/tools/nanoglia_hardware/board.py`:
+
+| nanoglia | nanoflash |
+| --- | --- |
+| `bossac -d --port=<name> -U -i -e -w -v <bin> -R` | `nanoflash flash --board <manifest> --port <port> --json` |
+| `bossac -U -R` (`leave_bootloader`) | `nanoflash detect --port <bootloader port> --protocol samba` |
+
+The touch, the wait for the bootloader and the reset happen inside `flash`; the port may be the
+runner's, the sketch's or the bootloader's. Exit code 2 replaces "No device found", and exit code
+3 a failed verification.
+
+A manifest for the runner firmware lists:
+
+- `application-devices = [{ vendor = 0x1209, product = 0x0001 }]` (its pid.codes identity; its
+  firmware enters the bootloader on `baud == 1200 && !dtr`),
+- `bootloader-devices = [{ vendor = 0x2341, product = 0x005a }]`,
+- an image at `offset = 0x10000` of the `.bin` nanoglia writes next to its ELF.
+
+`layout.toml` gives the same `FLASH` region as nanoglia's `memory.x`, through
+`nanoflash layout write --format linker` or the `build` feature's constants.
 
 ### Hardware workflow
 
@@ -116,3 +161,7 @@ The browser package (`web/`) is checked by hand against a board:
    `hardware/esp32-s3/manifest.json` is the JSON twin of `manifest.toml`); open it in Chrome or Edge.
 3. Press Install, pick the `USB JTAG/serial debug unit` port, and wait for `done`.
 4. Confirm `Hello world!` with `nanoflash detect --port <port>` and a serial terminal.
+
+For the Nano 33 BLE, build its firmware as above and run `mise run web-demo` with
+`?manifest=/hardware/nano33ble/manifest.json`, pick the Nano's port, then answer the second button
+with the bootloader's port when Chrome asks.
