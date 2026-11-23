@@ -16,6 +16,12 @@ path = "src/main.rs"
 
 [dependencies]
 clap.workspace = true
+nanoflash = { path = "../nanoflash", features = ["toml", "table-espressif", "table-mbr", "table-linker"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true
