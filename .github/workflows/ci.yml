@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: mise run fmt
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: clippy
+      - run: mise run clippy
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: test
+      - run: mise run test
+
+  cross:
+    name: Cross (Cortex-M4F and WebAssembly)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: cross
+      - run: mise run cross
+
+  deny:
+    name: Dependencies (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: mise run deny
+
+  # Checks the writers against ESP-IDF's reference parser; works once the `external_parsers`
+  # test exists.
+  external-parsers:
+    name: External parsers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: external-parsers
+      - run: mise run external-parsers

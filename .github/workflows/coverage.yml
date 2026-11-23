@@ -1,0 +1,36 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: coverage
+      - run: mise run coverage
+      - name: Upload
+        uses: codecov/codecov-action@v7
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: AlixANNERAUD/nanoflash
+          disable_search: true
+          plugins: noop
+          files: coverage.lcov
+          fail_ci_if_error: true

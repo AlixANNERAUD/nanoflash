@@ -1,0 +1,21 @@
+[package]
+name = "nanoflash-cli"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The nanoflash command: lay out flash and write firmware to microcontroller boards."
+keywords = ["flash", "embedded", "firmware", "cli"]
+categories = ["command-line-utilities", "embedded"]
+
+[[bin]]
+name = "nanoflash"
+path = "src/main.rs"
+
+[dependencies]
+clap.workspace = true
+
+[lints]
+workspace = true

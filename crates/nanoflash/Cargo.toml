@@ -1,0 +1,26 @@
+[package]
+name = "nanoflash"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Vendor-neutral toolkit to lay out the flash of a microcontroller board and write firmware to it."
+readme = "../../README.md"
+keywords = ["flash", "embedded", "partition-table", "firmware", "no-std"]
+categories = ["embedded", "no-std"]
+
+[features]
+default = []
+# Read layout files from TOML.
+toml = []
+# Writers of the partition table each family needs.
+table-espressif = []
+table-mbr = []
+table-linker = []
+# Constants and linker scripts for the `build.rs` of a firmware (needs the standard library).
+build = []
+
+[lints]
+workspace = true

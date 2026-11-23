@@ -1,0 +1,68 @@
+[tools]
+# `targets` are the cross targets of the `cross` task. `mr_boxington` routes Cargo through mbx,
+# a shared build cache.
+rust = { version = "stable", components = "rustfmt,clippy,llvm-tools", targets = "thumbv7em-none-eabihf,wasm32-unknown-unknown", mr_boxington = true }
+mr-boxington = "latest"
+"aqua:taiki-e/cargo-llvm-cov" = "latest"
+
+[tasks.fmt]
+description = "Check formatting"
+run = "cargo fmt --all --check"
+
+[tasks.clippy]
+description = "Run clippy on the workspace, with default and all features"
+env.RUSTFLAGS = "-D warnings"
+run = [
+  "cargo clippy --workspace --all-targets",
+  "cargo clippy --workspace --all-targets --all-features",
+]
+
+[tasks.test]
+description = "Run the host test suite, with default and all features"
+env.RUSTFLAGS = "-D warnings"
+run = [
+  "cargo test --workspace",
+  "cargo test --workspace --all-features",
+]
+
+[tasks.cross]
+description = "Build the library for Cortex-M4F and WebAssembly with every no_std feature"
+env.RUSTFLAGS = "-D warnings"
+run = [
+  "cargo build -p nanoflash --lib --target thumbv7em-none-eabihf --features toml,table-espressif,table-mbr,table-linker",
+  "cargo build -p nanoflash --lib --target wasm32-unknown-unknown --features toml,table-espressif,table-mbr,table-linker",
+]
+
+[tasks.deny]
+description = "Check licenses, security advisories, bans and sources of the dependencies (cargo-deny)"
+tools = { "aqua:EmbarkStudios/cargo-deny" = "latest" }
+run = "cargo deny check"
+
+[tasks.coverage]
+description = "Coverage of the workspace, written to coverage.lcov"
+# mbx's build-script wrapper is turned off: llvm-cov reads every binary of the target directory
+# and cannot parse it.
+env.MBX_BUILD_SCRIPT_EXECUTION = "false"
+run = "cargo llvm-cov --workspace --all-features --lcov --output-path coverage.lcov"
+
+[tasks.package]
+description = "Package every crate as crates.io would, and build each one from its package"
+env.CARGO_TARGET_DIR = "target/package"
+# Start from no previously extracted registry sources, and without mbx's build-script cache.
+env.MBX_BUILD_SCRIPT_EXECUTION = "false"
+run = [
+  "rm -rf {{config_root}}/target/package \"${CARGO_HOME:-$HOME/.cargo}\"/registry/src/-*/nanoflash-*",
+  "cargo package --workspace",
+]
+
+[tasks.external-parsers]
+description = "Check the Espressif partition table writer against ESP-IDF's gen_esp32part.py"
+run = [
+  "mkdir -p target/external",
+  "curl --fail --silent --show-error --location --output target/external/gen_esp32part.py https://raw.githubusercontent.com/espressif/esp-idf/v5.5/components/partition_table/gen_esp32part.py",
+  "NANOFLASH_EXTERNAL_PARSERS=1 NANOFLASH_GEN_ESP32PART=target/external/gen_esp32part.py cargo test -p nanoflash --all-features --test external_parsers",
+]
+
+[tasks.check]
+description = "Everything to run before pushing"
+depends = ["fmt", "clippy", "test", "cross"]
