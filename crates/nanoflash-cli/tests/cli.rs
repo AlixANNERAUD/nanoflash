@@ -1356,6 +1356,9 @@ fn the_avr_board_files_check() {
         assert_eq!(parsed.boards.len(), 1, "{name}");
         assert_eq!(parsed.boards[0].protocol, protocol, "{name}");
         assert_eq!(parsed.boards[0].chip, chip, "{name}");
+        // The JSON twin, for the browser, lists the same board.
+        let json = fs::read_to_string(root.join(name).join("manifest.json")).unwrap();
+        assert_eq!(Manifest::parse(&json).unwrap(), parsed, "{name}");
         let layout = nanoflash::layout::Layout::from_toml(&fs::read_to_string(&layout).unwrap())
             .unwrap()
             .resolve()

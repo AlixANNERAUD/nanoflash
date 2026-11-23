@@ -1,0 +1,21 @@
+{
+  "board": [
+    {
+      "identifier": "arduino-leonardo",
+      "name": "Arduino Leonardo",
+      "protocol": "avr109",
+      "chip": "atmega32u4",
+      "layout": "layout.toml",
+      "reset": "touch-1200",
+      "application-devices": [
+        { "vendor": "0x2341", "product": "0x8036" },
+        { "vendor": "0x2a03", "product": "0x8036" }
+      ],
+      "bootloader-devices": [
+        { "vendor": "0x2341", "product": "0x0036" },
+        { "vendor": "0x2a03", "product": "0x0036" }
+      ],
+      "image": [{ "partition": "application", "path": "firmware/avr-hello.ino.hex" }]
+    }
+  ]
+}

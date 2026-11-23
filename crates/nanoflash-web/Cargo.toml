@@ -18,6 +18,8 @@ default = []
 espressif = ["nanoflash/espressif"]
 # Flashing and detecting Arduino boards over SAM-BA, through Web Serial.
 samba = ["nanoflash/samba"]
+# Flashing and detecting Arduino AVR boards over STK500v1, STK500v2 and AVR109, through Web Serial.
+avr = ["nanoflash/avr"]
 
 [dependencies]
 nanoflash = { path = "../nanoflash", version = "0.1.0", default-features = false, features = ["flash", "json", "table-espressif", "table-mbr", "table-linker", "web"] }

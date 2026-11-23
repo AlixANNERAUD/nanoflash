@@ -1,0 +1,19 @@
+{
+  "board": [
+    {
+      "identifier": "arduino-uno-r3",
+      "name": "Arduino Uno R3",
+      "protocol": "stk500v1",
+      "chip": "atmega328p",
+      "layout": "layout.toml",
+      "application-devices": [
+        { "vendor": "0x2341", "product": "0x0043" },
+        { "vendor": "0x2341", "product": "0x0001" },
+        { "vendor": "0x2a03", "product": "0x0043" },
+        { "vendor": "0x2341", "product": "0x0243" },
+        { "vendor": "0x2341", "product": "0x006a" }
+      ],
+      "image": [{ "partition": "application", "path": "firmware/avr-hello.ino.hex" }]
+    }
+  ]
+}

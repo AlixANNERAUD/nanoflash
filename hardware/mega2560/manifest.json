@@ -1,0 +1,20 @@
+{
+  "board": [
+    {
+      "identifier": "arduino-mega-2560",
+      "name": "Arduino Mega 2560",
+      "protocol": "stk500v2",
+      "chip": "atmega2560",
+      "layout": "layout.toml",
+      "application-devices": [
+        { "vendor": "0x2341", "product": "0x0010" },
+        { "vendor": "0x2341", "product": "0x0042" },
+        { "vendor": "0x2a03", "product": "0x0010" },
+        { "vendor": "0x2a03", "product": "0x0042" },
+        { "vendor": "0x2341", "product": "0x0210" },
+        { "vendor": "0x2341", "product": "0x0242" }
+      ],
+      "image": [{ "partition": "application", "path": "firmware/avr-hello.ino.hex" }]
+    }
+  ]
+}

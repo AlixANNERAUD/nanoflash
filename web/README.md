@@ -3,8 +3,10 @@
 Flash microcontroller boards from a web page, over Web Serial. This is the browser package of
 [nanoflash](https://github.com/AlixANNERAUD/nanoflash): the Rust library compiled to
 WebAssembly, behind a small TypeScript API with no runtime dependency. It lays out the flash of
-a board and writes firmware to it: Espressif chips, and Arduino boards over SAM-BA (the Nano 33
-BLE and the SAMD21 boards).
+a board and writes firmware to it: Espressif chips, Arduino boards over SAM-BA (the Nano 33 BLE
+and the SAMD21 boards), and the Arduino AVR boards (the Uno, Nano and Pro Mini over STK500v1,
+the Mega 2560 over STK500v2, the Leonardo, Micro and Pro Micro over AVR109), from `.bin` or
+Intel HEX (`.hex`) images.
 
 ## Install
 
@@ -73,11 +75,14 @@ const chip = await detect({ protocol: "espressif" });
 console.log(chip.chip, chip.flashSize);
 ```
 
-`protocol` (`"espressif"` or `"samba"`) names the module to load.
+`protocol` (`"espressif"`, `"samba"`, `"stk500v1"`, `"stk500v2"` or `"avr109"`) names the
+protocol, and so the module to load; the three AVR protocols share the `avr` module.
 `ChipInformation` has `protocol`, `chip`, `flashSize`, `secureDownloadMode`, `usb`,
 `writableFrom` (the lowest offset the bootloader writes, `0x10000` on the Nano 33 BLE, `0x2000`
-on the SAMD21 boards: nothing below it is written or erased) and `erasesToEnd` (the SAMD21
-bootloader erases from the first written offset to the end of flash).
+on the SAMD21 boards: nothing below it is written or erased), `writableTo` (the end of the flash
+the bootloader writes, where an AVR bootloader starts: `0x7e00` on an Uno; nothing at or above it
+is written) and `erasesToEnd` (the SAMD21 bootloader erases from the first written offset to the
+end of flash).
 
 ### Arduino boards
 
@@ -90,6 +95,14 @@ prepared.bootloaderFilters })` (the `bootloader-devices` of the manifest) and ca
 `prepared.flash({ port })` with it; the component does this with its second button. The browser
 keeps the grant, so the next flash finds the bootloader by itself. A board already in its
 bootloader (double tap on reset) is flashed as it is.
+
+The Leonardo, Micro and Pro Micro (AVR109) do the same: the touch, then Caterina on its own USB
+identity (`2341:8036` becomes `2341:0036` on a Leonardo). Caterina goes back to the sketch after
+8 s, before `flash` gives up: for the first grant, press the reset button of the board once and
+choose its port while the LED pulses. The Uno, Nano, Pro Mini and Mega 2560 keep their port: a
+pulse on DTR resets them into their bootloader, through the USB serial chip of the board or a
+serial bridge. A manifest may name the STK500 protocols by their `boards.txt` names, `arduino`
+(`stk500v1`) and `wiring` (`stk500v2`).
 
 ## Layouts
 
@@ -150,8 +163,9 @@ report) and `nanoflash-error` (the error). Style it with `--nanoflash-button-bac
 ## Bundlers
 
 The WebAssembly modules ship in `dist/wasm` and are loaded relative to the module that imports
-them (`new URL("...wasm", import.meta.url)`). Each protocol (`espressif`, `samba`) is a separate
-dynamic import, so a bundler loads only the module of the board that is flashed. If your bundler
+them (`new URL("...wasm", import.meta.url)`). Each module (`espressif`, `samba`, and `avr` for
+the three AVR protocols) is a separate dynamic import, so a bundler loads only the module of the
+board that is flashed. If your bundler
 does not copy `.wasm` files it finds this way, copy `node_modules/nanoflash/dist/wasm` next to the
 chunk.
 

@@ -1,4 +1,4 @@
-import { assertUsable, guard, loadBackend } from "./backend.js";
+import { assertUsable, guard, loadBackend, moduleOf } from "./backend.js";
 import { camelize, isRecord } from "./convert.js";
 import { NanoflashError } from "./errors.js";
 import type {
@@ -11,7 +11,22 @@ import type {
   SerialPortLike,
 } from "./types.js";
 
-const PROTOCOLS: readonly string[] = ["espressif", "samba"];
+const PROTOCOLS: readonly Protocol[] = ["espressif", "samba", "stk500v1", "stk500v2", "avr109"];
+
+/** The other names a manifest may give a protocol, as Arduino's `boards.txt` does. */
+const ALIASES: Readonly<Record<string, Protocol>> = { arduino: "stk500v1", wiring: "stk500v2" };
+
+/** The protocol `value` names in a manifest, if it names one. */
+function protocolNamed(value: unknown): Protocol | undefined {
+  if (typeof value !== "string") return undefined;
+  if (Object.hasOwn(ALIASES, value)) return ALIASES[value];
+  return PROTOCOLS.find((protocol) => protocol === value);
+}
+
+/** The key of the module of `protocol` in the trap bookkeeping of `backend.ts`. */
+function moduleKey(protocol: Protocol): string {
+  return moduleOf(protocol) ?? protocol;
+}
 
 /** A manifest read, and what a browser needs to flash it. */
 export interface Prepared {
@@ -124,20 +139,20 @@ function read(value: unknown): Reading {
   for (const board of value["board"] as unknown[]) {
     if (!isRecord(board)) throw manifestError('every "board" of the manifest must be a table');
     const identifier = board["identifier"];
-    const protocol = board["protocol"];
     if (typeof identifier !== "string") throw manifestError('every board needs an "identifier"');
-    if (typeof protocol !== "string" || !PROTOCOLS.includes(protocol)) {
+    const protocol = protocolNamed(board["protocol"]);
+    if (protocol === undefined) {
       throw manifestError(
-        `the protocol of the board "${identifier}" must be "espressif" or "samba", found ${JSON.stringify(protocol)}`,
+        `the protocol of the board "${identifier}" must be "espressif", "samba", "stk500v1", "stk500v2" or "avr109", found ${JSON.stringify(board["protocol"])}`,
       );
     }
-    if (!protocols.includes(protocol as Protocol)) protocols.push(protocol as Protocol);
+    if (!protocols.includes(protocol)) protocols.push(protocol);
     const own = parseDevices(identifier, "application-devices", board["application-devices"]);
     const boot = parseDevices(identifier, "bootloader-devices", board["bootloader-devices"]);
     const reset = board["reset"];
     boards.push({
       identifier,
-      protocol: protocol as Protocol,
+      protocol,
       devices: [...own, ...boot],
       suitsBridge:
         own.length + boot.length === 0 &&
@@ -273,9 +288,10 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
     throw manifestError(`the browser reads JSON manifests only; convert ${url.href} to JSON (same keys)`);
   }
   const reading = read(parsed);
-  if (reading.protocols.length === 1 && reading.protocols[0] !== undefined) {
-    // Warm up the module while the user decides; a failure shows when it is needed.
-    loadBackend(reading.protocols[0]).catch(() => undefined);
+  const [first, ...others] = reading.protocols;
+  if (first !== undefined && others.every((protocol) => moduleOf(protocol) === moduleOf(first))) {
+    // Warm up the only module while the user decides; a failure shows when it is needed.
+    loadBackend(first).catch(() => undefined);
   }
 
   // The protocol known before the port: the one of the named board, or the only one.
@@ -294,12 +310,12 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
     promptErase: reading.promptErase,
     async flash(options: FlashOptions = {}): Promise<FlashReport> {
       const known = knownProtocol(options.boardIdentifier);
-      if (known !== undefined) assertUsable(known);
+      if (known !== undefined) assertUsable(moduleKey(known));
       // The first await: a click handler loses its user activation after others.
       const port = options.port ?? (await requestPort(reading.filters));
       // With several protocols, the USB identity of the port picks the module to load.
       const protocol = known ?? protocolOf(reading, port);
-      assertUsable(protocol);
+      assertUsable(moduleKey(protocol));
       const backend = await loadBackend(protocol);
       const readFile = async (path: string): Promise<Uint8Array> => {
         const file = new URL(path, url);
@@ -314,7 +330,7 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
         }
         return new Uint8Array(await response.arrayBuffer());
       };
-      const report = await guard(protocol, [port], () =>
+      const report = await guard(moduleKey(protocol), [port], () =>
         backend.flash(
           text,
           port,
@@ -339,10 +355,10 @@ export async function detect(options: {
   port?: SerialPortLike;
   onProgress?: (event: ProgressEvent) => void;
 }): Promise<ChipInformation> {
-  assertUsable(options.protocol);
+  assertUsable(moduleKey(options.protocol));
   const port = options.port ?? (await requestPort([]));
   const backend = await loadBackend(options.protocol);
-  const chip = await guard(options.protocol, [port], () =>
+  const chip = await guard(moduleKey(options.protocol), [port], () =>
     backend.detect(port, JSON.stringify({ protocol: options.protocol }), progressHandler(options)),
   );
   return camelize<ChipInformation>(chip);

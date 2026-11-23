@@ -460,6 +460,98 @@ test("the bootloader port must be granted", async () => {
   assert.equal(sketch.port.isOpen, false);
 });
 
+/**
+ * The ports of `flash-leonardo`: the sketch, up to the touch, and Caterina, which the board comes
+ * back as.
+ */
+function leonardo() {
+  const [sketch, bootloader] = transcript("flash-leonardo", "avr").split("! reopen 2341:0036\n");
+  return { sketch: mockPort(sketch), bootloader: mockPort(`! identity 2341:0036\n${bootloader}`) };
+}
+
+test("flashes an Uno from an Intel HEX image", async () => {
+  const { flash } = await loadModule("avr");
+  const { port, finish } = mockPort(transcript("flash-uno", "avr"));
+  const events = [];
+  const report = await flash(
+    repositoryFile(`${TESTS}/boards/uno.json`),
+    port,
+    FLASH_OPTIONS,
+    (path) => boardFile(path),
+    (event) => events.push(event),
+  );
+  assert.equal(report.board, "arduino-uno-r3");
+  assert.equal(report.chip.chip, "atmega328p");
+  assert.equal(report.chip.protocol, "stk500v1");
+  assert.equal(report.chip.writable_to, 0x7e00);
+  assert.equal(report.chip.writable_from, null);
+  assert.equal(report.chip.erases_to_end, false);
+  assert.equal(report.verified, true);
+  assert.deepEqual(
+    report.images.map((image) => [image.label, image.offset, image.size]),
+    [["application", 0, 300]],
+  );
+  assert.ok(events.some((event) => event.stage === "writing"));
+  // The DTR pulse: the transcript checks that DTR is cleared, then set (`setSignals`).
+  finish();
+  assert.deepEqual(port.log, ["open 115200", "close", "open 115200", "close"]);
+  assert.equal(port.isOpen, false);
+});
+
+test("flashes a Leonardo through the touch", async () => {
+  const { flash } = await loadModule("avr");
+  const { sketch, bootloader } = leonardo();
+  restoreNavigator = installNavigator([bootloader.port]);
+  const report = await flash(
+    repositoryFile(`${TESTS}/boards/leonardo.json`),
+    sketch.port,
+    FLASH_OPTIONS,
+    (path) => boardFile(path),
+    () => {},
+  );
+  assert.equal(report.board, "arduino-leonardo");
+  assert.equal(report.chip.chip, "atmega32u4");
+  assert.equal(report.chip.protocol, "avr109");
+  assert.equal(report.chip.writable_to, 0x7000);
+  assert.equal(report.verified, true);
+  // The touch: 1200 baud, then DTR cleared (the transcript checks `setSignals`).
+  sketch.finish();
+  bootloader.finish();
+  assert.deepEqual(sketch.port.log, ["open 115200", "close", "open 1200", "close"]);
+  // Caterina's port is opened at its 57600 baud (a USB port ignores it).
+  assert.deepEqual(bootloader.port.log, ["open 57600", "close"]);
+  assert.equal(sketch.port.isOpen, false);
+  assert.equal(bootloader.port.isOpen, false);
+});
+
+test("a read-back difference is a verification error", async () => {
+  const { flash } = await loadModule("avr");
+  const { port, finish } = mockPort(transcript("flash-uno-read-back", "avr"));
+  const error = await rejection(
+    flash(
+      repositoryFile(`${TESTS}/boards/uno.json`),
+      port,
+      FLASH_OPTIONS,
+      (path) => boardFile(path),
+      () => {},
+    ),
+  );
+  assert.equal(error.kind, "read-back-differs");
+  assert.equal(error.class, "verification");
+  assert.match(error.message, /0x85/);
+  finish();
+  assert.equal(port.isOpen, false);
+});
+
+test("the avr module speaks the three AVR protocols, and only them", async () => {
+  const { detect } = await loadModule("avr");
+  const { port } = mockPort("");
+  const error = await rejection(detect(port, JSON.stringify({ protocol: "samba" }), () => {}));
+  assert.equal(error.kind, "protocol-not-enabled");
+  assert.equal(error.class, "input");
+  assert.equal(port.isOpen, false);
+});
+
 test("checks a layout with the core module", async () => {
   const core = await loadModule("core");
   const { checkLayout, writeLayout } = core;

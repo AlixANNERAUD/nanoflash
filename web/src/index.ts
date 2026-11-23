@@ -13,6 +13,7 @@ export type {
   FlashWarning,
   LayoutFormat,
   LayoutReport,
+  ModuleName,
   PartitionReport,
   ProgressEvent,
   Protocol,

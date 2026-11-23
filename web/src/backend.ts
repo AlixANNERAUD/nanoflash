@@ -1,5 +1,5 @@
 import { NanoflashError, fromWasm, isTrap } from "./errors.js";
-import type { Protocol, SerialPortLike } from "./types.js";
+import type { ModuleName, Protocol, SerialPortLike } from "./types.js";
 
 /** The WebAssembly module of a protocol. */
 export interface BackendModule {
@@ -21,32 +21,45 @@ interface WasmModule extends BackendModule {
   default(): Promise<unknown>;
 }
 
-// Static imports, so that bundlers split each module into a chunk of its own.
-const modules: Partial<Record<Protocol, () => Promise<WasmModule>>> = {
-  espressif: () => import("./wasm/nanoflash_espressif.js"),
-  samba: () => import("./wasm/nanoflash_samba.js"),
+const MODULES: Readonly<Record<Protocol, ModuleName>> = {
+  espressif: "espressif",
+  samba: "samba",
+  stk500v1: "avr",
+  stk500v2: "avr",
+  avr109: "avr",
 };
 
-const cache = new Map<Protocol, Promise<BackendModule>>();
+/** The WebAssembly module that speaks `protocol`: `avr` for the three AVR protocols. */
+export function moduleOf(protocol: Protocol): ModuleName | undefined {
+  return Object.hasOwn(MODULES, protocol) ? MODULES[protocol] : undefined;
+}
 
-// Modules that trapped. An ES module keeps its WebAssembly instance, which cannot be replaced
-// after a trap: every later call fails at once, and the page has to be reloaded.
+// Static imports, so that bundlers split each module into a chunk of its own.
+const modules: Partial<Record<ModuleName, () => Promise<WasmModule>>> = {
+  espressif: () => import("./wasm/nanoflash_espressif.js"),
+  samba: () => import("./wasm/nanoflash_samba.js"),
+  avr: () => import("./wasm/nanoflash_avr.js"),
+};
+
+// By module name, so that the protocols of one module share its instance.
+const cache = new Map<ModuleName, Promise<BackendModule>>();
+
+// Modules that trapped, by module name (or `core`). An ES module keeps its WebAssembly instance,
+// which cannot be replaced after a trap: every later call fails at once, and the page has to be
+// reloaded.
 const broken = new Map<string, NanoflashError>();
 
-/** Throws the error of the module `key` (a protocol, or `core`) if it trapped before. */
+/** Throws the error of the module `key` (a module name, or `core`) if it trapped before. */
 export function assertUsable(key: string): void {
   const error = broken.get(key);
   if (error !== undefined) throw error;
 }
 
-/** Loads and initialises the module of `protocol`, once. */
+/** Loads and initialises the module of `protocol`, once for all the protocols it speaks. */
 export function loadBackend(protocol: Protocol): Promise<BackendModule> {
-  const failure = broken.get(protocol);
-  if (failure !== undefined) return Promise.reject(failure);
-  const cached = cache.get(protocol);
-  if (cached !== undefined) return cached;
-  const load = modules[protocol];
-  if (load === undefined) {
+  const name = moduleOf(protocol);
+  const load = name === undefined ? undefined : modules[name];
+  if (name === undefined || load === undefined) {
     return Promise.reject(
       new NanoflashError(
         "protocol-not-enabled",
@@ -55,6 +68,10 @@ export function loadBackend(protocol: Protocol): Promise<BackendModule> {
       ),
     );
   }
+  const failure = broken.get(name);
+  if (failure !== undefined) return Promise.reject(failure);
+  const cached = cache.get(name);
+  if (cached !== undefined) return cached;
   const promise: Promise<BackendModule> = load()
     .then(async (module) => {
       await module.default();
@@ -62,10 +79,10 @@ export function loadBackend(protocol: Protocol): Promise<BackendModule> {
     })
     .catch((error: unknown) => {
       // Not cached: the next call tries again.
-      if (cache.get(protocol) === promise) cache.delete(protocol);
+      if (cache.get(name) === promise) cache.delete(name);
       throw fromWasm(error);
     });
-  cache.set(protocol, promise);
+  cache.set(name, promise);
   return promise;
 }
 

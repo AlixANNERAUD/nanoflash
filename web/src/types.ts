@@ -1,5 +1,11 @@
-/** A flashing protocol, each spoken by a WebAssembly module of its own. */
-export type Protocol = "espressif" | "samba";
+/**
+ * A flashing protocol. Each is spoken by a WebAssembly module of its own, except the three AVR
+ * protocols (`stk500v1`, `stk500v2` and `avr109`), which share the `avr` module.
+ */
+export type Protocol = "espressif" | "samba" | "stk500v1" | "stk500v2" | "avr109";
+
+/** A WebAssembly module that flashes: the one of each protocol, `avr` for the AVR protocols. */
+export type ModuleName = "espressif" | "samba" | "avr";
 
 /** What the package needs from a Web Serial `SerialPort` (a mock fits as well). */
 export interface SerialPortLike {

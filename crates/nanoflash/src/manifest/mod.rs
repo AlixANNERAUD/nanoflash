@@ -656,6 +656,29 @@ sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
     }
 
     #[test]
+    fn the_json_test_boards_are_their_toml_twins() {
+        for (toml, json) in [
+            (
+                include_str!("../../tests/boards/nano33ble.toml"),
+                include_str!("../../tests/boards/nano33ble.json"),
+            ),
+            (
+                include_str!("../../tests/boards/uno.toml"),
+                include_str!("../../tests/boards/uno.json"),
+            ),
+            (
+                include_str!("../../tests/boards/leonardo.toml"),
+                include_str!("../../tests/boards/leonardo.json"),
+            ),
+        ] {
+            assert_eq!(
+                Manifest::parse(json).unwrap(),
+                Manifest::parse(toml).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn image_needs_exactly_one_target() {
         for image in [
             "partition = \"a\"\noffset = 4096\npath = \"x.bin\"",

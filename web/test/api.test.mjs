@@ -344,6 +344,81 @@ test("loads the samba backend", async () => {
   assert.notStrictEqual(backend, await loadBackend("espressif"));
 });
 
+test("the AVR protocols share one module", async () => {
+  // Before any other test of this file loads the avr module.
+  const loads = [loadBackend("stk500v1"), loadBackend("stk500v2"), loadBackend("avr109")];
+  assert.strictEqual(loads[1], loads[0]);
+  assert.strictEqual(loads[2], loads[0]);
+  const [stk500v1, stk500v2, avr109] = await Promise.all(loads);
+  assert.strictEqual(stk500v2, stk500v1);
+  assert.strictEqual(avr109, stk500v1);
+  assert.equal(typeof stk500v1.flash, "function");
+  assert.notStrictEqual(stk500v1, await loadBackend("samba"));
+  // The import ran once: one fetch of its WebAssembly.
+  const fetched = fetchRecord.urls.filter((url) => url.endsWith("/nanoflash_avr_bg.wasm"));
+  assert.equal(fetched.length, 1, fetchRecord.urls.join("\n"));
+});
+
+test("prepares an AVR manifest, the arduino and wiring aliases too", async () => {
+  const prepared = await prepare(`${BASE}/uno.json`);
+  assert.deepEqual(prepared.protocols, ["stk500v1"]);
+  assert.equal(prepared.filters.length, 5);
+  assert.deepEqual(prepared.filters[0], { usbVendorId: 0x2341, usbProductId: 0x0043 });
+  assert.deepEqual(prepared.bootloaderFilters, []);
+  const manifest = {
+    board: [
+      { identifier: "nano", protocol: "arduino", chip: "atmega328p", image: [] },
+      { identifier: "mega", protocol: "wiring", chip: "atmega2560", image: [] },
+    ],
+  };
+  const served = globalThis.fetch;
+  globalThis.fetch = async (input) =>
+    String(input) === `${BASE}/aliases.json` ? new Response(JSON.stringify(manifest)) : served(input);
+  assert.deepEqual((await prepare(`${BASE}/aliases.json`)).protocols, ["stk500v1", "stk500v2"]);
+});
+
+test("an unknown protocol names the five", async () => {
+  const manifest = { board: [{ identifier: "b", protocol: "uf2", chip: "rp2040", image: [] }] };
+  const served = globalThis.fetch;
+  globalThis.fetch = async (input) =>
+    String(input) === `${BASE}/uf2.json` ? new Response(JSON.stringify(manifest)) : served(input);
+  const error = await rejection(prepare(`${BASE}/uf2.json`));
+  assert.equal(error.kind, "manifest");
+  assert.match(error.message, /"espressif", "samba", "stk500v1", "stk500v2" or "avr109", found "uf2"/);
+});
+
+test("flashes an Uno and reports where its bootloader starts", async () => {
+  const { port, finish } = mockPort(transcript("flash-uno", "avr"));
+  restoreNavigator = installNavigator([port]);
+  const report = await flash(`${BASE}/uno.json`);
+  assert.equal(report.board, "arduino-uno-r3");
+  assert.equal(report.chip.protocol, "stk500v1");
+  assert.equal(report.chip.writableTo, 0x7e00);
+  assert.equal(report.chip.writableFrom, null);
+  assert.equal(report.verified, true);
+  finish();
+});
+
+test("a read-back difference keeps its verification class", async () => {
+  const { port } = mockPort(transcript("flash-uno-read-back", "avr"));
+  restoreNavigator = installNavigator([port]);
+  const error = await rejection(flash(`${BASE}/uno.json`));
+  assert.ok(error instanceof NanoflashError);
+  assert.equal(error.kind, "read-back-differs");
+  assert.equal(error.errorClass, "verification");
+  assert.equal(error.details.offset, 0x85);
+  assert.equal(port.isOpen, false);
+});
+
+test("detects an AVR chip by its protocol", async () => {
+  const { port, finish } = mockPort(transcript("detect-uno", "avr"));
+  const chip = await detect({ protocol: "stk500v1", port });
+  assert.equal(chip.chip, "atmega328p");
+  assert.equal(chip.protocol, "stk500v1");
+  assert.equal(chip.writableTo, 0x7e00);
+  finish();
+});
+
 test("checks a layout", async () => {
   const text = repositoryFile(`${TESTS}/layouts/esp32-s3-8mb.toml`);
   const report = await checkLayout(text);
@@ -452,6 +527,28 @@ test("a trap breaks the module: the port is closed and later calls fail fast", a
     const flashAgain = await rejection(flash(`${BASE}/esp32-s3-usb.json`, { port: untouched }));
     assert.strictEqual(flashAgain, error);
     assert.equal(calls, 1);
+  } finally {
+    backend.detect = original;
+  }
+});
+
+// At the end: the module it breaks stays broken.
+test("a trap under one AVR protocol breaks the module for the other two", async () => {
+  const backend = await loadBackend("stk500v1");
+  const original = backend.detect;
+  backend.detect = async () => {
+    throw new WebAssembly.RuntimeError("unreachable");
+  };
+  try {
+    const port = { close: async () => {} };
+    const error = await rejection(detect({ protocol: "stk500v1", port }));
+    assert.equal(error.kind, "module-broken");
+    assert.match(error.message, /"avr"/);
+    const untouched = { close: async () => assert.fail("the port must not be touched") };
+    assert.strictEqual(await rejection(detect({ protocol: "avr109", port: untouched })), error);
+    assert.strictEqual(await rejection(loadBackend("stk500v2")), error);
+    // The other modules are not affected.
+    assert.equal(typeof (await loadBackend("samba")).flash, "function");
   } finally {
     backend.detect = original;
   }

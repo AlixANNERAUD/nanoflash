@@ -228,6 +228,53 @@ test("asks for the Nano 33 BLE bootloader port", async () => {
   assert.match(part("message").textContent, /^Done: arduino-nano-33-ble was written and restarted\.$/);
 });
 
+test("asks for the Leonardo bootloader port", async () => {
+  // Waits the 15 s the backend gives Caterina to appear before it says the page has no
+  // permission for it.
+  const [before, after] = transcript("flash-leonardo", "avr").split("! reopen 2341:0036\n");
+  const sketch = mockPort(before);
+  const bootloader = mockPort(`! identity 2341:0036\n${after}`);
+  const requested = [];
+  restoreNavigator = installNavigator([], {
+    onRequestPort: (options) => {
+      requested.push(options);
+      return requested.length === 1 ? sketch.port : bootloader.port;
+    },
+  });
+  mount("leonardo.json");
+  await waitFor("ready");
+  part("button").click();
+  await waitFor("bootloader-permission", 30000);
+  sketch.finish();
+  assert.match(part("message").textContent, /2341:0036/);
+  assert.equal(part("bootloader-button").hidden, false);
+  part("bootloader-button").click();
+  await waitFor("done");
+  bootloader.finish();
+  assert.deepEqual(requested[1], {
+    filters: [
+      { usbVendorId: 0x2341, usbProductId: 0x0036 },
+      { usbVendorId: 0x2a03, usbProductId: 0x0036 },
+    ],
+  });
+  // Caterina's port is flashed as it is: opened once, no touch.
+  assert.deepEqual(bootloader.port.log, ["open 115200", "close"]);
+  assert.match(part("message").textContent, /^Done: arduino-leonardo was written and restarted\.$/);
+});
+
+test("flashes an Uno through its DTR reset", async () => {
+  const { port, finish } = mockPort(transcript("flash-uno", "avr"));
+  restoreNavigator = installNavigator([port], { onRequestPort: () => port });
+  mount("uno.json");
+  await waitFor("ready");
+  part("button").click();
+  await waitFor("done");
+  // The transcript checks that DTR is cleared, then set (`setSignals`).
+  finish();
+  assert.deepEqual(port.log, ["open 115200", "close", "open 115200", "close"]);
+  assert.match(part("message").textContent, /^Done: arduino-uno-r3 was written and restarted\.$/);
+});
+
 test("asks for any port when the manifest names no bootloader device", async () => {
   const lost = mockPort(transcript("connect-reopen"));
   const requested = [];

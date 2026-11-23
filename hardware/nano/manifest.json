@@ -1,0 +1,12 @@
+{
+  "board": [
+    {
+      "identifier": "arduino-nano",
+      "name": "Arduino Nano",
+      "protocol": "stk500v1",
+      "chip": "atmega328p",
+      "layout": "layout.toml",
+      "image": [{ "partition": "application", "path": "firmware/avr-hello.ino.hex" }]
+    }
+  ]
+}
