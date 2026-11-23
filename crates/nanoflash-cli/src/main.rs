@@ -193,7 +193,7 @@ fn main() -> ExitCode {
     let raw: Vec<OsString> = std::env::args_os().collect();
     let arguments = match Arguments::from_args_os() {
         Ok(arguments) => arguments,
-        Err(error) => return argument_error(&error, &raw),
+        Err(error) => return argument_error(error, &raw),
     };
     let (json, result) = run(arguments.command);
     match result {
@@ -298,8 +298,8 @@ fn emit(destination: &mut impl Write, text: &str, code: u8) -> ExitCode {
 }
 
 /// Report an argument error: help and version succeed, anything else exits 1, as JSON when
-/// `--json` was given.
-fn argument_error(error: &ArgumentError<'_>, raw: &[OsString]) -> ExitCode {
+/// `--json` was given. The JSON message is the bare error, without the usage text.
+fn argument_error(error: ArgumentError<'_>, raw: &[OsString]) -> ExitCode {
     if error.is_help() || error.is_version() {
         return emit(&mut io::stdout().lock(), &format!("{error}\n"), 0);
     }
@@ -307,6 +307,8 @@ fn argument_error(error: &ArgumentError<'_>, raw: &[OsString]) -> ExitCode {
         let message = error.to_string().trim_end().to_string();
         emit(&mut io::stdout().lock(), &Failure::Input(message).json(), 1)
     } else {
-        emit(&mut io::stderr().lock(), &format!("error: {error}\n"), 1)
+        // Subcommand errors carry the usage of the top-level command, the most specific one.
+        let report = error.with_usage(Arguments::USAGE);
+        emit(&mut io::stderr().lock(), &format!("error: {report}\n"), 1)
     }
 }

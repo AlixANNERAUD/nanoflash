@@ -304,9 +304,9 @@ checksum = "084c6b182b01dec54ff12986b9cc8859a9b0d92b074f878c382a4481a070e66e"
 
 [[package]]
 name = "getargs-derive"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d5fe80644104dbe69fc8006b5eab5124223698754af79000449fc204817a64dc"
+checksum = "72d40e5b13ba7997086bb99e30a34f2a28de65d087aeccb65d7865b7a1984811"
 dependencies = [
  "getargs",
  "getargs-derive-macros",
@@ -314,13 +314,13 @@ dependencies = [
 
 [[package]]
 name = "getargs-derive-macros"
-version = "0.1.0"
+version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f960218163cc35b05de5046d6e877ade645aa3e8edfba08462a02f7d7a260f7e"
+checksum = "deeec9a00bd8dce16b2bd08aa7991fc7f8804cf6fa46e772bfc0ecb748eb2e6c"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.10",
 ]
 
 [[package]]

@@ -40,13 +40,11 @@ run = [
 ]
 
 [tasks.msrv]
-description = "Build the library with its minimum supported Rust version (1.85) and the workspace with the command's (1.88)"
+description = "Build the whole workspace with the minimum supported Rust version (1.85)"
 env.RUSTFLAGS = "-D warnings"
 run = [
-  "mise x rust@1.85 -- cargo build -p nanoflash --locked",
-  "mise x rust@1.85 -- cargo build -p nanoflash --locked --all-features",
-  "mise x rust@1.88 -- cargo build --workspace --locked",
-  "mise x rust@1.88 -- cargo build --workspace --locked --all-features",
+  "mise x rust@1.85 -- cargo build --workspace --locked",
+  "mise x rust@1.85 -- cargo build --workspace --locked --all-features",
 ]
 
 [tasks.cross]

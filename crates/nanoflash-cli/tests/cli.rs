@@ -307,6 +307,43 @@ fn bad_format_exits_1_with_json_when_asked() {
 }
 
 #[test]
+fn bad_format_lists_the_possible_values_and_the_help_hint() {
+    let layout = fixture(ESP32);
+    let arguments = [
+        "layout",
+        "write",
+        path_text(&layout),
+        "--format",
+        "bogus",
+        "--output",
+        "x",
+    ];
+    let output = run(&arguments);
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("[possible values: espressif, mbr, linker, constants]"),
+        "{stderr}"
+    );
+    assert!(stderr.contains("\nUsage: nanoflash"), "{stderr}");
+    assert!(
+        stderr.ends_with("For more information, try '--help'.\n"),
+        "{stderr}"
+    );
+
+    let mut with_json = arguments.to_vec();
+    with_json.push("--json");
+    let output = run(&with_json);
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let message = document["errors"][0]["message"].as_str().unwrap();
+    assert!(message.contains("possible values"), "{message}");
+    assert!(
+        !message.contains("Usage:") && !message.contains("--help"),
+        "{message}"
+    );
+}
+
+#[test]
 fn help_and_version_exit_0() {
     for argument in ["--help", "--version"] {
         let output = run(&[argument]);

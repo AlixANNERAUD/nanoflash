@@ -4,6 +4,7 @@ members = ["crates/*"]
 
 [workspace.package]
 edition = "2024"
+rust-version = "1.85"
 authors = ["Alix ANNERAUD <alix@anneraud.fr>"]
 repository = "https://github.com/AlixANNERAUD/nanoflash"
 license = "MIT OR Apache-2.0"
