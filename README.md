@@ -227,6 +227,22 @@ $ nanoflash image build --board boards/esp32-s3.toml --fill --output flash.bin
 wrote 8388608 bytes to flash.bin
 ```
 
+A board whose layout has `size = "detect"` is checked against the minimum of the layout before
+connecting, image sizes included, then placed again for the flash the chip reports: images and
+erase entries that name a partition follow it, the partition table is generated for that size,
+and nanoflash warns about what grew or moved. Images and erase entries given by offset, Intel HEX
+images and a manifest image of the partition table cannot follow the chip, and are refused when
+they touch a partition that moves or, for the table, when any partition grows or moves. On an
+Espressif board, build the bootloader for the largest flash or with flash size detection: the
+application uses the flash size of the bootloader header.
+
+```console
+$ nanoflash flash --board boards/esp32-s3-detect.toml
+...
+warning: the chip has 0x800000 bytes of flash, more than the minimum of 0x400000 of the layout, so partitions grew: "storage" from 0xe0000 to 0x4e0000 bytes; the bootloader image must be built for this flash size or with flash size detection
+flashed esp32-s3-devkitc-detect (esp32-s3, 8 MiB)
+```
+
 `nanoflash image build` merges the images of a board into one flash image, `0xFF` between
 them, and `nanoflash layout check <layout> --manifest <manifest>` shows the headroom of the
 images a manifest writes.

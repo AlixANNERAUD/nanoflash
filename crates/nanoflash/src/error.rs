@@ -188,6 +188,30 @@ pub enum Error {
         /// The size of the partition.
         partition_size: u64,
     },
+    /// An image replaces the partition table of a layout whose partitions grow or move with the
+    /// flash of the chip: the table nanoflash generates for the chip would be lost.
+    PartitionTableImageForDetectedFlash {
+        /// The partition of the table.
+        partition: String,
+    },
+    /// An input tied to flash offsets (an image or an erase entry given by offset, an Intel HEX
+    /// image) overlaps a partition that moves with the flash of the chip.
+    FixedOffsetOnMovingPartition {
+        /// The input, such as `image "image at 0x3f0000"` or `Intel HEX image "core.hex"`.
+        what: String,
+        /// The offset of its first byte.
+        start: u64,
+        /// Its exclusive end.
+        end: u64,
+        /// The partition it overlaps.
+        partition: String,
+        /// The offset of the partition on that flash.
+        partition_offset: u64,
+        /// The flash size the layout was resolved for.
+        flash_size: u64,
+        /// Whether the input is an Intel HEX image, whose addresses are in its file.
+        intel_hex: bool,
+    },
     /// An image ends after the end of the flash.
     ImageOutsideFlash {
         /// The image.
@@ -458,6 +482,8 @@ impl Error {
             | Error::MisalignedImage { .. }
             | Error::OverlappingImages { .. }
             | Error::ImageTooLarge { .. }
+            | Error::PartitionTableImageForDetectedFlash { .. }
+            | Error::FixedOffsetOnMovingPartition { .. }
             | Error::ImageOutsideFlash { .. }
             | Error::MisalignedErase { .. }
             | Error::EraseOutsideFlash { .. }
@@ -689,6 +715,29 @@ impl fmt::Display for Error {
                 formatter,
                 "the image \"{label}\" of 0x{image_size:x} bytes does not fit in the partition \"{partition}\" of 0x{partition_size:x} bytes: enlarge the partition in the layout or shrink the image"
             ),
+            Error::PartitionTableImageForDetectedFlash { partition } => write!(
+                formatter,
+                "the manifest writes an image to the partition table \"{partition}\", but partitions of the layout grow or move with the flash of the chip, so no fixed table fits every chip: remove the image and let nanoflash generate the table, or give the layout a fixed flash size"
+            ),
+            Error::FixedOffsetOnMovingPartition {
+                what,
+                start,
+                end,
+                partition,
+                partition_offset,
+                flash_size,
+                intel_hex,
+            } => {
+                write!(
+                    formatter,
+                    "the {what} covers 0x{start:x}..0x{end:x}, which overlaps the partition \"{partition}\" at 0x{partition_offset:x} on 0x{flash_size:x} bytes of flash, but \"{partition}\" moves with the flash of the chip: "
+                )?;
+                formatter.write_str(if *intel_hex {
+                    "give the partition a binary image (.bin), targeted by name"
+                } else {
+                    "target the partition by name in the manifest"
+                })
+            }
             Error::ImageOutsideFlash {
                 label,
                 end,

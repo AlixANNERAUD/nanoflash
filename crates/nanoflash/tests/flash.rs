@@ -5,7 +5,8 @@ use std::path::Path;
 
 use nanoflash::Error;
 use nanoflash::backend::{BackendOptions, Progress, ProgressEvent, Stage};
-use nanoflash::flash::{FlashOptions, Hooks, detect, flash};
+use nanoflash::flash::{FlashOptions, Hooks, Warning, detect, flash};
+use nanoflash::layout::GrownPartition;
 use nanoflash::manifest::{EraseTarget, Manifest, Protocol};
 use nanoflash::testing::{MemorySource, ReplayProvider, Transcript, replay};
 use pollster::block_on;
@@ -33,6 +34,7 @@ fn fixture_source() -> MemorySource {
     let mut files = BTreeMap::new();
     for path in [
         "../layouts/esp32-s3-8mb.toml",
+        "../layouts/esp32-s3-detect.toml",
         "../images/bootloader.bin",
         "../images/application.bin",
     ] {
@@ -193,6 +195,88 @@ fn layout_larger_than_flash_stops_before_writing() {
         &manifest(),
         &transcript("flash-too-small"),
         &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Error::FlashTooSmall {
+            layout: 8 * MEBIBYTE,
+            detected: 4 * MEBIBYTE,
+        }
+    );
+    provider.finish().unwrap();
+    assert_eq!(progress.stages, [Stage::Connecting, Stage::Resetting]);
+}
+
+/// The fixture board on the layout that takes its flash size from the chip.
+fn detect_manifest() -> Manifest {
+    Manifest::from_json(core::str::from_utf8(&fixture("boards/esp32-s3-detect.json")).unwrap())
+        .unwrap()
+}
+
+#[test]
+fn flashes_a_detect_layout_for_the_flash_of_the_chip() {
+    // The chip reports 8 MiB: the table generated for it is the one of the 8 MiB layout, so the
+    // transcript of the fixture board replays unchanged.
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(
+        &detect_manifest(),
+        &transcript("flash-esp32s3-usb"),
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    let report = result.unwrap();
+    provider.finish().unwrap();
+    assert_eq!(report.board, "esp32-s3-devkitc-detect");
+    let images: Vec<(&str, u64, u64)> = report
+        .images
+        .iter()
+        .map(|image| (image.label.as_str(), image.offset, image.size))
+        .collect();
+    assert_eq!(
+        images,
+        [
+            ("bootloader", 0x0, 4096),
+            ("partition-table", 0x8000, 0xC00),
+            ("application", 0x20000, 8192),
+        ]
+    );
+    let grew = Warning::PartitionsGrew {
+        flash_size: 8 * MEBIBYTE,
+        minimum_flash_size: 4 * MEBIBYTE,
+        partitions: vec![GrownPartition {
+            name: "storage".into(),
+            size_at_minimum: 0xE_0000,
+            size: 0x4E_0000,
+        }],
+        protocol: Protocol::Espressif,
+    };
+    assert_eq!(report.warnings, std::slice::from_ref(&grew));
+    assert!(
+        progress.messages.contains(&grew.to_string()),
+        "{:?}",
+        progress.messages
+    );
+    assert!(report.verified);
+}
+
+#[test]
+fn a_chip_below_the_minimum_stops_before_writing() {
+    let mut source = fixture_source();
+    let layout = String::from_utf8(fixture("layouts/esp32-s3-detect.toml"))
+        .unwrap()
+        .replace("minimum = \"4 MiB\"", "minimum = \"8 MiB\"");
+    source.files.insert(
+        "../layouts/esp32-s3-detect.toml".into(),
+        layout.into_bytes(),
+    );
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(
+        &detect_manifest(),
+        &transcript("flash-too-small"),
+        &mut source,
         &FlashOptions::default(),
         &mut progress,
     );

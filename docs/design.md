@@ -329,7 +329,43 @@ and resets into the application.
 - It writes exactly the images the manifest lists, plus the partition table generated from the
   layout when the layout has a `partition-table` partition and no manifest image targets it. A
   manifest image targeting that partition wins, and `layout check` warns when it differs from the
-  generated table.
+  generated table; in a `detect` layout where partitions grow or move with the flash, such an
+  image is refused (`partition-table-image-for-detected-flash`): no fixed table fits every chip.
+- *Resolution at connect.* Before connecting, a `detect` layout is resolved for its minimum and
+  every input is checked against it, image sizes included: an image larger than its partition on
+  the minimum is refused, even for a chip with more flash. Every prepared image remembers how it
+  was placed (by partition, by offset, or the generated table), and every erase entry the
+  partition it names. Right after `connect`, before any check against the chip and any erase,
+  the layout is resolved again for the flash the chip reports (R10): a chip below the minimum
+  fails with `flash-too-small`; a chip that reports no size (secure download mode, an unknown
+  flash identifier) keeps the minimum with a `flash-size-not-detected` warning; a chip of exactly
+  the minimum changes nothing; a larger chip moves the images and erase entries that name a
+  partition to where it now is, generates the partition table again for that size, and runs the
+  checks of the plan again. Then come the checks against the chip (`writable_from`,
+  `writable_to`, erases to the end of flash) and the backend's `check_plan`, on the new places.
+- *Inputs tied to an offset* (R9). An image or an erase entry given by offset, and an Intel HEX
+  image (its addresses are in the file, even when the manifest names its partition), may not
+  overlap a partition that moves with the flash (`fixed-offset-on-moving-partition`): it would
+  stay where the partition was on the minimum. This is checked before connecting against the
+  minimum, and again after resolving for the chip, since a partition that moves by a whole step
+  can cover what was the unallocated end of the flash on the minimum. Images and erase entries
+  that name a partition follow it.
+- *Warnings of a `detect` layout.* `partitions-grew` names each partition larger than on the
+  minimum, with both sizes; on the Espressif protocol it adds that the bootloader image must be
+  built for that flash size or with flash size detection, since ESP-IDF applications use the
+  flash size of the bootloader header, which nanoflash does not patch. `partitions-moved` names
+  each partition that starts elsewhere than on the minimum, whose data written by a firmware for
+  another flash size is not where the layout now puts it. `flash-size-not-detected` says the
+  minimum was kept. Each is also sent as a progress message when it happens. The report lists the
+  warnings of preparing the images, then these, then `erases-to-end`, then
+  `not-verified-in-secure-download-mode`.
+- *The bootloaders and a `detect` layout.* The layout describes the whole flash the chip
+  reports. On AVR that size includes the bootloader at the top, so a partition that grows to the
+  end of the flash covers it: an erase entry or an image that reaches into it is refused by the
+  `writable_to` check, before any erase. On the SAMD21, erase entries must end at the end of
+  flash: a partition that grows in steps or up to a `maximum` may stop short of it on a larger
+  chip, and an erase entry for it is then refused before any erase; a lone `remaining` at the end
+  of the layout fills to the end of the flash on every chip.
 - It erases only the regions it writes (rounded to the erase unit), except on the SAMD21 (see
   below). `--erase-all` (and `eraseAll: true` in the JavaScript API) erases the flash first, from
   the lowest offset the bootloader writes (`writable_from`, which `connect` reports) to the end:

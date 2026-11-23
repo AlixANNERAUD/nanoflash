@@ -12,7 +12,7 @@ use super::intel_hex::{IntelHexError, decode_intel_hex, is_eeprom_image, is_inte
 use super::{ImageSource, ImageVerifier};
 use crate::backend::Region;
 use crate::error::Error;
-use crate::layout::{Layout, ResolvedLayout, Role};
+use crate::layout::{GrownPartition, Layout, LayoutChanges, MovedPartition, ResolvedLayout, Role};
 use crate::manifest::{Board, EraseTarget, ImageTarget, Manifest, Protocol};
 use crate::table::espressif::{TABLE_SIZE, write};
 
@@ -48,6 +48,19 @@ pub struct PreparedImage {
     pub offset: u64,
     /// Its bytes.
     pub bytes: Vec<u8>,
+    /// How the offset was chosen, which says whether it follows the flash of the chip.
+    pub placement: ImagePlacement,
+}
+
+/// How the offset of an image was chosen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImagePlacement {
+    /// The manifest names its partition: it goes where the partition is on the chip.
+    Partition,
+    /// The manifest gives its offset: it stays there.
+    Offset,
+    /// The partition table generated from the layout: generated again for the chip.
+    GeneratedTable,
 }
 
 /// Something the user may want to know, which does not stop the flash.
@@ -81,6 +94,47 @@ pub enum Warning {
         /// The partitions of the layout in that range that no image is written to.
         partitions: Vec<String>,
     },
+    /// The chip has more flash than the minimum of a `detect` layout: the partitions that grow
+    /// with the flash are larger than on the minimum.
+    PartitionsGrew {
+        /// The flash size the chip reported.
+        flash_size: u64,
+        /// The minimum flash size of the layout.
+        minimum_flash_size: u64,
+        /// The partitions that grew, in file order.
+        partitions: Vec<GrownPartition>,
+        /// The protocol of the board: the Espressif bootloader reads a flash size of its own.
+        protocol: Protocol,
+    },
+    /// The chip has more flash than the minimum of a `detect` layout: the partitions that move
+    /// with the flash start elsewhere than on the minimum.
+    PartitionsMoved {
+        /// The flash size the chip reported.
+        flash_size: u64,
+        /// The minimum flash size of the layout.
+        minimum_flash_size: u64,
+        /// The partitions that moved, in file order.
+        partitions: Vec<MovedPartition>,
+    },
+    /// The chip did not report its flash size: a `detect` layout stays resolved for its minimum.
+    FlashSizeNotDetected {
+        /// The minimum flash size of the layout.
+        minimum_flash_size: u64,
+    },
+}
+
+/// Writes each item, after `first` for the first and after `, ` for the others.
+fn write_list<T>(
+    formatter: &mut fmt::Formatter<'_>,
+    items: &[T],
+    first: &str,
+    mut item: impl FnMut(&mut fmt::Formatter<'_>, &T) -> fmt::Result,
+) -> fmt::Result {
+    for (index, value) in items.iter().enumerate() {
+        formatter.write_str(if index == 0 { first } else { ", " })?;
+        item(formatter, value)?;
+    }
+    Ok(())
 }
 
 impl fmt::Display for Warning {
@@ -106,16 +160,61 @@ impl fmt::Display for Warning {
                     formatter,
                     "the bootloader erased the flash from 0x{from:x} to its end at 0x{to:x} before writing, so what was stored there besides the images is gone"
                 )?;
-                for (index, partition) in partitions.iter().enumerate() {
-                    let before = if index == 0 {
-                        ", including the partitions "
-                    } else {
-                        ", "
-                    };
-                    write!(formatter, "{before}\"{partition}\"")?;
+                write_list(
+                    formatter,
+                    partitions,
+                    ", including the partitions ",
+                    |formatter, partition| write!(formatter, "\"{partition}\""),
+                )
+            }
+            Warning::PartitionsGrew {
+                flash_size,
+                minimum_flash_size,
+                partitions,
+                protocol,
+            } => {
+                write!(
+                    formatter,
+                    "the chip has 0x{flash_size:x} bytes of flash, more than the minimum of 0x{minimum_flash_size:x} of the layout, so partitions grew"
+                )?;
+                write_list(formatter, partitions, ": ", |formatter, partition| {
+                    write!(
+                        formatter,
+                        "\"{}\" from 0x{:x} to 0x{:x} bytes",
+                        partition.name, partition.size_at_minimum, partition.size
+                    )
+                })?;
+                if *protocol == Protocol::Espressif {
+                    formatter.write_str(
+                        "; the bootloader image must be built for this flash size or with flash size detection",
+                    )?;
                 }
                 Ok(())
             }
+            Warning::PartitionsMoved {
+                flash_size,
+                minimum_flash_size,
+                partitions,
+            } => {
+                write!(
+                    formatter,
+                    "on the 0x{flash_size:x} bytes of flash of the chip, partitions start elsewhere than on the minimum of 0x{minimum_flash_size:x}"
+                )?;
+                write_list(formatter, partitions, ": ", |formatter, partition| {
+                    write!(
+                        formatter,
+                        "\"{}\" at 0x{:x} instead of 0x{:x}",
+                        partition.name, partition.offset, partition.offset_at_minimum
+                    )
+                })?;
+                formatter.write_str(
+                    "; data stored there by a firmware for another flash size is not where the layout now puts it",
+                )
+            }
+            Warning::FlashSizeNotDetected { minimum_flash_size } => write!(
+                formatter,
+                "the chip did not report its flash size, so the layout was resolved for its minimum of 0x{minimum_flash_size:x} bytes: the partitions that grow with the flash have their smallest size"
+            ),
         }
     }
 }
@@ -125,6 +224,9 @@ impl fmt::Display for Warning {
 pub struct PreparedErase {
     /// The name for messages: the partition, or `region at 0x<offset>`.
     pub label: String,
+    /// The partition the manifest names, which the region follows on the chip; `None` for a
+    /// region given by offset.
+    pub partition: Option<String>,
     /// The region.
     pub region: Region,
 }
@@ -132,8 +234,11 @@ pub struct PreparedErase {
 /// What a board flashes, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
-    /// The resolved layout of the board, when it has one.
+    /// The resolved layout of the board, when it has one: for its minimum flash size, or for
+    /// the flash of the chip once resolved again.
     pub layout: Option<ResolvedLayout>,
+    /// The layout as written, to resolve again for the flash of the chip.
+    pub definition: Option<Layout>,
     /// The images, sorted as the manifest lists them, the generated table by its offset.
     pub images: Vec<PreparedImage>,
     /// The regions to erase first.
@@ -153,6 +258,7 @@ enum Origin<'a> {
 struct Placement<'a> {
     label: String,
     partition: Option<String>,
+    placement: ImagePlacement,
     offset: u64,
     /// The size of the partition the image is meant for.
     partition_size: Option<u64>,
@@ -190,10 +296,12 @@ fn hexadecimal(bytes: &[u8]) -> String {
     text
 }
 
+/// The layout of the board as written, and resolved for its flash size (the minimum of a
+/// `detect` layout).
 async fn read_layout<S: ImageSource>(
     board: &Board,
     source: &mut S,
-) -> Result<Option<ResolvedLayout>, Error> {
+) -> Result<Option<(Layout, ResolvedLayout)>, Error> {
     let Some(path) = &board.layout else {
         return Ok(None);
     };
@@ -205,9 +313,14 @@ async fn read_layout<S: ImageSource>(
     let text = core::str::from_utf8(&bytes)
         .map_err(|error| file_error(format!("the file is not UTF-8 text: {error}")))?;
     let layout = Layout::from_toml(text).map_err(|error| file_error(error.message))?;
+    let resolved = resolve(&layout, None)?;
+    Ok(Some((layout, resolved)))
+}
+
+/// Resolves `layout` for `flash_size`, or for its own flash size.
+fn resolve(layout: &Layout, flash_size: Option<u64>) -> Result<ResolvedLayout, Error> {
     layout
-        .resolve()
-        .map(Some)
+        .resolve_for(flash_size)
         .map_err(|errors| Error::Layout { errors: errors.0 })
 }
 
@@ -308,6 +421,81 @@ fn check_plan(
     Ok(())
 }
 
+/// An input tied to flash offsets: an image or an erase entry given by offset, or an Intel HEX
+/// image, whose addresses are in its file.
+struct FixedSpan {
+    what: String,
+    start: u64,
+    end: u64,
+    intel_hex: bool,
+}
+
+/// The inputs of `board` tied to flash offsets, among the prepared `images` and `erase` entries.
+///
+/// An Intel HEX image is found by its target in the manifest: no two images share an offset, nor
+/// a partition, once `check_plan` accepted them.
+fn fixed_spans(board: &Board, images: &[PreparedImage], erase: &[PreparedErase]) -> Vec<FixedSpan> {
+    let mut spans = Vec::new();
+    for image in images {
+        let target = |target: &ImageTarget| match (image.placement, target) {
+            (ImagePlacement::Partition, ImageTarget::Partition(name)) => {
+                image.partition.as_deref() == Some(name.as_str())
+            }
+            (ImagePlacement::Offset, ImageTarget::Offset(offset)) => image.offset == *offset,
+            _ => false,
+        };
+        let hex = board
+            .images
+            .iter()
+            .find(|manifest| target(&manifest.target) && is_intel_hex(&manifest.path));
+        let what = match (hex, image.placement) {
+            (Some(manifest), _) => format!("Intel HEX image \"{}\"", manifest.path),
+            (None, ImagePlacement::Offset) => format!("image \"{}\"", image.label),
+            (None, _) => continue,
+        };
+        let size = u64::try_from(image.bytes.len()).unwrap_or(u64::MAX);
+        spans.push(FixedSpan {
+            what,
+            start: image.offset,
+            end: image.offset.saturating_add(size),
+            intel_hex: hex.is_some(),
+        });
+    }
+    for entry in erase.iter().filter(|entry| entry.partition.is_none()) {
+        spans.push(FixedSpan {
+            what: format!("erase entry \"{}\"", entry.label),
+            start: entry.region.offset,
+            end: entry.region.offset.saturating_add(entry.region.size),
+            intel_hex: false,
+        });
+    }
+    spans
+}
+
+/// Refuses the first input tied to flash offsets that overlaps a partition of `layout` moving
+/// with the flash: on another chip, the partition would be elsewhere and the input would not.
+fn check_fixed_spans(layout: &ResolvedLayout, spans: &[FixedSpan]) -> Result<(), Error> {
+    for span in spans {
+        let moving = layout.partitions.iter().find(|partition| {
+            partition.moves_with_flash
+                && span.start < partition.end()
+                && partition.offset < span.end
+        });
+        if let Some(partition) = moving {
+            return Err(Error::FixedOffsetOnMovingPartition {
+                what: span.what.clone(),
+                start: span.start,
+                end: span.end,
+                partition: partition.definition.name.clone(),
+                partition_offset: partition.offset,
+                flash_size: layout.flash.size,
+                intel_hex: span.intel_hex,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Checks that an erase entry starts and ends on the erase unit, inside what the protocol can
 /// address and inside the flash of the layout.
 fn check_erase(
@@ -368,7 +556,10 @@ pub async fn prepare<S: ImageSource>(
             board: board.identifier.clone(),
         });
     }
-    let layout = read_layout(board, source).await?;
+    let (definition, layout) = match read_layout(board, source).await? {
+        Some((definition, layout)) => (Some(definition), Some(layout)),
+        None => (None, None),
+    };
 
     let mut placements: Vec<Placement<'_>> = Vec::new();
     for image in &board.images {
@@ -379,6 +570,7 @@ pub async fn prepare<S: ImageSource>(
                 Placement {
                     label: name.clone(),
                     partition: Some(name.clone()),
+                    placement: ImagePlacement::Partition,
                     offset: partition.offset,
                     partition_size: Some(partition.size),
                     origin,
@@ -394,6 +586,7 @@ pub async fn prepare<S: ImageSource>(
                 Placement {
                     label: format!("image at 0x{offset:x}"),
                     partition: partition.map(|partition| partition.definition.name.clone()),
+                    placement: ImagePlacement::Offset,
                     offset: *offset,
                     partition_size: partition.map(|partition| partition.size),
                     origin,
@@ -442,6 +635,7 @@ pub async fn prepare<S: ImageSource>(
                     Placement {
                         label: name.clone(),
                         partition: Some(name),
+                        placement: ImagePlacement::GeneratedTable,
                         offset: table.offset,
                         partition_size: Some(table.size),
                         origin: Origin::Generated(generated),
@@ -534,6 +728,7 @@ pub async fn prepare<S: ImageSource>(
             partition: placement.partition,
             offset: placement.offset,
             bytes,
+            placement: placement.placement,
         });
     }
 
@@ -544,6 +739,7 @@ pub async fn prepare<S: ImageSource>(
         let entry = match target {
             EraseTarget::Region { offset, size } => PreparedErase {
                 label: format!("region at 0x{offset:x}"),
+                partition: None,
                 region: Region {
                     offset: *offset,
                     size: *size,
@@ -553,6 +749,7 @@ pub async fn prepare<S: ImageSource>(
                 let partition = find_partition(need_layout(&layout, board, name)?, board, name)?;
                 PreparedErase {
                     label: name.clone(),
+                    partition: Some(name.clone()),
                     region: Region {
                         offset: partition.offset,
                         size: partition.size,
@@ -564,12 +761,102 @@ pub async fn prepare<S: ImageSource>(
         erase.push(entry);
     }
 
+    // What is tied to an offset cannot follow the flash of the chip (R9).
+    if let Some(resolved) = &layout {
+        let follows_flash = resolved
+            .partitions
+            .iter()
+            .any(|partition| partition.grows_with_flash || partition.moves_with_flash);
+        if let (true, Some((_, partition, _))) = (follows_flash, &table_image) {
+            return Err(Error::PartitionTableImageForDetectedFlash {
+                partition: partition.clone(),
+            });
+        }
+        check_fixed_spans(resolved, &fixed_spans(board, &images, &erase))?;
+    }
+
     Ok(Prepared {
         layout,
+        definition,
         images,
         erase,
         warnings,
     })
+}
+
+/// Places `prepared` again on a flash of `flash_size` bytes: resolves its layout for that size,
+/// moves the images and erase entries that name a partition to where it now is, and generates
+/// the partition table again. Images and erase entries given by offset stay, and every check of
+/// [`prepare`] runs again on the new places, before anything is erased. The changes are against
+/// the layout of `prepared`.
+pub(crate) fn place_for_flash(
+    prepared: Prepared,
+    board: &Board,
+    flash_size: u64,
+) -> Result<(Prepared, LayoutChanges), Error> {
+    let Prepared {
+        layout: before,
+        definition,
+        mut images,
+        mut erase,
+        warnings,
+    } = prepared;
+    let Some(definition) = definition else {
+        let prepared = Prepared {
+            layout: before,
+            definition,
+            images,
+            erase,
+            warnings,
+        };
+        return Ok((prepared, LayoutChanges::default()));
+    };
+    let resolved = resolve(&definition, Some(flash_size))?;
+    let changes = before
+        .as_ref()
+        .map(|before| resolved.changes_from(before))
+        .unwrap_or_default();
+    let mut sizes = Vec::with_capacity(images.len());
+    for image in &mut images {
+        let partition = match &image.partition {
+            Some(name) => Some(find_partition(&resolved, board, name)?),
+            None => None,
+        };
+        if image.placement == ImagePlacement::GeneratedTable {
+            image.bytes = write(&resolved).map_err(|error| Error::Table { error })?;
+        }
+        if let (ImagePlacement::Partition | ImagePlacement::GeneratedTable, Some(partition)) =
+            (image.placement, partition)
+        {
+            image.offset = partition.offset;
+        }
+        sizes.push(partition.map(|partition| partition.size));
+    }
+    for entry in &mut erase {
+        if let Some(name) = &entry.partition {
+            let partition = find_partition(&resolved, board, name)?;
+            entry.region = Region {
+                offset: partition.offset,
+                size: partition.size,
+            };
+        }
+    }
+    let layout = Some(resolved);
+    check_plan(board.protocol, &layout, &images, &sizes)?;
+    for entry in &erase {
+        check_erase(board.protocol, &layout, entry)?;
+    }
+    if let Some(resolved) = &layout {
+        check_fixed_spans(resolved, &fixed_spans(board, &images, &erase))?;
+    }
+    let prepared = Prepared {
+        layout,
+        definition: Some(definition),
+        images,
+        erase,
+        warnings,
+    };
+    Ok((prepared, changes))
 }
 
 /// Merges the images of a board into one flash image, `0xFF` between them.
@@ -1056,6 +1343,7 @@ mod tests {
             [
                 PreparedErase {
                     label: "nvs".into(),
+                    partition: Some("nvs".into()),
                     region: Region {
                         offset: 0x9000,
                         size: 0x6000
@@ -1063,6 +1351,7 @@ mod tests {
                 },
                 PreparedErase {
                     label: "region at 0x10000".into(),
+                    partition: None,
                     region: Region {
                         offset: 0x10000,
                         size: 0x2000
@@ -1395,6 +1684,352 @@ mod tests {
             Err(Error::ImageRejected { reason, .. }) => assert!(reason.contains("EEPROM")),
             other => panic!("{other:?}"),
         }
+    }
+
+    const DETECT: &str = include_str!("../../tests/layouts/esp32-s3-detect.toml");
+
+    /// The detect layout of the fixtures with a crash-record partition after `storage`, which
+    /// moves with the flash: at 0x3F0000 on the minimum of 4 MiB.
+    fn moving_layout() -> String {
+        format!(
+            "{DETECT}\n[[partition]]\nname = \"coredump\"\nrole = \"crash-record\"\nsize = \"64 KiB\"\n"
+        )
+    }
+
+    /// A source with the moving layout as `m.toml`, the detect layout, and small images.
+    fn moving_source() -> MemorySource {
+        let mut source = fixture_source();
+        source
+            .files
+            .insert("m.toml".into(), moving_layout().into_bytes());
+        source.files.insert(
+            "../layouts/esp32-s3-detect.toml".into(),
+            DETECT.as_bytes().to_vec(),
+        );
+        source.files.insert("small.bin".into(), alloc::vec![0; 16]);
+        source
+    }
+
+    /// An Espressif board of the layout at `layout` with the given images and erase entries.
+    fn board_of(layout: &str, extra: &str) -> Board {
+        let text = format!(
+            "[[board]]\nidentifier = \"b\"\nprotocol = \"espressif\"\nchip = \"esp32-s3\"\nlayout = \"{layout}\"\n{extra}"
+        );
+        Manifest::from_toml(&text).unwrap().boards.remove(0)
+    }
+
+    #[test]
+    fn prepare_says_how_inputs_were_placed() {
+        let board = board_of(
+            "m.toml",
+            "[[board.image]]\npartition = \"coredump\"\npath = \"small.bin\"\n\
+             [[board.image]]\noffset = 0x20000\npath = \"small.bin\"\n\
+             [[board.erase]]\npartition = \"coredump\"\n\
+             [[board.erase]]\noffset = 0x9000\nsize = 0x1000\n",
+        );
+        let prepared = prepare_with(&board, &mut moving_source()).unwrap();
+        let placements: Vec<(&str, ImagePlacement)> = prepared
+            .images
+            .iter()
+            .map(|image| (image.label.as_str(), image.placement))
+            .collect();
+        assert_eq!(
+            placements,
+            [
+                ("partition-table", ImagePlacement::GeneratedTable),
+                ("coredump", ImagePlacement::Partition),
+                ("image at 0x20000", ImagePlacement::Offset),
+            ]
+        );
+        let erase: Vec<Option<&str>> = prepared
+            .erase
+            .iter()
+            .map(|entry| entry.partition.as_deref())
+            .collect();
+        assert_eq!(erase, [Some("coredump"), None]);
+        assert_eq!(
+            prepared.definition,
+            Some(Layout::from_toml(&moving_layout()).unwrap())
+        );
+    }
+
+    #[test]
+    fn place_for_flash_moves_partitions_and_regenerates_the_table() {
+        let board = board_of(
+            "m.toml",
+            "[[board.image]]\npartition = \"coredump\"\npath = \"small.bin\"\n\
+             [[board.erase]]\npartition = \"coredump\"\n",
+        );
+        let mut prepared = prepare_with(&board, &mut moving_source()).unwrap();
+        let coredump = |prepared: &Prepared| {
+            prepared
+                .images
+                .iter()
+                .find(|image| image.label == "coredump")
+                .unwrap()
+                .offset
+        };
+        assert_eq!(coredump(&prepared), 0x3F_0000);
+        assert_eq!(
+            prepared.erase[0].region,
+            Region {
+                offset: 0x3F_0000,
+                size: 0x1_0000
+            }
+        );
+        let kept = Warning::PartitionTableDiffers {
+            partition: "kept".into(),
+        };
+        prepared.warnings.push(kept.clone());
+        let (placed, changes) = place_for_flash(prepared, &board, 0x100_0000).unwrap();
+        assert_eq!(coredump(&placed), 0xFF_0000);
+        assert_eq!(
+            placed.erase[0].region,
+            Region {
+                offset: 0xFF_0000,
+                size: 0x1_0000
+            }
+        );
+        let layout = Layout::from_toml(&moving_layout()).unwrap();
+        let resolved = layout.resolve_for(Some(0x100_0000)).unwrap();
+        let table = placed
+            .images
+            .iter()
+            .find(|image| image.placement == ImagePlacement::GeneratedTable)
+            .unwrap();
+        assert_eq!(table.bytes, write(&resolved).unwrap());
+        assert_ne!(
+            table.bytes,
+            write(&layout.resolve().unwrap()).unwrap(),
+            "the table of the minimum differs"
+        );
+        assert_eq!(placed.layout.as_ref(), Some(&resolved));
+        assert_eq!(placed.definition, Some(layout));
+        assert_eq!(placed.warnings, [kept]);
+        assert_eq!(
+            changes.grown,
+            [crate::layout::GrownPartition {
+                name: "storage".into(),
+                size_at_minimum: 0xD_0000,
+                size: 0xCD_0000,
+            }]
+        );
+        assert_eq!(
+            changes.moved,
+            [crate::layout::MovedPartition {
+                name: "coredump".into(),
+                offset_at_minimum: 0x3F_0000,
+                offset: 0xFF_0000,
+            }]
+        );
+    }
+
+    #[test]
+    fn place_for_flash_keeps_inputs_given_by_offset() {
+        let board = board_of(
+            "m.toml",
+            "[[board.image]]\noffset = 0x320000\npath = \"small.bin\"\n\
+             [[board.erase]]\noffset = 0x330000\nsize = 0x1000\n",
+        );
+        let prepared = prepare_with(&board, &mut moving_source()).unwrap();
+        let (placed, _) = place_for_flash(prepared.clone(), &board, 0x80_0000).unwrap();
+        assert_eq!(placed.images[1].offset, 0x32_0000);
+        assert_eq!(placed.images[1].partition.as_deref(), Some("storage"));
+        assert_eq!(placed.erase, prepared.erase);
+        // A layout the flash of the chip does not suit fails as a layout.
+        assert!(matches!(
+            place_for_flash(prepared, &board, 0x80_0800),
+            Err(Error::Layout { .. })
+        ));
+    }
+
+    /// A layout whose last partition leaves a tail on the minimum flash: `storage` grows in steps
+    /// of 64 KiB, the alignment of `coredump` and `log` after it, and `log` ends at 0x3F8000.
+    const TAIL: &str = "[flash]\nsize = \"detect\"\nminimum = \"4 MiB\"\n\n\
+        [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x0\nsize = \"64 KiB\"\n\n\
+        [[partition]]\nname = \"application\"\nrole = \"firmware\"\nsize = \"1 MiB\"\nalignment = \"64 KiB\"\n\n\
+        [[partition]]\nname = \"storage\"\nrole = \"storage\"\nsize = { minimum = \"64 KiB\" }\n\n\
+        [[partition]]\nname = \"coredump\"\nrole = \"crash-record\"\nsize = \"64 KiB\"\nalignment = \"64 KiB\"\n\n\
+        [[partition]]\nname = \"log\"\nrole = \"custom\"\nsize = \"32 KiB\"\nalignment = \"64 KiB\"\n";
+
+    #[test]
+    fn inputs_fixed_to_moving_partitions_are_refused() {
+        let refused = |extra: &str, source: &mut MemorySource| {
+            prepare_with(&board_of("m.toml", extra), source).unwrap_err()
+        };
+        let error = refused(
+            "[[board.image]]\noffset = 0x3F0000\npath = \"small.bin\"\n",
+            &mut moving_source(),
+        );
+        assert_eq!(
+            error,
+            Error::FixedOffsetOnMovingPartition {
+                what: "image \"image at 0x3f0000\"".into(),
+                start: 0x3F_0000,
+                end: 0x3F_0010,
+                partition: "coredump".into(),
+                partition_offset: 0x3F_0000,
+                flash_size: 0x40_0000,
+                intel_hex: false,
+            }
+        );
+        assert_eq!(error.class(), crate::ErrorClass::Input);
+        assert_eq!(
+            error.to_string(),
+            "the image \"image at 0x3f0000\" covers 0x3f0000..0x3f0010, which overlaps the partition \"coredump\" at 0x3f0000 on 0x400000 bytes of flash, but \"coredump\" moves with the flash of the chip: target the partition by name in the manifest"
+        );
+        // A region that starts before the partition and ends inside it.
+        assert_eq!(
+            refused(
+                "[[board.erase]]\noffset = 0x3E0000\nsize = 0x11000\n",
+                &mut moving_source()
+            ),
+            Error::FixedOffsetOnMovingPartition {
+                what: "erase entry \"region at 0x3e0000\"".into(),
+                start: 0x3E_0000,
+                end: 0x3F_1000,
+                partition: "coredump".into(),
+                partition_offset: 0x3F_0000,
+                flash_size: 0x40_0000,
+                intel_hex: false,
+            }
+        );
+        assert!(matches!(
+            refused(
+                "[[board.erase]]\noffset = 0x3F8000\nsize = 0x1000\n",
+                &mut moving_source()
+            ),
+            Error::FixedOffsetOnMovingPartition { ref partition, start: 0x3F_8000, .. }
+                if partition == "coredump"
+        ));
+        // An Intel HEX image carries its addresses, even when given by name.
+        let mut source = moving_source();
+        source.files.insert(
+            "core.hex".into(),
+            b":02000004003FBB\n:0100000055AA\n:00000001FF\n".to_vec(),
+        );
+        let error = refused(
+            "[[board.image]]\npartition = \"coredump\"\npath = \"core.hex\"\n",
+            &mut source,
+        );
+        assert_eq!(
+            error,
+            Error::FixedOffsetOnMovingPartition {
+                what: "Intel HEX image \"core.hex\"".into(),
+                start: 0x3F_0000,
+                end: 0x3F_0001,
+                partition: "coredump".into(),
+                partition_offset: 0x3F_0000,
+                flash_size: 0x40_0000,
+                intel_hex: true,
+            }
+        );
+        assert!(
+            error
+                .to_string()
+                .ends_with("moves with the flash of the chip: give the partition a binary image (.bin), targeted by name"),
+            "{error}"
+        );
+        // Inputs given by offset elsewhere, and by name, are placed again on the chip.
+        let fine = board_of(
+            "m.toml",
+            "[[board.image]]\noffset = 0x320000\npath = \"small.bin\"\n\
+             [[board.image]]\npartition = \"coredump\"\npath = \"small.bin\"\n\
+             [[board.erase]]\noffset = 0x9000\nsize = 0x1000\n",
+        );
+        assert!(prepare_with(&fine, &mut moving_source()).is_ok());
+
+        // A table image cannot follow the chip.
+        let mut source = moving_source();
+        source
+            .files
+            .insert("table.bin".into(), alloc::vec![0xFF; 0xC00]);
+        let error = refused(
+            "[[board.image]]\noffset = 0x8000\npath = \"table.bin\"\n",
+            &mut source,
+        );
+        assert_eq!(
+            error,
+            Error::PartitionTableImageForDetectedFlash {
+                partition: "partition-table".into()
+            }
+        );
+        assert_eq!(error.class(), crate::ErrorClass::Input);
+        assert_eq!(
+            error.to_string(),
+            "the manifest writes an image to the partition table \"partition-table\", but partitions of the layout grow or move with the flash of the chip, so no fixed table fits every chip: remove the image and let nanoflash generate the table, or give the layout a fixed flash size"
+        );
+        // By name too; a table image of a fixed layout stays allowed.
+        assert!(matches!(
+            refused(
+                "[[board.image]]\npartition = \"partition-table\"\npath = \"table.bin\"\n",
+                &mut source
+            ),
+            Error::PartitionTableImageForDetectedFlash { .. }
+        ));
+        assert!(prepare_with(&board(&offset_image("0x8000", "table.bin")), &mut source).is_ok());
+    }
+
+    #[test]
+    fn inputs_in_the_tail_of_the_minimum_are_checked_again_on_the_chip() {
+        let mut source = moving_source();
+        source
+            .files
+            .insert("tail.toml".into(), TAIL.as_bytes().to_vec());
+        source
+            .files
+            .insert("sector.bin".into(), alloc::vec![0; 0x1000]);
+        let minimum = Layout::from_toml(TAIL).unwrap().resolve().unwrap();
+        assert_eq!(minimum.partition("coredump").unwrap().offset, 0x3E_0000);
+        assert_eq!(minimum.partition("log").unwrap().end(), 0x3F_8000);
+        for extra in [
+            "[[board.image]]\noffset = 0x3F8000\npath = \"sector.bin\"\n",
+            "[[board.erase]]\noffset = 0x3F8000\nsize = 0x1000\n",
+        ] {
+            let mut board = board_of("tail.toml", extra);
+            board.protocol = Protocol::Samba;
+            // Nothing moves over the tail on the minimum.
+            let prepared = prepare_with(&board, &mut source).unwrap();
+            // A step of 64 KiB more brings "coredump" over it.
+            let error = place_for_flash(prepared.clone(), &board, 0x41_0000).unwrap_err();
+            assert!(
+                matches!(
+                    &error,
+                    Error::FixedOffsetOnMovingPartition {
+                        partition,
+                        start: 0x3F_8000,
+                        end: 0x3F_9000,
+                        partition_offset: 0x3F_0000,
+                        flash_size: 0x41_0000,
+                        ..
+                    } if partition == "coredump"
+                ),
+                "{error:?}"
+            );
+            // On 8 MiB, the tail is in "storage", which grows and does not move.
+            assert!(place_for_flash(prepared, &board, 0x80_0000).is_ok());
+        }
+    }
+
+    #[test]
+    fn images_are_checked_against_the_minimum() {
+        let mut source = moving_source();
+        source
+            .files
+            .insert("big.bin".into(), alloc::vec![0; 0xE_1000]);
+        let board = board_of(
+            "../layouts/esp32-s3-detect.toml",
+            "[[board.image]]\npartition = \"storage\"\npath = \"big.bin\"\n",
+        );
+        assert_eq!(
+            prepare_with(&board, &mut source).unwrap_err(),
+            Error::ImageTooLarge {
+                label: "storage".into(),
+                partition: "storage".into(),
+                image_size: 0xE_1000,
+                partition_size: 0xE_0000,
+            }
+        );
     }
 
     #[test]

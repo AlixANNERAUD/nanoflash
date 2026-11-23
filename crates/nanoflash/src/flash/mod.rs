@@ -21,7 +21,9 @@ use crate::layout::{ResolvedLayout, Role};
 use crate::manifest::{Board, Manifest, Protocol};
 use crate::transport::{DeviceFilter, PortProvider, SerialPort};
 pub use intel_hex::{IntelHexError, IntelHexImage, decode_intel_hex, is_intel_hex};
-pub use prepare::{Prepared, PreparedErase, PreparedImage, Warning, image_build, prepare};
+pub use prepare::{
+    ImagePlacement, Prepared, PreparedErase, PreparedImage, Warning, image_build, prepare,
+};
 pub use select::{Selection, protocol_for_identity, select};
 
 /// Reads the files a manifest names.
@@ -240,6 +242,57 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
     }
 }
 
+/// Resolves the layout of a `detect` board again for the flash the chip reports, with the
+/// warnings that tell what changed (R10): a chip below the minimum fails, one that reports no size
+/// keeps the minimum, and one of exactly the minimum changes nothing. A layout of a fixed size,
+/// or no layout, is left as it is.
+fn resolve_for_chip(
+    prepared: Prepared,
+    board: &Board,
+    chip: &ChipInformation,
+) -> Result<(Prepared, Vec<Warning>), Error> {
+    let Some(minimum) = prepared
+        .layout
+        .as_ref()
+        .and_then(|layout| layout.minimum_flash_size)
+    else {
+        return Ok((prepared, Vec::new()));
+    };
+    let Some(detected) = chip.flash_size else {
+        let warning = Warning::FlashSizeNotDetected {
+            minimum_flash_size: minimum,
+        };
+        return Ok((prepared, alloc::vec![warning]));
+    };
+    if detected < minimum {
+        return Err(Error::FlashTooSmall {
+            layout: minimum,
+            detected,
+        });
+    }
+    if detected == minimum {
+        return Ok((prepared, Vec::new()));
+    }
+    let (prepared, changes) = prepare::place_for_flash(prepared, board, detected)?;
+    let mut warnings = Vec::new();
+    if !changes.grown.is_empty() {
+        warnings.push(Warning::PartitionsGrew {
+            flash_size: detected,
+            minimum_flash_size: minimum,
+            partitions: changes.grown,
+            protocol: board.protocol,
+        });
+    }
+    if !changes.moved.is_empty() {
+        warnings.push(Warning::PartitionsMoved {
+            flash_size: detected,
+            minimum_flash_size: minimum,
+            partitions: changes.moved,
+        });
+    }
+    Ok((prepared, warnings))
+}
+
 /// Checks every image, then every erase entry, against what `connect` reported: each must start
 /// at or after `writable_from`, end at or before `writable_to` and inside the `flash_size` bytes
 /// of the chip, and when the
@@ -448,6 +501,13 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
         Some(prepared) => prepared,
         None => prepare(board, source, verifier).await?,
     };
+    // A `detect` layout follows the flash of the chip; everything below reads the layout and the
+    // places resolved for it, so nothing is erased before they are checked too.
+    let (mut prepared, resolved) = resolve_for_chip(prepared, board, &chip)?;
+    for warning in &resolved {
+        progress.message(&warning.to_string());
+    }
+    prepared.warnings.extend(resolved);
     let layout_size = prepared.layout.as_ref().map(|layout| layout.flash.size);
     if let (Some(layout), Some(detected)) = (layout_size, chip.flash_size) {
         if layout > detected {
@@ -577,6 +637,7 @@ mod tests {
     fn prepared(images: &[(&str, u64, usize)], erase: &[(&str, u64, u64)]) -> Prepared {
         Prepared {
             layout: None,
+            definition: None,
             images: images
                 .iter()
                 .map(|&(label, offset, size)| PreparedImage {
@@ -584,12 +645,14 @@ mod tests {
                     partition: None,
                     offset,
                     bytes: alloc::vec![0xA5; size],
+                    placement: ImagePlacement::Offset,
                 })
                 .collect(),
             erase: erase
                 .iter()
                 .map(|&(label, offset, size)| PreparedErase {
                     label: label.into(),
+                    partition: None,
                     region: Region { offset, size },
                 })
                 .collect(),
@@ -1014,6 +1077,203 @@ mod tests {
                 what: "bootloader".into(),
                 end: 0x2000,
                 flash_size: 0x1000,
+            })
+        );
+    }
+
+    /// A board of `protocol` and the layout `text` resolved for its minimum, erasing the
+    /// partitions `erase` by name.
+    fn layout_prepared(protocol: &str, text: &str, erase: &[&str]) -> (Board, Prepared) {
+        let mut manifest = format!(
+            "[[board]]\nidentifier = \"b\"\nprotocol = \"{protocol}\"\nchip = \"c\"\nlayout = \"layout.toml\"\n"
+        );
+        for name in erase {
+            manifest.push_str(&format!("[[board.erase]]\npartition = \"{name}\"\n"));
+        }
+        let board = Manifest::from_toml(&manifest).unwrap().boards.remove(0);
+        let definition = crate::layout::Layout::from_toml(text).unwrap();
+        let layout = definition.resolve().unwrap();
+        let erase = erase
+            .iter()
+            .map(|name| {
+                let partition = layout.partition(name).unwrap();
+                PreparedErase {
+                    label: (*name).into(),
+                    partition: Some((*name).into()),
+                    region: Region {
+                        offset: partition.offset,
+                        size: partition.size,
+                    },
+                }
+            })
+            .collect();
+        let prepared = Prepared {
+            layout: Some(layout),
+            definition: Some(definition),
+            images: Vec::new(),
+            erase,
+            warnings: Vec::new(),
+        };
+        (board, prepared)
+    }
+
+    fn espressif(flash_size: Option<u64>) -> ChipInformation {
+        ChipInformation {
+            protocol: Protocol::Espressif,
+            chip: "esp32-s3".into(),
+            ..chip(flash_size, None)
+        }
+    }
+
+    const DETECT: &str = include_str!("../../tests/layouts/esp32-s3-detect.toml");
+
+    #[test]
+    fn resolve_for_chip_follows_the_reported_flash() {
+        let fixed = include_str!("../../tests/layouts/esp32-s3-8mb.toml");
+        let (board, prepared) = layout_prepared("espressif", fixed, &["storage"]);
+        for size in [None, Some(0x80_0000), Some(0x100_0000)] {
+            let (same, warnings) =
+                resolve_for_chip(prepared.clone(), &board, &espressif(size)).unwrap();
+            assert_eq!(same, prepared);
+            assert!(warnings.is_empty());
+        }
+
+        let (board, prepared) = layout_prepared("espressif", DETECT, &["storage"]);
+        let (same, warnings) =
+            resolve_for_chip(prepared.clone(), &board, &espressif(None)).unwrap();
+        assert_eq!(same, prepared);
+        assert_eq!(
+            warnings,
+            [Warning::FlashSizeNotDetected {
+                minimum_flash_size: 0x40_0000
+            }]
+        );
+        assert_eq!(
+            warnings[0].to_string(),
+            "the chip did not report its flash size, so the layout was resolved for its minimum of 0x400000 bytes: the partitions that grow with the flash have their smallest size"
+        );
+        assert_eq!(
+            resolve_for_chip(prepared.clone(), &board, &espressif(Some(0x20_0000))).unwrap_err(),
+            Error::FlashTooSmall {
+                layout: 0x40_0000,
+                detected: 0x20_0000
+            }
+        );
+        let (same, warnings) =
+            resolve_for_chip(prepared.clone(), &board, &espressif(Some(0x40_0000))).unwrap();
+        assert_eq!(same, prepared);
+        assert!(warnings.is_empty());
+
+        let (grown, warnings) =
+            resolve_for_chip(prepared, &board, &espressif(Some(0x80_0000))).unwrap();
+        let storage = crate::layout::GrownPartition {
+            name: "storage".into(),
+            size_at_minimum: 0xE_0000,
+            size: 0x4E_0000,
+        };
+        assert_eq!(
+            warnings,
+            [Warning::PartitionsGrew {
+                flash_size: 0x80_0000,
+                minimum_flash_size: 0x40_0000,
+                partitions: alloc::vec![storage],
+                protocol: Protocol::Espressif,
+            }]
+        );
+        assert_eq!(
+            warnings[0].to_string(),
+            "the chip has 0x800000 bytes of flash, more than the minimum of 0x400000 of the layout, so partitions grew: \"storage\" from 0xe0000 to 0x4e0000 bytes; the bootloader image must be built for this flash size or with flash size detection"
+        );
+        assert_eq!(grown.layout.as_ref().unwrap().flash.size, 0x80_0000);
+        assert_eq!(
+            grown.erase[0].region,
+            Region {
+                offset: 0x32_0000,
+                size: 0x4E_0000
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_for_chip_tells_what_moved() {
+        let layout = format!(
+            "{DETECT}\n[[partition]]\nname = \"coredump\"\nrole = \"crash-record\"\nsize = \"64 KiB\"\n"
+        );
+        let (board, prepared) = layout_prepared("samba", &layout, &[]);
+        let samba = ChipInformation {
+            chip: "samd21g18a".into(),
+            ..chip(Some(0x100_0000), None)
+        };
+        let (_, warnings) = resolve_for_chip(prepared, &board, &samba).unwrap();
+        assert_eq!(warnings.len(), 2);
+        assert!(matches!(&warnings[0], Warning::PartitionsGrew { .. }));
+        // Only the Espressif bootloader reads a flash size of its own.
+        assert_eq!(
+            warnings[0].to_string(),
+            "the chip has 0x1000000 bytes of flash, more than the minimum of 0x400000 of the layout, so partitions grew: \"storage\" from 0xd0000 to 0xcd0000 bytes"
+        );
+        assert_eq!(
+            warnings[1],
+            Warning::PartitionsMoved {
+                flash_size: 0x100_0000,
+                minimum_flash_size: 0x40_0000,
+                partitions: alloc::vec![crate::layout::MovedPartition {
+                    name: "coredump".into(),
+                    offset_at_minimum: 0x3F_0000,
+                    offset: 0xFF_0000,
+                }],
+            }
+        );
+        assert_eq!(
+            warnings[1].to_string(),
+            "on the 0x1000000 bytes of flash of the chip, partitions start elsewhere than on the minimum of 0x400000: \"coredump\" at 0xff0000 instead of 0x3f0000; data stored there by a firmware for another flash size is not where the layout now puts it"
+        );
+    }
+
+    #[test]
+    fn resolve_for_chip_then_checks_what_the_bootloader_keeps() {
+        // AVR: the flash the chip reports includes the bootloader at its top, so a partition
+        // that grows to the end of the flash covers it. Erasing it is refused before any erase.
+        let avr_layout = "[flash]\nsize = \"detect\"\nminimum = \"16 KiB\"\nalignment = 128\n\n\
+             [[partition]]\nname = \"application\"\nrole = \"firmware\"\noffset = 0x0\nsize = \"8 KiB\"\n\n\
+             [[partition]]\nname = \"storage\"\nrole = \"storage\"\nsize = \"remaining\"\n";
+        let (board, prepared) = layout_prepared("stk500v1", avr_layout, &["storage"]);
+        let uno = avr(0x8000, 0x7E00);
+        let (resolved, warnings) = resolve_for_chip(prepared, &board, &uno).unwrap();
+        assert!(matches!(&warnings[..], [Warning::PartitionsGrew { .. }]));
+        assert_eq!(
+            check_against_chip(&resolved, &uno),
+            Err(Error::AboveWritableFlash {
+                what: "erase entry \"storage\"".into(),
+                end: 0x8000,
+                writable_to: 0x7E00,
+                protocol: Protocol::Stk500v1,
+            })
+        );
+
+        // SAMD21: erases end at the end of flash, which a capped partition no longer reaches on
+        // a larger chip.
+        let samd21_layout = "[flash]\nsize = \"detect\"\nminimum = \"128 KiB\"\n\n\
+             [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x0\nsize = 0x2000\n\n\
+             [[partition]]\nname = \"application\"\nrole = \"firmware\"\nsize = 0x1_0000\n\n\
+             [[partition]]\nname = \"storage\"\nrole = \"storage\"\nsize = { minimum = \"32 KiB\", maximum = \"64 KiB\" }\n";
+        let (board, prepared) = layout_prepared("samba", samd21_layout, &["storage"]);
+        let samd21 = |flash_size| ChipInformation {
+            chip: "samd21g18a".into(),
+            erases_to_end: true,
+            ..chip(Some(flash_size), Some(0x2000))
+        };
+        let (resolved, _) = resolve_for_chip(prepared.clone(), &board, &samd21(0x2_0000)).unwrap();
+        assert_eq!(check_against_chip(&resolved, &samd21(0x2_0000)), Ok(()));
+        let (resolved, _) = resolve_for_chip(prepared, &board, &samd21(0x4_0000)).unwrap();
+        assert_eq!(
+            check_against_chip(&resolved, &samd21(0x4_0000)),
+            Err(Error::EraseShortOfFlashEnd {
+                chip: "samd21g18a".into(),
+                entry: "storage".into(),
+                offset: 0x1_2000,
+                end: 0x2_2000,
+                flash_size: 0x4_0000,
             })
         );
     }
