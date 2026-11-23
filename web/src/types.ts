@@ -58,7 +58,12 @@ export interface ChipInformation {
 export type FlashWarning =
   | { kind: "partition-table-differs"; partition: string; message: string }
   | { kind: "partition-table-not-checked"; partition: string; message: string }
-  | { kind: "not-verified-in-secure-download-mode"; message: string };
+  | { kind: "not-verified-in-secure-download-mode"; message: string }
+  /**
+   * The bootloader (SAMD21) erased from the lowest image, `from`, to the end of flash, `to`;
+   * `partitions` are those of the layout in that range that no image is written to.
+   */
+  | { kind: "erases-to-end"; from: number; to: number; partitions: string[]; message: string };
 
 /** What `flash` did. */
 export interface FlashReport {

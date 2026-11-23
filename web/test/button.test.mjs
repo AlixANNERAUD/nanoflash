@@ -327,6 +327,14 @@ test("shows the notes while flashing, and what was not verified and the warnings
           partition: "partition-table",
           message: "the image for the partition \"partition-table\" differs from the layout",
         },
+        {
+          kind: "erases-to-end",
+          from: 0x2000,
+          to: 0x40000,
+          partitions: ["storage"],
+          message:
+            'the bootloader erased the flash from 0x2000 to its end at 0x40000 before writing, so what was stored there besides the images is gone, including the partitions "storage"',
+        },
       ],
     };
   };
@@ -349,6 +357,7 @@ test("shows the notes while flashing, and what was not verified and the warnings
       [
         "Done: esp32-s3-devkitc was written and restarted, but not verified: the chip is in secure download mode: what was written was not verified.",
         'Warning: the image for the partition "partition-table" differs from the layout.',
+        'Warning: the bootloader erased the flash from 0x2000 to its end at 0x40000 before writing, so what was stored there besides the images is gone, including the partitions "storage".',
       ].join("\n"),
     );
   } finally {

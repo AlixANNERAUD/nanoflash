@@ -290,6 +290,56 @@ fn check_against_chip(prepared: &Prepared, chip: &ChipInformation) -> Result<(),
     Ok(())
 }
 
+/// The warning of a flash whose bootloader erases from an offset to the end of flash: writing
+/// erases from the lowest image to the end, unless `--erase-all` or an erase entry from that image
+/// or below did already. It names the partitions of the layout in that range that no image is
+/// written to.
+fn erases_to_end_warning(
+    prepared: &Prepared,
+    chip: &ChipInformation,
+    erase_all: bool,
+) -> Option<Warning> {
+    let (true, Some(flash_size), false) = (chip.erases_to_end, chip.flash_size, erase_all) else {
+        return None;
+    };
+    let from = prepared
+        .images
+        .iter()
+        .filter(|image| !image.bytes.is_empty())
+        .map(|image| image.offset)
+        .min()?;
+    let erased_before = prepared
+        .erase
+        .iter()
+        .any(|entry| entry.region.size != 0 && entry.region.offset <= from);
+    if erased_before {
+        return None;
+    }
+    let written = |name: &str| {
+        prepared
+            .images
+            .iter()
+            .any(|image| image.partition.as_deref() == Some(name))
+    };
+    let partitions = prepared
+        .layout
+        .iter()
+        .flat_map(|layout| &layout.partitions)
+        .filter(|partition| {
+            partition.size != 0
+                && partition.offset < flash_size
+                && partition.end() > from
+                && !written(&partition.definition.name)
+        })
+        .map(|partition| partition.definition.name.clone())
+        .collect();
+    Some(Warning::ErasesToEnd {
+        from,
+        to: flash_size,
+        partitions,
+    })
+}
+
 /// The region `--erase-all` erases: the flash of the chip, else of the layout, from where the
 /// bootloader starts writing.
 fn erase_all_region(chip: &ChipInformation, layout_size: Option<u64>) -> Result<Region, Error> {
@@ -354,6 +404,7 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
     // the part its bootloader protects, which is all a board without a layout (esp-web-tools)
     // is checked against.
     check_against_chip(&prepared, &chip)?;
+    let erases_to_end = erases_to_end_warning(&prepared, &chip, options.erase_all);
     if options.erase_all {
         let region = erase_all_region(&chip, layout_size)?;
         erase(backend, region, progress).await?;
@@ -379,6 +430,8 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
             .map_err(|error| error.during(|| doing("writing", segment)))?;
     }
     let mut warnings = prepared.warnings;
+    // The backend reported the erase as it happened; the report keeps it.
+    warnings.extend(erases_to_end);
     // The ROM loader in secure download mode refuses SPI_FLASH_MD5: failing after a successful
     // write would only hide that the write went through.
     let verify = options.verify && !chip.secure_download_mode;
@@ -616,6 +669,98 @@ mod tests {
         assert_eq!(
             check_against_chip(&prepared(&[], &[short]), &region_erases),
             Ok(())
+        );
+    }
+
+    #[test]
+    fn writes_that_erase_to_the_end_of_flash_are_warned_about() {
+        let samd21 = ChipInformation {
+            chip: "samd21g18a".into(),
+            erases_to_end: true,
+            ..chip(Some(0x4_0000), Some(0x2000))
+        };
+        let layout = crate::layout::Layout::from_toml(
+            "[flash]\nsize = \"256 KiB\"\n\n\
+             [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x0\nsize = 0x2000\n\n\
+             [[partition]]\nname = \"application\"\nrole = \"firmware\"\nsize = 0x3_0000\n\n\
+             [[partition]]\nname = \"configuration\"\nrole = \"custom\"\nsize = 0x4000\n\n\
+             [[partition]]\nname = \"storage\"\nrole = \"storage\"\nsize = \"remaining\"\n",
+        )
+        .unwrap()
+        .resolve()
+        .unwrap();
+        let mut plan = prepared(&[("application", 0x2000, 16)], &[]);
+        plan.layout = Some(layout);
+        plan.images[0].partition = Some("application".into());
+        let warning = erases_to_end_warning(&plan, &samd21, false);
+        assert_eq!(
+            warning,
+            Some(Warning::ErasesToEnd {
+                from: 0x2000,
+                to: 0x4_0000,
+                partitions: alloc::vec!["configuration".into(), "storage".into()],
+            })
+        );
+        assert_eq!(
+            warning.unwrap().to_string(),
+            "the bootloader erased the flash from 0x2000 to its end at 0x40000 before writing, so what was stored there besides the images is gone, including the partitions \"configuration\", \"storage\""
+        );
+        // From the lowest image that has bytes; the partitions an image is written to are not
+        // named.
+        let mut two = prepared(&[("empty", 0x2000, 0), ("application", 0x3_2000, 16)], &[]);
+        two.layout = plan.layout.clone();
+        two.images[1].partition = Some("configuration".into());
+        assert_eq!(
+            erases_to_end_warning(&two, &samd21, false),
+            Some(Warning::ErasesToEnd {
+                from: 0x3_2000,
+                to: 0x4_0000,
+                partitions: alloc::vec!["storage".into()],
+            })
+        );
+        // Without a layout, nothing to name.
+        let bare = prepared(&[("image at 0x2000", 0x2000, 16)], &[]);
+        assert_eq!(
+            erases_to_end_warning(&bare, &samd21, false),
+            Some(Warning::ErasesToEnd {
+                from: 0x2000,
+                to: 0x4_0000,
+                partitions: Vec::new(),
+            })
+        );
+        assert_eq!(
+            Warning::ErasesToEnd {
+                from: 0x2000,
+                to: 0x4_0000,
+                partitions: Vec::new(),
+            }
+            .to_string(),
+            "the bootloader erased the flash from 0x2000 to its end at 0x40000 before writing, so what was stored there besides the images is gone"
+        );
+        // Asked for: `--erase-all`, or an erase entry from the lowest image or below.
+        assert_eq!(erases_to_end_warning(&bare, &samd21, true), None);
+        let erased = prepared(
+            &[("image at 0x2000", 0x2000, 16)],
+            &[("region at 0x2000", 0x2000, 0x3_E000)],
+        );
+        assert_eq!(erases_to_end_warning(&erased, &samd21, false), None);
+        // An erase entry above the image, or an empty one, does not erase from the image.
+        let above = prepared(
+            &[("image at 0x2000", 0x2000, 16)],
+            &[
+                ("region at 0x10000", 0x1_0000, 0x3_0000),
+                ("empty", 0x2000, 0),
+            ],
+        );
+        assert!(erases_to_end_warning(&above, &samd21, false).is_some());
+        // Nothing written, or a bootloader that erases only what it writes.
+        assert_eq!(
+            erases_to_end_warning(&prepared(&[("empty", 0x2000, 0)], &[]), &samd21, false),
+            None
+        );
+        assert_eq!(
+            erases_to_end_warning(&bare, &chip(Some(0x4_0000), Some(0x2000)), false),
+            None
         );
     }
 

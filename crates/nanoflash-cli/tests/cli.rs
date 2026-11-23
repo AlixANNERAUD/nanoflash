@@ -1016,6 +1016,35 @@ fn flashes_a_nano_33_ble_from_a_transcript() {
 }
 
 #[test]
+fn the_samd21_erase_to_the_end_of_flash_is_a_warning() {
+    let board = boards("mkr-wifi-1010.toml");
+    let transcript = samba_transcript("flash-mkrwifi1010.transcript");
+    let arguments = [
+        "flash",
+        "--board",
+        path_text(&board),
+        "--replay",
+        path_text(&transcript),
+    ];
+    let message = "the bootloader erased the flash from 0x2000 to its end at 0x40000 before writing, so what was stored there besides the images is gone";
+    let human = run(&arguments);
+    assert_eq!(human.status.code(), Some(0), "{}", text(&human.stderr));
+    assert!(
+        text(&human.stderr).contains(&format!("warning: {message}\n")),
+        "{}",
+        text(&human.stderr)
+    );
+    let json = run(&[&arguments[..], &["--json"]].concat());
+    assert_eq!(json.status.code(), Some(0), "{}", text(&json.stderr));
+    let warning = &document(&json)["report"]["warnings"][0];
+    assert_eq!(warning["kind"], "erases-to-end");
+    assert_eq!(warning["from"], 0x2000);
+    assert_eq!(warning["to"], 0x4_0000);
+    assert_eq!(warning["partitions"], serde_json::json!([]));
+    assert_eq!(warning["message"], message);
+}
+
+#[test]
 fn samba_crc_mismatch_exits_3() {
     let board = boards("nano33ble.toml");
     let output = flash_nano_33_ble(&board, "flash-nano33ble-crc-mismatch.transcript");

@@ -65,6 +65,16 @@ pub enum Warning {
     /// The chip is in secure download mode, whose ROM loader refuses `SPI_FLASH_MD5`: what was
     /// written was not read back.
     NotVerifiedInSecureDownloadMode,
+    /// The bootloader erased from the lowest image to the end of flash before writing it (the
+    /// SAMD21's `X`), unasked: what was stored there besides the images is gone.
+    ErasesToEnd {
+        /// The flash offset of the lowest image, where the erase started.
+        from: u64,
+        /// The end of flash, where it stopped.
+        to: u64,
+        /// The partitions of the layout in that range that no image is written to.
+        partitions: Vec<String>,
+    },
 }
 
 impl fmt::Display for Warning {
@@ -81,6 +91,25 @@ impl fmt::Display for Warning {
             Warning::NotVerifiedInSecureDownloadMode => formatter.write_str(
                 "the chip is in secure download mode, whose ROM loader refuses to compute MD5 digests of the flash: what was written was not verified",
             ),
+            Warning::ErasesToEnd {
+                from,
+                to,
+                partitions,
+            } => {
+                write!(
+                    formatter,
+                    "the bootloader erased the flash from 0x{from:x} to its end at 0x{to:x} before writing, so what was stored there besides the images is gone"
+                )?;
+                for (index, partition) in partitions.iter().enumerate() {
+                    let before = if index == 0 {
+                        ", including the partitions "
+                    } else {
+                        ", "
+                    };
+                    write!(formatter, "{before}\"{partition}\"")?;
+                }
+                Ok(())
+            }
         }
     }
 }

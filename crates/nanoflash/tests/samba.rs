@@ -5,7 +5,7 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 use nanoflash::backend::{Backend, ChipInformation, ProgressEvent, Region, Segment, Stage};
-use nanoflash::flash::{FlashOptions, FlashReport, Hooks, detect, flash};
+use nanoflash::flash::{FlashOptions, FlashReport, Hooks, Warning, detect, flash};
 use nanoflash::manifest::{Manifest, Protocol, ResetSequence};
 use nanoflash::samba::{SambaBackend, SambaOptions, crc16};
 use nanoflash::testing::{
@@ -1272,8 +1272,58 @@ fn flashes_an_mkr_wifi_1010() {
     assert_eq!(images(&report), [("image at 0x2000", 0x2000, 8192)]);
     assert!(report.verified);
     provider.finish().unwrap();
-    // The X of the write erases to the end of flash, and says so.
+    // The X of the write erases to the end of flash, and says so as it happens and in the report.
     assert_eq!(recorder.messages.len(), 1, "{:?}", recorder.messages);
+    assert_eq!(
+        report.warnings,
+        [Warning::ErasesToEnd {
+            from: 0x2000,
+            to: 0x4_0000,
+            partitions: Vec::new(),
+        }]
+    );
+}
+
+#[test]
+fn the_erase_to_the_end_of_flash_names_the_partitions_it_takes() {
+    let manifest = Manifest::from_toml(&board_text("mkr-wifi-1010").replace(
+        "reset = \"touch-1200\"\n",
+        "reset = \"touch-1200\"\nlayout = \"../layouts/samd21.toml\"\n",
+    ))
+    .unwrap();
+    let mut source = fixture_source();
+    source.files.insert(
+        "../layouts/samd21.toml".into(),
+        b"[flash]\nsize = \"256 KiB\"\n\n\
+          [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x0\nsize = 0x2000\n\n\
+          [[partition]]\nname = \"application\"\nrole = \"firmware\"\nsize = \"remaining\"\n\n\
+          [[partition]]\nname = \"storage\"\nrole = \"storage\"\noffset = 0x3C000\nsize = \"16 KiB\"\n"
+            .to_vec(),
+    );
+    let (result, provider) = run_flash(
+        &manifest,
+        &transcript("flash-mkrwifi1010"),
+        &mut source,
+        &FlashOptions::default(),
+        &mut Recorder::default(),
+    );
+    let report = result.unwrap();
+    provider.finish().unwrap();
+    assert_eq!(
+        report.warnings,
+        [Warning::ErasesToEnd {
+            from: 0x2000,
+            to: 0x4_0000,
+            partitions: vec!["storage".into()],
+        }]
+    );
+    assert!(
+        report.warnings[0]
+            .to_string()
+            .ends_with("including the partitions \"storage\""),
+        "{}",
+        report.warnings[0]
+    );
 }
 
 #[test]

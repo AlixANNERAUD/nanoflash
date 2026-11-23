@@ -131,9 +131,13 @@ pub fn print_warnings(warnings: &[Warning]) {
     }
 }
 
-/// The JSON document of a successful `flash`.
+/// The JSON document of a successful `flash`, each warning with its `message`.
 pub fn flash_json(report: &FlashReport) -> String {
-    render(&json!({"ok": true, "report": report}))
+    let mut value = serde_json::to_value(report).unwrap_or(Value::Null);
+    if let Some(Value::Array(warnings)) = value.get_mut("warnings") {
+        *warnings = report.warnings.iter().map(warning_json).collect();
+    }
+    render(&json!({"ok": true, "report": value}))
 }
 
 /// The JSON document of a successful `detect`.

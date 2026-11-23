@@ -394,6 +394,49 @@ test("flashes a Nano 33 BLE through the touch", async () => {
   assert.deepEqual(bootloader.port.log, ["open 115200", "close"]);
 });
 
+test("warns that a SAMD21 board was erased to the end of flash", async () => {
+  const { flash } = await loadModule("samba");
+  const [sketch, bootloader] = transcript("flash-mkrwifi1010", "samba").split(
+    "! reopen 2341:0054\n",
+  );
+  const application = mockPort(sketch);
+  const samd21 = mockPort(`! identity 2341:0054\n${bootloader}`);
+  restoreNavigator = installNavigator([samd21.port]);
+  const manifest = JSON.stringify({
+    board: [
+      {
+        identifier: "arduino-mkr-wifi-1010",
+        protocol: "samba",
+        chip: "samd21g18a",
+        reset: "touch-1200",
+        "application-devices": [{ vendor: "0x2341", product: "0x8054" }],
+        "bootloader-devices": [{ vendor: "0x2341", product: "0x0054" }],
+        image: [{ offset: "0x2000", path: "../images/application.bin" }],
+      },
+    ],
+  });
+  const report = await flash(
+    manifest,
+    application.port,
+    FLASH_OPTIONS,
+    (path) => boardFile(path),
+    () => {},
+  );
+  assert.equal(report.chip.erases_to_end, true);
+  assert.deepEqual(report.warnings, [
+    {
+      kind: "erases-to-end",
+      from: 0x2000,
+      to: 0x40000,
+      partitions: [],
+      message:
+        "the bootloader erased the flash from 0x2000 to its end at 0x40000 before writing, so what was stored there besides the images is gone",
+    },
+  ]);
+  application.finish();
+  samd21.finish();
+});
+
 test("the bootloader port must be granted", async () => {
   // Waits the 15 s the backend gives the bootloader to appear before it says the page has no
   // permission for it.
