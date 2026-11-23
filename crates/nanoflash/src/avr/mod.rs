@@ -110,6 +110,9 @@ struct Session {
     chip: &'static Chip,
     /// The baud rate the bootloader answered at; on AVR109, the rate its port was opened at.
     baud_rate: u32,
+    /// On STK500v2, where the bootloader erases next; `None` for the bootloaders that erase the
+    /// page they program.
+    erase_order: Option<write::EraseOrder>,
 }
 
 impl Session {
@@ -136,6 +139,14 @@ enum Frame {
 type Check = for<'a> fn(&'a [u8], u8, u8) -> Result<&'a [u8], String>;
 
 /// A connection to the bootloader of an Arduino AVR board.
+///
+/// Pages are written whole and checked by reading them back. On STK500v2, the wiring bootloader
+/// of the Mega 2560 erases one page per page programmed, in order from 0x0 since it started,
+/// wherever the page goes: after `connect`, a write must be one run of pages from 0x0 in order
+/// of offset and an erase must start at 0x0, unless the whole flash up to the bootloader was
+/// erased in this connection; other writes are refused with `PageOutOfEraseOrder` before anything
+/// is sent. That count restarts with the bootloader, at the reset `connect` makes: with the
+/// reset `none`, the bootloader must have just started.
 pub struct AvrBackend<'p, P: PortProvider> {
     /// The open port; `None` while the board re-enumerates after the 1200-baud touch, and after
     /// it failed to reappear.
@@ -253,7 +264,12 @@ impl<'p, P: PortProvider> AvrBackend<'p, P> {
         })?;
         let protocol = self.dialect.protocol();
         let usb = self.port()?.identity();
-        let session = self.session.insert(Session { chip, baud_rate });
+        let erase_order = (self.dialect == Dialect::Stk500v2).then(write::EraseOrder::default);
+        let session = self.session.insert(Session {
+            chip,
+            baud_rate,
+            erase_order,
+        });
         Ok(ChipInformation {
             protocol,
             chip: session.chip.name.into(),

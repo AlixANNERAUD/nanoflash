@@ -720,12 +720,38 @@ fn writes(transcript: &Transcript) -> Vec<Vec<u8>> {
         .collect()
 }
 
-/// The data of every `STK_PROG_PAGE` of a recorded session.
-fn programmed_pages(transcript: &Transcript) -> Vec<Vec<u8>> {
+/// The data of every `STK_PROG_PAGE`, `CMD_PROGRAM_FLASH_ISP` or AVR109 `B` of a recorded
+/// session.
+fn programmed_pages(transcript: &Transcript, protocol: Protocol) -> Vec<Vec<u8>> {
     writes(transcript)
         .into_iter()
-        .filter(|bytes| bytes.first() == Some(&0x64))
-        .map(|bytes| bytes[4..bytes.len() - 1].to_vec())
+        .filter_map(|bytes| match (protocol, bytes.as_slice()) {
+            (Protocol::Stk500v1, [0x64, _, _, 0x46, data @ .., 0x20]) => Some(data.to_vec()),
+            // The header, then the command and its nine parameter bytes; the checksum last.
+            (
+                Protocol::Stk500v2,
+                [
+                    0x1b,
+                    _,
+                    _,
+                    _,
+                    0x0e,
+                    0x13,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    _,
+                    rest @ ..,
+                ],
+            ) => rest.split_last().map(|(_, data)| data.to_vec()),
+            (Protocol::Avr109, [b'B', _, _, b'F', data @ ..]) => Some(data.to_vec()),
+            _ => None,
+        })
         .collect()
 }
 
@@ -825,20 +851,25 @@ fn sends_the_pages_as_given() {
         offset: 0,
         data: &image,
     };
-    let text = transcript("connect-uno") + &transcript("write-uno");
-    let (result, provider) = run_recorded(&text, Protocol::Stk500v1, |backend| {
-        block_on(backend.write(&[segment], &mut ()))?;
-        block_on(backend.verify(&[segment], &mut ()))?;
-        block_on(backend.reset_to_application())
-    });
-    result.unwrap();
-    provider.inner().finish().unwrap();
-    let mut last = image[256..].to_vec();
-    last.extend_from_slice(&[0xFF; 84]);
-    assert_eq!(
-        programmed_pages(&provider.transcript()),
-        [image[..128].to_vec(), image[128..256].to_vec(), last]
-    );
+    for (board, protocol, page_size) in [
+        ("uno", Protocol::Stk500v1, 128),
+        ("mega2560", Protocol::Stk500v2, 256),
+        ("leonardo", Protocol::Avr109, 128),
+    ] {
+        let text = transcript(&format!("connect-{board}")) + &transcript(&format!("write-{board}"));
+        let (result, provider) = run_recorded(&text, protocol, |backend| {
+            block_on(backend.write(&[segment], &mut ()))?;
+            block_on(backend.verify(&[segment], &mut ()))?;
+            block_on(backend.reset_to_application())
+        });
+        result.unwrap();
+        provider.inner().finish().unwrap();
+        assert_eq!(
+            programmed_pages(&provider.transcript(), protocol),
+            pages(&image, page_size),
+            "{board}"
+        );
+    }
 }
 
 #[test]
@@ -883,7 +914,10 @@ fn pads_the_last_page_and_checks_the_image_bytes_only() {
     provider.inner().finish().unwrap();
     let mut page = vec![0xAB];
     page.resize(128, 0xFF);
-    assert_eq!(programmed_pages(&provider.transcript()), [page]);
+    assert_eq!(
+        programmed_pages(&provider.transcript(), Protocol::Stk500v1),
+        [page]
+    );
 }
 
 #[test]
@@ -1166,4 +1200,198 @@ fn nothing_is_done_before_connecting() {
         drop(backend);
         provider.finish().unwrap();
     }
+}
+
+/// The STK500v2 lines that program the page at `offset` with any 256 bytes, as messages
+/// `sequence` and `sequence + 1`.
+fn mega_program_lines(sequence: u8, offset: u64) -> String {
+    let word = u32::try_from(offset / 2).unwrap() | 1 << 31;
+    let mut load = vec![0x06];
+    load.extend_from_slice(&word.to_be_bytes());
+    let program = sequence.wrapping_add(1);
+    format!(
+        "> {}\n< {}\n> 1b {program:02x} 01 0a 0e 13 01 00 c1 0a 40 4c 20 00 00 ..257\n< {}\n",
+        hexadecimal(&message(sequence, &load)),
+        hexadecimal(&message(sequence, &[0x06, 0x00])),
+        hexadecimal(&message(program, &[0x13, 0x00]))
+    )
+}
+
+#[test]
+fn the_mega_2560_programs_pages_in_erase_order() {
+    let image = application();
+    // The wiring bootloader erases page 0 at the first page programmed, wherever it goes.
+    let high = Segment {
+        label: "application",
+        offset: 0x100,
+        data: &image,
+    };
+    let (result, provider, _) = run(
+        &transcript("connect-mega2560"),
+        Protocol::Stk500v2,
+        |backend, progress| block_on(backend.write(&[high], progress)),
+    );
+    assert_eq!(
+        result,
+        Err(Error::PageOutOfEraseOrder {
+            what: "image \"application\"".into(),
+            offset: 0x100,
+            erases_next: 0,
+        })
+    );
+    provider.finish().unwrap();
+
+    // Two images with a gap between them.
+    let first = Segment {
+        label: "first",
+        offset: 0,
+        data: &image[..0x100],
+    };
+    let second = Segment {
+        label: "second",
+        offset: 0x200,
+        data: &image[..0x10],
+    };
+    let (result, provider, _) = run(
+        &transcript("connect-mega2560"),
+        Protocol::Stk500v2,
+        |backend, progress| block_on(backend.write(&[first, second], progress)),
+    );
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::PageOutOfEraseOrder {
+            what: "image \"second\"".into(),
+            offset: 0x200,
+            erases_next: 0x100,
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Input);
+    provider.finish().unwrap();
+
+    // An erase region that does not start at 0.
+    let region = Region {
+        offset: 0x1000,
+        size: 0x100,
+    };
+    let (result, provider, _) = run(
+        &transcript("connect-mega2560"),
+        Protocol::Stk500v2,
+        |backend, progress| block_on(backend.erase(region, progress)),
+    );
+    assert_eq!(
+        result,
+        Err(Error::PageOutOfEraseOrder {
+            what: "erase region at 0x1000".into(),
+            offset: 0x1000,
+            erases_next: 0,
+        })
+    );
+    provider.finish().unwrap();
+
+    // Two images in one run from 0 are written.
+    let second = Segment {
+        label: "second",
+        offset: 0x100,
+        data: &image[..0x10],
+    };
+    let lines = mega_program_lines(5, 0) + &mega_program_lines(7, 0x100);
+    let text = transcript("connect-mega2560") + &lines;
+    let (result, provider, _) = run(&text, Protocol::Stk500v2, |backend, progress| {
+        block_on(backend.write(&[first, second], progress))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+
+    // Other bootloaders erase the page they program: an Uno writes at 0x80 first.
+    let lines = "> 55 40 00 20\n< 14 10\n> 64 00 80 46 ..128 20\n< 14 10\n";
+    let text = transcript("connect-uno") + lines;
+    let segment = Segment {
+        label: "application",
+        offset: 0x80,
+        data: &image[..0x80],
+    };
+    let (result, provider, _) = run(&text, Protocol::Stk500v1, |backend, progress| {
+        block_on(backend.write(&[segment], progress))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn the_mega_2560_writes_anywhere_after_erasing_everything() {
+    let image = application();
+    let mut lines = String::new();
+    let mut sequence = 5_u8;
+    let mut offset = 0;
+    while offset < 0x3_E000 {
+        lines.push_str(&mega_program_lines(sequence, offset));
+        sequence = sequence.wrapping_add(2);
+        offset += 0x100;
+    }
+    for page in [0x1000, 0x1100] {
+        lines.push_str(&mega_program_lines(sequence, page));
+        sequence = sequence.wrapping_add(2);
+    }
+    let text = transcript("connect-mega2560") + &lines;
+    let segment = Segment {
+        label: "application",
+        offset: 0x1000,
+        data: &image,
+    };
+    let (result, provider, _) = run(&text, Protocol::Stk500v2, |backend, progress| {
+        let region = Region {
+            offset: 0,
+            size: 0x3_E000,
+        };
+        block_on(backend.erase(region, progress))?;
+        block_on(backend.write(&[segment], progress))?;
+        // Those pages were programmed since the erase: writing them again needs an erase.
+        block_on(backend.write(&[segment], progress))
+    });
+    assert_eq!(
+        result,
+        Err(Error::PageOutOfEraseOrder {
+            what: "image \"application\"".into(),
+            offset: 0x1000,
+            erases_next: 0x3_E000,
+        })
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn a_failed_page_on_the_mega_2560_needs_a_new_connection() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0,
+        data: &image,
+    };
+    // The answer to CMD_PROGRAM_FLASH_ISP never comes: where the bootloader erases next is
+    // unknown.
+    let lines = format!(
+        "> {}\n< {}\n> 1b 06 01 0a 0e 13 01 00 c1 0a 40 4c 20 00 00 ..257\n",
+        hexadecimal(&message(5, &[0x06, 0x80, 0x00, 0x00, 0x00])),
+        hexadecimal(&message(5, &[0x06, 0x00]))
+    );
+    let text = transcript("connect-mega2560") + &lines;
+    let (result, provider, _) = run(&text, Protocol::Stk500v2, |backend, progress| {
+        let first = block_on(backend.write(&[segment], progress));
+        let second = block_on(backend.write(&[segment], progress));
+        (first, second)
+    });
+    assert_eq!(
+        result.0,
+        Err(Error::NoResponse {
+            command: "CMD_PROGRAM_FLASH_ISP"
+        })
+    );
+    assert_eq!(
+        result.1,
+        Err(Error::NotConnected {
+            protocol: Protocol::Stk500v2
+        })
+    );
+    provider.finish().unwrap();
 }

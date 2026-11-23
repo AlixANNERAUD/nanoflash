@@ -396,6 +396,17 @@ pub enum Error {
         /// Its offset.
         offset: u64,
     },
+    /// A page would be programmed where the bootloader does not erase it first: the wiring
+    /// bootloader of the Mega 2560 erases one page per page programmed, in order from 0x0,
+    /// wherever the programmed page goes.
+    PageOutOfEraseOrder {
+        /// What programs the page, such as `image "application"` or `erase region at 0x1000`.
+        what: String,
+        /// The flash offset of the page.
+        offset: u64,
+        /// The flash offset of the page the bootloader erases next.
+        erases_next: u64,
+    },
 }
 
 /// Who can fix an error: the input (exit code 1), the device or its connection (2), or the
@@ -452,6 +463,7 @@ impl Error {
             | Error::AboveWritableFlash { .. }
             | Error::EraseShortOfFlashEnd { .. }
             | Error::ImageBelowWritten { .. }
+            | Error::PageOutOfEraseOrder { .. }
             | Error::NotConnected { .. } => ErrorClass::Input,
             Error::Transport { .. }
             | Error::NoResponse { .. }
@@ -885,6 +897,14 @@ impl fmt::Display for Error {
                 formatter,
                 "the image \"{label}\" at 0x{offset:x} is written after an image above it, and the bootloader of the {chip} erases from 0x{offset:x} to the end of flash before writing it, which would erase that image, so it was not written: write the images in order of offset"
             ),
+            Error::PageOutOfEraseOrder {
+                what,
+                offset,
+                erases_next,
+            } => write!(
+                formatter,
+                "the {what} programs the page at 0x{offset:x}, but the STK500v2 bootloader of the Mega 2560 erases one page per page programmed, in order from 0x0 wherever the page goes, and erases 0x{erases_next:x} next: the page at 0x{offset:x} would not be erased, or another would be; nothing was written: write the images as one run from 0x0 in order of offset and erase only from 0x0, or erase the whole flash first (--erase-all)"
+            ),
         }
     }
 }
@@ -1022,6 +1042,20 @@ mod tests {
         assert_eq!(
             order.to_string(),
             "the image \"low\" at 0x2000 is written after an image above it, and the bootloader of the samd21g18a erases from 0x2000 to the end of flash before writing it, which would erase that image, so it was not written: write the images in order of offset"
+        );
+    }
+
+    #[test]
+    fn pages_out_of_erase_order_are_input_errors() {
+        let error = Error::PageOutOfEraseOrder {
+            what: "image \"application\"".into(),
+            offset: 0x100,
+            erases_next: 0,
+        };
+        assert_eq!(error.class(), ErrorClass::Input);
+        assert_eq!(
+            error.to_string(),
+            "the image \"application\" programs the page at 0x100, but the STK500v2 bootloader of the Mega 2560 erases one page per page programmed, in order from 0x0 wherever the page goes, and erases 0x0 next: the page at 0x100 would not be erased, or another would be; nothing was written: write the images as one run from 0x0 in order of offset and erase only from 0x0, or erase the whole flash first (--erase-all)"
         );
     }
 

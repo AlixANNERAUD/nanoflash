@@ -5,7 +5,15 @@
 //! The bootloaders have no checksum command: what was written is read back and compared. They
 //! have no usable chip erase either (Optiboot ignores it, and Arduino never sends it): a page is
 //! erased by programming it with `0xFF`.
+//!
+//! Optiboot, ATmegaBOOT and Caterina erase the page they program. The wiring bootloader of the
+//! Mega 2560 (STK500v2) does not: it keeps an erase address of its own, 0x0 when it starts, and
+//! each `CMD_PROGRAM_FLASH_ISP` erases the page there and moves it one page on, up to the
+//! bootloader, wherever the programmed page goes (its chip erase only resets that address, and
+//! answers `STATUS_CMD_FAILED`). [`EraseOrder`] follows that address, and the pages of a write or
+//! an erase that it would not erase first are refused before anything is sent.
 
+use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -45,6 +53,41 @@ fn report(progress: &mut dyn Progress, stage: Stage, offset: u64, done: u64, tot
 
 fn is_multiple(value: u64, unit: u64) -> bool {
     value.checked_rem(unit) == Some(0)
+}
+
+/// Where the wiring bootloader of the Mega 2560 erases next, and which pages it erased.
+#[derive(Debug, Clone, Default)]
+pub(super) struct EraseOrder {
+    /// The page the bootloader erases at the next `CMD_PROGRAM_FLASH_ISP`, whatever page that
+    /// programs; it stops at `writable_to`.
+    next: u64,
+    /// The pages below `next` programmed with something else than `0xFF` since they were erased:
+    /// programming them again would not give the data.
+    written: BTreeSet<u64>,
+}
+
+impl EraseOrder {
+    /// Accounts for programming the page at `offset` with `blank` (only `0xFF`) or other data.
+    /// The page must be the one the bootloader erases now, or, once it erased every page, one
+    /// not programmed since; otherwise the page is not erased first, or the bootloader erases
+    /// another page than those asked for. The error is the page erased next.
+    fn program(&mut self, offset: u64, blank: bool, bounds: &Bounds) -> Result<(), u64> {
+        let erased = if offset == self.next && self.next < bounds.writable_to {
+            self.next = self.next.saturating_add(bounds.page_size);
+            true
+        } else {
+            offset < self.next && self.next >= bounds.writable_to && !self.written.contains(&offset)
+        };
+        if !erased {
+            return Err(self.next);
+        }
+        if blank {
+            self.written.remove(&offset);
+        } else {
+            self.written.insert(offset);
+        }
+        Ok(())
+    }
 }
 
 /// Where pages may go, from what `connect` found.
@@ -148,6 +191,76 @@ impl<P: PortProvider> AvrBackend<'_, P> {
             writable_to: session.writable_to(protocol),
             address_limit: address_limit(protocol),
         })
+    }
+
+    /// The erase order of the Mega 2560 as `connect` started it, `None` for the bootloaders that
+    /// erase the page they program.
+    fn erase_order(&self) -> Option<EraseOrder> {
+        self.session
+            .as_ref()
+            .and_then(|session| session.erase_order.clone())
+    }
+
+    /// Keeps `order`, planned for the pages about to be programmed.
+    fn keep_erase_order(&mut self, order: EraseOrder) {
+        if let Some(session) = self.session.as_mut() {
+            session.erase_order = Some(order);
+        }
+    }
+
+    /// After a page failed on the Mega 2560, where its bootloader erases next is unknown: the
+    /// backend must connect again, which restarts the bootloader.
+    fn forget_erase_order(&mut self) {
+        if self.dialect == Dialect::Stk500v2 {
+            self.session = None;
+        }
+    }
+
+    /// Programs `page_length` bytes of `0xFF` at each page of `region`.
+    async fn erase_pages(
+        &mut self,
+        bounds: &Bounds,
+        region: Region,
+        progress: &mut dyn Progress,
+    ) -> Result<(), Error> {
+        let page = vec![0xFF; bounds.page_length()?];
+        let mut offset = region.offset;
+        let mut done: u64 = 0;
+        while done < region.size {
+            self.program_page(offset, &page).await?;
+            offset = offset.saturating_add(bounds.page_size);
+            done = done.saturating_add(bounds.page_size);
+            if done < region.size {
+                report(progress, Stage::Erasing, region.offset, done, region.size);
+            }
+        }
+        Ok(())
+    }
+
+    /// Programs `segments` page by page, the last page of each padded with `0xFF`.
+    async fn write_pages(
+        &mut self,
+        bounds: &Bounds,
+        segments: &[Segment<'_>],
+        progress: &mut dyn Progress,
+    ) -> Result<(), Error> {
+        let page_length = bounds.page_length()?;
+        for segment in segments {
+            let total = size_of(segment.data);
+            let mut offset = segment.offset;
+            let mut done: u64 = 0;
+            for chunk in segment.data.chunks(page_length) {
+                let mut page = vec![0xFF; page_length];
+                if let Some(start) = page.get_mut(..chunk.len()) {
+                    start.copy_from_slice(chunk);
+                }
+                self.program_page(offset, &page).await?;
+                offset = offset.saturating_add(bounds.page_size);
+                done = done.saturating_add(size_of(chunk));
+                report(progress, Stage::Writing, segment.offset, done, total);
+            }
+        }
+        Ok(())
     }
 
     /// Sends the AVR109 `request` and checks that the answer is `\r`.
@@ -325,29 +438,40 @@ impl<P: PortProvider> Backend for AvrBackend<'_, P> {
     }
 
     /// Programs every page of `region` with `0xFF`, reported between the orchestration's own
-    /// events.
+    /// events. On the Mega 2560, the region must start where the bootloader erases next: at 0x0
+    /// after `connect`.
     async fn erase(&mut self, region: Region, progress: &mut dyn Progress) -> Result<(), Error> {
         let bounds = self.bounds()?;
         if region.size == 0 {
             return Ok(());
         }
         bounds.check_region(region)?;
-        let page = vec![0xFF; bounds.page_length()?];
-        let mut offset = region.offset;
-        let mut done: u64 = 0;
-        while done < region.size {
-            self.program_page(offset, &page).await?;
-            offset = offset.saturating_add(bounds.page_size);
-            done = done.saturating_add(bounds.page_size);
-            if done < region.size {
-                report(progress, Stage::Erasing, region.offset, done, region.size);
+        if let Some(mut order) = self.erase_order() {
+            let mut offset = region.offset;
+            let end = region.offset.saturating_add(region.size);
+            while offset < end {
+                order
+                    .program(offset, true, &bounds)
+                    .map_err(|erases_next| Error::PageOutOfEraseOrder {
+                        what: format!("erase region at 0x{:x}", region.offset),
+                        offset,
+                        erases_next,
+                    })?;
+                offset = offset.saturating_add(bounds.page_size);
             }
+            self.keep_erase_order(order);
         }
-        Ok(())
+        let result = self.erase_pages(&bounds, region, progress).await;
+        if result.is_err() {
+            self.forget_erase_order();
+        }
+        result
     }
 
     /// Writes `segments` in order, page by page, the last page of each padded with `0xFF`;
-    /// checks them all first.
+    /// checks them all first. On the Mega 2560, the pages must follow where the bootloader
+    /// erases: one run from 0x0 in order of offset, unless the whole flash was erased since
+    /// `connect`.
     async fn write(
         &mut self,
         segments: &[Segment<'_>],
@@ -357,23 +481,29 @@ impl<P: PortProvider> Backend for AvrBackend<'_, P> {
         for segment in segments {
             bounds.check_segment(segment)?;
         }
-        let page_length = bounds.page_length()?;
-        for segment in segments {
-            let total = size_of(segment.data);
-            let mut offset = segment.offset;
-            let mut done: u64 = 0;
-            for chunk in segment.data.chunks(page_length) {
-                let mut page = vec![0xFF; page_length];
-                if let Some(start) = page.get_mut(..chunk.len()) {
-                    start.copy_from_slice(chunk);
+        if let Some(mut order) = self.erase_order() {
+            let page_length = bounds.page_length()?;
+            for segment in segments {
+                let mut offset = segment.offset;
+                for chunk in segment.data.chunks(page_length) {
+                    let blank = chunk.iter().all(|byte| *byte == 0xFF);
+                    order
+                        .program(offset, blank, &bounds)
+                        .map_err(|erases_next| Error::PageOutOfEraseOrder {
+                            what: format!("image \"{}\"", segment.label),
+                            offset,
+                            erases_next,
+                        })?;
+                    offset = offset.saturating_add(bounds.page_size);
                 }
-                self.program_page(offset, &page).await?;
-                offset = offset.saturating_add(bounds.page_size);
-                done = done.saturating_add(size_of(chunk));
-                report(progress, Stage::Writing, segment.offset, done, total);
             }
+            self.keep_erase_order(order);
         }
-        Ok(())
+        let result = self.write_pages(&bounds, segments, progress).await;
+        if result.is_err() {
+            self.forget_erase_order();
+        }
+        result
     }
 
     /// Reads every page of `segments` back and compares it with the image; the padding of a
