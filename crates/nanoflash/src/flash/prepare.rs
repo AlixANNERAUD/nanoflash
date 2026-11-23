@@ -24,6 +24,13 @@ fn erase_unit(protocol: Protocol) -> u64 {
     }
 }
 
+/// The end of what a protocol can address: its offsets and sizes are 32-bit words.
+pub(crate) fn address_limit(protocol: Protocol) -> u64 {
+    match protocol {
+        Protocol::Espressif | Protocol::Samba => 1 << 32,
+    }
+}
+
 /// An image ready to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreparedImage {
@@ -72,6 +79,15 @@ impl fmt::Display for Warning {
     }
 }
 
+/// A region of flash to erase, checked.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreparedErase {
+    /// The name for messages: the partition, or `region at 0x<offset>`.
+    pub label: String,
+    /// The region.
+    pub region: Region,
+}
+
 /// What a board flashes, checked.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Prepared {
@@ -80,7 +96,7 @@ pub struct Prepared {
     /// The images, sorted as the manifest lists them, the generated table by its offset.
     pub images: Vec<PreparedImage>,
     /// The regions to erase first.
-    pub erase: Vec<Region>,
+    pub erase: Vec<PreparedErase>,
     /// What the user may want to know.
     pub warnings: Vec<Warning>,
 }
@@ -165,11 +181,13 @@ fn round_up(value: u64, unit: u64) -> u64 {
 
 /// The first problem of the plan, checking the images in order, then their neighbours.
 fn check_plan(
-    unit: u64,
+    protocol: Protocol,
     layout: &Option<ResolvedLayout>,
     images: &[PreparedImage],
     sizes: &[Option<u64>],
 ) -> Result<(), Error> {
+    let unit = erase_unit(protocol);
+    let limit = address_limit(protocol);
     for (image, partition_size) in images.iter().zip(sizes) {
         let size = u64::try_from(image.bytes.len()).unwrap_or(u64::MAX);
         if image.offset % unit != 0 {
@@ -177,6 +195,15 @@ fn check_plan(
                 label: image.label.clone(),
                 offset: image.offset,
                 required: unit,
+            });
+        }
+        let end = image.offset.saturating_add(size);
+        if end > limit {
+            return Err(Error::OutsideAddressRange {
+                what: format!("image \"{}\"", image.label),
+                end,
+                limit,
+                protocol,
             });
         }
         if let (Some(partition), Some(partition_size)) = (&image.partition, partition_size) {
@@ -190,7 +217,6 @@ fn check_plan(
             }
         }
         if let Some(layout) = layout {
-            let end = image.offset.saturating_add(size);
             if end > layout.flash.size {
                 return Err(Error::ImageOutsideFlash {
                     label: image.label.clone(),
@@ -218,16 +244,62 @@ fn check_plan(
     Ok(())
 }
 
+/// Checks that an erase entry starts and ends on the erase unit, inside what the protocol can
+/// address and inside the flash of the layout.
+fn check_erase(
+    protocol: Protocol,
+    layout: &Option<ResolvedLayout>,
+    erase: &PreparedErase,
+) -> Result<(), Error> {
+    let unit = erase_unit(protocol);
+    let limit = address_limit(protocol);
+    let Region { offset, size } = erase.region;
+    if offset % unit != 0 || size % unit != 0 {
+        return Err(Error::MisalignedErase {
+            entry: erase.label.clone(),
+            offset,
+            size,
+            required: unit,
+        });
+    }
+    let end = offset.saturating_add(size);
+    if end > limit {
+        return Err(Error::OutsideAddressRange {
+            what: format!("erase entry \"{}\"", erase.label),
+            end,
+            limit,
+            protocol,
+        });
+    }
+    if let Some(layout) = layout {
+        if end > layout.flash.size {
+            return Err(Error::EraseOutsideFlash {
+                entry: erase.label.clone(),
+                end,
+                flash_size: layout.flash.size,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Reads the layout and the images of `board`, and checks where they go.
 ///
 /// Every image is read through `source`, checked against its digest and handed to `verifier`.
 /// When the board speaks the Espressif protocol and its layout has a partition table, no image
-/// lands on, the table generated from the layout is added.
+/// lands on, the table generated from the layout is added. Images and erase entries are checked
+/// against the erase unit and the address range of the protocol, and the flash of the layout.
+/// A board without images and erase entries, and an empty image, are refused.
 pub async fn prepare<S: ImageSource>(
     board: &Board,
     source: &mut S,
     verifier: &mut dyn ImageVerifier,
 ) -> Result<Prepared, Error> {
+    if board.images.is_empty() && board.erase.is_empty() {
+        return Err(Error::NothingToFlash {
+            board: board.identifier.clone(),
+        });
+    }
     let layout = read_layout(board, source).await?;
 
     let mut placements: Vec<Placement<'_>> = Vec::new();
@@ -324,6 +396,11 @@ pub async fn prepare<S: ImageSource>(
                         path: path.to_string(),
                         message,
                     })?;
+                if bytes.is_empty() {
+                    return Err(Error::EmptyImage {
+                        path: path.to_string(),
+                    });
+                }
                 if let Some(expected) = expected {
                     let actual = Sha256::digest(&bytes);
                     if actual.as_slice() != expected {
@@ -362,23 +439,31 @@ pub async fn prepare<S: ImageSource>(
         });
     }
 
-    check_plan(erase_unit(board.protocol), &layout, &images, &sizes)?;
+    check_plan(board.protocol, &layout, &images, &sizes)?;
 
     let mut erase = Vec::with_capacity(board.erase.len());
     for target in &board.erase {
-        erase.push(match target {
-            EraseTarget::Region { offset, size } => Region {
-                offset: *offset,
-                size: *size,
+        let entry = match target {
+            EraseTarget::Region { offset, size } => PreparedErase {
+                label: format!("region at 0x{offset:x}"),
+                region: Region {
+                    offset: *offset,
+                    size: *size,
+                },
             },
             EraseTarget::Partition(name) => {
                 let partition = find_partition(need_layout(&layout, board, name)?, board, name)?;
-                Region {
-                    offset: partition.offset,
-                    size: partition.size,
+                PreparedErase {
+                    label: name.clone(),
+                    region: Region {
+                        offset: partition.offset,
+                        size: partition.size,
+                    },
                 }
             }
-        });
+        };
+        check_erase(board.protocol, &layout, &entry)?;
+        erase.push(entry);
     }
 
     Ok(Prepared {
@@ -392,7 +477,8 @@ pub async fn prepare<S: ImageSource>(
 /// Merges the images of a board into one flash image, `0xFF` between them.
 ///
 /// The board is the one named `board_identifier`, or the only one of the manifest. The image ends
-/// at the highest image, or at the flash size of the layout with `fill`.
+/// at the highest image, or at the flash size of the layout with `fill`. It never goes past the
+/// flash of the layout, nor past what the protocol can address (4 GiB for Espressif).
 pub async fn image_build<S: ImageSource>(
     manifest: &Manifest,
     board_identifier: Option<&str>,
@@ -434,11 +520,27 @@ pub async fn image_build<S: ImageSource>(
         let layout = prepared.layout.as_ref().ok_or(Error::UnknownFlashSize)?;
         end = end.max(layout.flash.size);
     }
-    let length = usize::try_from(end).map_err(|_| Error::OutOfRange {
-        what: "flash image size".to_string(),
-        value: end,
-    })?;
-    let mut merged = alloc::vec![0xFFu8; length];
+    // `prepare` keeps every image inside the flash of the layout and the address range of the
+    // protocol; the flash of a layout may still be larger than that range.
+    let limit = address_limit(board.protocol);
+    if end > limit {
+        return Err(Error::OutsideAddressRange {
+            what: "flash image".to_string(),
+            end,
+            limit,
+            protocol: board.protocol,
+        });
+    }
+    let out_of_memory = || Error::OutOfMemory {
+        what: "flash image".to_string(),
+        size: end,
+    };
+    let length = usize::try_from(end).map_err(|_| out_of_memory())?;
+    let mut merged = Vec::new();
+    merged
+        .try_reserve_exact(length)
+        .map_err(|_| out_of_memory())?;
+    merged.resize(length, 0xFFu8);
     for image in &prepared.images {
         let range = usize::try_from(image.offset)
             .ok()
@@ -715,7 +817,10 @@ mod tests {
             [Warning::PartitionTableNotChecked { partition, .. }] if partition == "partition-table"
         ));
         assert!(matches!(
-            prepare_with(&board(""), &mut source),
+            prepare_with(
+                &board(&offset_image("0x20000", "../images/application.bin")),
+                &mut source
+            ),
             Err(Error::Table { .. })
         ));
     }
@@ -733,7 +838,7 @@ mod tests {
     #[test]
     fn layout_problems_are_reported() {
         let mut source = fixture_source();
-        let board = board("");
+        let board = board(&offset_image("0x20000", "../images/application.bin"));
         source.files.insert(
             "../layouts/esp32-s3-8mb.toml".into(),
             alloc::vec![0xFF, 0xFE],
@@ -775,13 +880,19 @@ mod tests {
         assert_eq!(
             prepared.erase,
             [
-                Region {
-                    offset: 0x9000,
-                    size: 0x6000
+                PreparedErase {
+                    label: "nvs".into(),
+                    region: Region {
+                        offset: 0x9000,
+                        size: 0x6000
+                    }
                 },
-                Region {
-                    offset: 0x10000,
-                    size: 0x2000
+                PreparedErase {
+                    label: "region at 0x10000".into(),
+                    region: Region {
+                        offset: 0x10000,
+                        size: 0x2000
+                    }
                 }
             ]
         );
@@ -790,6 +901,137 @@ mod tests {
             prepare_with(&unknown, &mut fixture_source()),
             Err(Error::UnknownPartition { .. })
         ));
+    }
+
+    fn erase(offset: &str, size: &str) -> String {
+        format!("[[board.erase]]\noffset = {offset}\nsize = {size}\n")
+    }
+
+    #[test]
+    fn erase_entries_are_checked_like_images() {
+        let misaligned =
+            prepare_with(&board(&erase("0x9800", "0x100")), &mut fixture_source()).unwrap_err();
+        assert_eq!(
+            misaligned,
+            Error::MisalignedErase {
+                entry: "region at 0x9800".into(),
+                offset: 0x9800,
+                size: 0x100,
+                required: 0x1000
+            }
+        );
+        let message = misaligned.to_string();
+        assert!(
+            message.contains("\"region at 0x9800\"") && message.contains("0x9800..0x9900"),
+            "{message}"
+        );
+        assert_eq!(misaligned.class(), crate::ErrorClass::Input);
+        // The end must be aligned too: the sector it ends in would be erased whole.
+        assert!(matches!(
+            prepare_with(&board(&erase("0x10000", "0x100")), &mut fixture_source()),
+            Err(Error::MisalignedErase {
+                offset: 0x10000,
+                ..
+            })
+        ));
+        assert_eq!(
+            prepare_with(&board(&erase("0x7FF000", "0x2000")), &mut fixture_source()).unwrap_err(),
+            Error::EraseOutsideFlash {
+                entry: "region at 0x7ff000".into(),
+                end: 0x801000,
+                flash_size: 0x800000
+            }
+        );
+        let mut without_layout = board(&erase("0xFFFFF000", "0x2000"));
+        without_layout.layout = None;
+        assert_eq!(
+            prepare_with(&without_layout, &mut fixture_source()).unwrap_err(),
+            Error::OutsideAddressRange {
+                what: "erase entry \"region at 0xfffff000\"".into(),
+                end: 0x1_0000_1000,
+                limit: 0x1_0000_0000,
+                protocol: Protocol::Espressif
+            }
+        );
+        // A partition erase entry goes through the same checks.
+        let mut source = fixture_source();
+        source.files.insert(
+            "../layouts/esp32-s3-8mb.toml".into(),
+            LAYOUT
+                .replace("size = \"24 KiB\"", "size = \"23 KiB\"")
+                .replace("alignment = \"4 KiB\"", "alignment = \"1 KiB\"")
+                .into_bytes(),
+        );
+        // The table of this layout cannot be generated: an image replaces it.
+        source
+            .files
+            .insert("table.bin".into(), alloc::vec![0xFF; 0xC00]);
+        let nvs = board(&format!(
+            "{}[[board.erase]]\npartition = \"nvs\"\n",
+            offset_image("0x8000", "table.bin")
+        ));
+        assert!(
+            matches!(
+                prepare_with(&nvs, &mut source),
+                Err(Error::MisalignedErase { ref entry, .. }) if entry == "nvs"
+            ),
+            "{:?}",
+            prepare_with(&nvs, &mut source)
+        );
+    }
+
+    #[test]
+    fn empty_boards_and_images_are_refused() {
+        let empty = board("");
+        assert_eq!(
+            prepare_with(&empty, &mut fixture_source()).unwrap_err(),
+            Error::NothingToFlash { board: "b".into() }
+        );
+        let mut source = fixture_source();
+        source.files.insert("empty.bin".into(), Vec::new());
+        let error =
+            prepare_with(&board(&offset_image("0x20000", "empty.bin")), &mut source).unwrap_err();
+        assert_eq!(
+            error,
+            Error::EmptyImage {
+                path: "empty.bin".into()
+            }
+        );
+        assert_eq!(error.class(), crate::ErrorClass::Input);
+        // An esp-web-tools build without parts has nothing to flash either.
+        let manifest =
+            Manifest::from_json(r#"{"builds":[{"chipFamily":"ESP32","parts":[]}]}"#).unwrap();
+        assert!(matches!(
+            prepare_with(&manifest.boards[0], &mut source),
+            Err(Error::NothingToFlash { .. })
+        ));
+    }
+
+    #[test]
+    fn image_build_refuses_offsets_beyond_the_address_range() {
+        for (offset, end) in [
+            (0x100_0000_0000_u64, 0x100_0000_0010_u64),
+            (0xFFFF_FFFF_FFFF_0000, 0xFFFF_FFFF_FFFF_0010),
+        ] {
+            let text = format!(
+                r#"{{"builds":[{{"chipFamily":"ESP32","parts":[{{"path":"small.bin","offset":{offset}}}]}}]}}"#
+            );
+            let manifest = Manifest::from_json(&text).unwrap();
+            let mut source = fixture_source();
+            source.files.insert("small.bin".into(), alloc::vec![0; 16]);
+            let error =
+                block_on(image_build(&manifest, None, &mut source, &mut (), false)).unwrap_err();
+            assert_eq!(
+                error,
+                Error::OutsideAddressRange {
+                    what: format!("image \"image at 0x{offset:x}\""),
+                    end,
+                    limit: 1 << 32,
+                    protocol: Protocol::Espressif
+                }
+            );
+            assert_eq!(error.class(), crate::ErrorClass::Input);
+        }
     }
 
     #[test]

@@ -172,6 +172,63 @@ pub enum Error {
         /// The flash size of the layout.
         flash_size: u64,
     },
+    /// An erase entry does not start and end on the erase unit of the flash.
+    MisalignedErase {
+        /// The entry: its partition, or `region at 0x<offset>`.
+        entry: String,
+        /// Its offset.
+        offset: u64,
+        /// Its size.
+        size: u64,
+        /// The multiple the offset and the size must be of.
+        required: u64,
+    },
+    /// An erase entry ends after the end of the flash of the layout.
+    EraseOutsideFlash {
+        /// The entry: its partition, or `region at 0x<offset>`.
+        entry: String,
+        /// Its exclusive end.
+        end: u64,
+        /// The flash size of the layout.
+        flash_size: u64,
+    },
+    /// An image or an erase entry ends beyond what the protocol can address.
+    OutsideAddressRange {
+        /// What ends there, such as `image "application"`.
+        what: String,
+        /// Its exclusive end.
+        end: u64,
+        /// The end of what the protocol can address.
+        limit: u64,
+        /// The protocol.
+        protocol: Protocol,
+    },
+    /// An image or an erase entry ends after the end of the flash the chip reports.
+    OutsideDetectedFlash {
+        /// What ends there, such as `image "application"`.
+        what: String,
+        /// Its exclusive end.
+        end: u64,
+        /// The flash size the chip reported.
+        flash_size: u64,
+    },
+    /// The board of the manifest lists no image and no erase entry.
+    NothingToFlash {
+        /// The board.
+        board: String,
+    },
+    /// An image file has no byte.
+    EmptyImage {
+        /// The path, as written in the manifest.
+        path: String,
+    },
+    /// There is not enough memory for a buffer.
+    OutOfMemory {
+        /// What the buffer is for, such as `flash image`.
+        what: String,
+        /// Its size in bytes.
+        size: u64,
+    },
     /// The requested board is not in the manifest.
     UnknownBoard {
         /// The requested identifier.
@@ -274,6 +331,13 @@ impl Error {
             | Error::OverlappingImages { .. }
             | Error::ImageTooLarge { .. }
             | Error::ImageOutsideFlash { .. }
+            | Error::MisalignedErase { .. }
+            | Error::EraseOutsideFlash { .. }
+            | Error::OutsideAddressRange { .. }
+            | Error::OutsideDetectedFlash { .. }
+            | Error::NothingToFlash { .. }
+            | Error::EmptyImage { .. }
+            | Error::OutOfMemory { .. }
             | Error::UnknownBoard { .. }
             | Error::NoMatchingBoard { .. }
             | Error::SeveralProtocols { .. }
@@ -417,6 +481,53 @@ impl fmt::Display for Error {
             } => write!(
                 formatter,
                 "the image \"{label}\" ends at 0x{end:x}, past the end of the 0x{flash_size:x} bytes of flash of the layout: move the image or enlarge the flash in the layout"
+            ),
+            Error::MisalignedErase {
+                entry,
+                offset,
+                size,
+                required,
+            } => write!(
+                formatter,
+                "the erase entry \"{entry}\" covers 0x{offset:x}..0x{:x}, which does not start and end on multiples of 0x{required:x}: the flash is erased in whole sectors of 0x{required:x} bytes, so the bytes around the entry would be erased too; align the entry to 0x{required:x}",
+                offset.saturating_add(*size)
+            ),
+            Error::EraseOutsideFlash {
+                entry,
+                end,
+                flash_size,
+            } => write!(
+                formatter,
+                "the erase entry \"{entry}\" ends at 0x{end:x}, past the end of the 0x{flash_size:x} bytes of flash of the layout: shrink the entry or enlarge the flash in the layout"
+            ),
+            Error::OutsideAddressRange {
+                what,
+                end,
+                limit,
+                protocol,
+            } => write!(
+                formatter,
+                "the {what} ends at 0x{end:x}, past 0x{limit:x}, the end of what the {protocol} protocol can address: move it below 0x{limit:x}"
+            ),
+            Error::OutsideDetectedFlash {
+                what,
+                end,
+                flash_size,
+            } => write!(
+                formatter,
+                "the {what} ends at 0x{end:x}, past the end of the 0x{flash_size:x} bytes of flash the chip reports, so nothing was erased or written: move it, or connect a board with more flash"
+            ),
+            Error::NothingToFlash { board } => write!(
+                formatter,
+                "the board \"{board}\" has no image and no erase entry in the manifest: add an image to write"
+            ),
+            Error::EmptyImage { path } => write!(
+                formatter,
+                "the image \"{path}\" is empty: rebuild it, or remove it from the manifest"
+            ),
+            Error::OutOfMemory { what, size } => write!(
+                formatter,
+                "there is not enough memory for the 0x{size:x} bytes of the {what}"
             ),
             Error::UnknownBoard { identifier, known } => write!(
                 formatter,

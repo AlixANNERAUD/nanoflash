@@ -41,7 +41,7 @@ enum Command {
         /// The board of the manifest to flash, when the device cannot tell.
         #[arg(long)]
         board_identifier: Option<String>,
-        /// Erase the whole flash before writing.
+        /// Erase the whole flash of the chip before writing.
         #[arg(long)]
         erase_all: bool,
         /// Do not check what was written.

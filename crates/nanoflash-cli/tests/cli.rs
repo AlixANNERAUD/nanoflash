@@ -850,3 +850,33 @@ fn port_and_replay_conflict() {
     assert_eq!(output.status.code(), Some(1));
     assert!(text(&output.stderr).contains("cannot be used with"));
 }
+
+#[test]
+fn image_build_refuses_offsets_beyond_four_gibibytes() {
+    let directory = tempfile::tempdir().unwrap();
+    fs::write(directory.path().join("small.bin"), [0u8; 16]).unwrap();
+    for offset in ["1099511627776", "18446744073709486080"] {
+        let manifest = directory.path().join("manifest.json");
+        fs::write(
+            &manifest,
+            format!(
+                r#"{{"builds":[{{"chipFamily":"ESP32","parts":[{{"path":"small.bin","offset":{offset}}}]}}]}}"#
+            ),
+        )
+        .unwrap();
+        let merged = directory.path().join("out.bin");
+        let output = run(&[
+            "image",
+            "build",
+            "--board",
+            path_text(&manifest),
+            "--output",
+            path_text(&merged),
+            "--json",
+        ]);
+        assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+        let document = document(&output);
+        assert_eq!(document["errors"][0]["kind"], "outside-address-range");
+        assert!(!merged.exists());
+    }
+}

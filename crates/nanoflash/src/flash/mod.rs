@@ -18,7 +18,7 @@ use crate::backend::{
 use crate::error::Error;
 use crate::manifest::{Manifest, Protocol};
 use crate::transport::{PortProvider, SerialPort};
-pub use prepare::{Prepared, PreparedImage, Warning, image_build, prepare};
+pub use prepare::{Prepared, PreparedErase, PreparedImage, Warning, image_build, prepare};
 pub use select::{Selection, protocol_for_identity, select};
 
 /// Reads the files a manifest names.
@@ -48,7 +48,8 @@ impl ImageVerifier for () {
 pub struct FlashOptions {
     /// The board of the manifest to flash, when the device cannot tell.
     pub board_identifier: Option<String>,
-    /// Whether to erase the whole flash before writing.
+    /// Whether to erase the whole flash before writing: the size the chip reports, else the
+    /// flash size of the layout.
     pub erase_all: bool,
     /// Whether to check what was written.
     pub verify: bool,
@@ -206,6 +207,31 @@ pub async fn flash<P: PortProvider, S: ImageSource>(
     }
 }
 
+/// Checks that every image and erase entry ends inside the `flash_size` bytes the chip reports.
+fn check_detected_flash(prepared: &Prepared, flash_size: u64) -> Result<(), Error> {
+    let images = prepared.images.iter().map(|image| {
+        let size = u64::try_from(image.bytes.len()).unwrap_or(u64::MAX);
+        ("image", &image.label, image.offset.saturating_add(size))
+    });
+    let erase = prepared.erase.iter().map(|entry| {
+        (
+            "erase entry",
+            &entry.label,
+            entry.region.offset.saturating_add(entry.region.size),
+        )
+    });
+    for (kind, label, end) in images.chain(erase) {
+        if end > flash_size {
+            return Err(Error::OutsideDetectedFlash {
+                what: format!("{kind} \"{label}\""),
+                end,
+                flash_size,
+            });
+        }
+    }
+    Ok(())
+}
+
 /// The part of [`flash`] between connecting and resetting into the application.
 async fn flash_connected<P: PortProvider, S: ImageSource>(
     backend: &mut Backends<'_, P>,
@@ -231,14 +257,21 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
             return Err(Error::FlashTooSmall { layout, detected });
         }
     }
+    // Nothing is erased before every image and erase entry is known to fit: `prepare` checked
+    // the address range of the protocol and the layout, this checks the flash of the chip, which
+    // is all a board without a layout (esp-web-tools) is checked against.
+    if let Some(detected) = chip.flash_size {
+        check_detected_flash(&prepared, detected)?;
+    }
     if options.erase_all {
-        let size = layout_size
-            .or(chip.flash_size)
+        let size = chip
+            .flash_size
+            .or(layout_size)
             .ok_or(Error::UnknownFlashSize)?;
         erase(backend, Region { offset: 0, size }, progress).await?;
     }
-    for region in &prepared.erase {
-        erase(backend, *region, progress).await?;
+    for entry in &prepared.erase {
+        erase(backend, entry.region, progress).await?;
     }
     let mut images: Vec<&PreparedImage> = prepared.images.iter().collect();
     images.sort_by_key(|image| image.offset);

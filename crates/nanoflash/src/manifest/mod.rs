@@ -189,6 +189,9 @@ impl TryFrom<RawErase> for EraseTarget {
     fn try_from(raw: RawErase) -> Result<Self, String> {
         match (raw.partition, raw.offset, raw.size) {
             (Some(partition), None, None) => Ok(EraseTarget::Partition(partition)),
+            (None, Some(_), Some(0)) => {
+                Err("an erase entry needs a \"size\" of at least one byte".to_string())
+            }
             (None, Some(offset), Some(size)) => Ok(EraseTarget::Region { offset, size }),
             (None, Some(_), None) => {
                 Err("an erase entry with an \"offset\" needs a \"size\"".to_string())
@@ -745,6 +748,10 @@ sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
             ]
         );
         assert!(Manifest::from_toml(&board("[[board.erase]]\noffset = 0")).is_err());
+        let message = Manifest::from_toml(&board("[[board.erase]]\noffset = 0\nsize = 0"))
+            .unwrap_err()
+            .to_string();
+        assert!(message.contains("at least one byte"), "{message}");
     }
 
     #[test]

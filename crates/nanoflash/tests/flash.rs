@@ -6,7 +6,7 @@ use std::path::Path;
 use nanoflash::Error;
 use nanoflash::backend::{BackendOptions, Progress, ProgressEvent, Stage};
 use nanoflash::flash::{FlashOptions, Hooks, detect, flash};
-use nanoflash::manifest::{Manifest, Protocol};
+use nanoflash::manifest::{EraseTarget, Manifest, Protocol};
 use nanoflash::testing::{MemorySource, ReplayProvider, Transcript, replay};
 use pollster::block_on;
 
@@ -357,4 +357,147 @@ path = "firmware.bin"
         }
     );
     provider.finish().unwrap();
+}
+
+#[test]
+fn erase_all_erases_the_flash_of_the_chip() {
+    // The chip reports 16 MiB of flash, more than the 8 MiB of the layout: all of it is erased.
+    let text = transcript("flash-esp32s3-usb")
+        .replace(
+            "< c0 01 0a 04 00 c8 40 17 00 00 00 00 00 c0",
+            "< c0 01 0a 04 00 c8 40 18 00 00 00 00 00 c0",
+        )
+        .replace(
+            "> c0 00 0b 18 00 00 00 00 00 00 00 00 00 00 00 80 00",
+            "> c0 00 0b 18 00 00 00 00 00 00 00 00 00 00 00 00 01",
+        )
+        .replacen(
+            "> c0 00 10 ",
+            "> c0 00 02 14 00 00 00 00 00 00 00 00 01 00 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 c0\n\
+             < c0 01 02 04 00 00 00 00 00 00 00 00 00 c0\n> c0 00 10 ",
+            1,
+        );
+    let mut progress = Recorder::default();
+    let options = FlashOptions {
+        erase_all: true,
+        ..FlashOptions::default()
+    };
+    let (result, provider) = run_flash(
+        &manifest(),
+        &text,
+        &mut fixture_source(),
+        &options,
+        &mut progress,
+    );
+    assert_eq!(result.unwrap().chip.flash_size, Some(16 * MEBIBYTE));
+    provider.finish().unwrap();
+    let erasing = progress
+        .events
+        .iter()
+        .find(|event| event.stage == Stage::Erasing)
+        .unwrap();
+    assert_eq!((erasing.offset, erasing.total), (0, 16 * MEBIBYTE));
+}
+
+#[test]
+fn a_misaligned_erase_entry_fails_before_connecting() {
+    let mut manifest = manifest();
+    manifest.boards[0].erase.push(EraseTarget::Region {
+        offset: 0x9800,
+        size: 0x100,
+    });
+    let mut progress = Recorder::default();
+    let (result, provider) = run_flash(
+        &manifest,
+        "! identity 303a:1001\n",
+        &mut fixture_source(),
+        &FlashOptions::default(),
+        &mut progress,
+    );
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::MisalignedErase {
+            entry: "region at 0x9800".into(),
+            offset: 0x9800,
+            size: 0x100,
+            required: 0x1000,
+        }
+    );
+    assert!(error.to_string().contains("region at 0x9800"), "{error}");
+    provider.finish().unwrap();
+    assert!(progress.stages.is_empty(), "{:?}", progress.stages);
+}
+
+/// An esp-web-tools manifest whose builds write `bootloader.bin` at the given offsets.
+fn esp_web_tools(builds: &[(&str, u64)]) -> Manifest {
+    let builds: Vec<String> = builds
+        .iter()
+        .map(|(chip, offset)| {
+            format!(
+                r#"{{"chipFamily":"{chip}","parts":[{{"path":"../images/bootloader.bin","offset":{offset}}}]}}"#
+            )
+        })
+        .collect();
+    Manifest::from_json(&format!(r#"{{"builds":[{}]}}"#, builds.join(","))).unwrap()
+}
+
+#[test]
+fn a_part_beyond_four_gibibytes_is_refused_before_erasing() {
+    // Two builds: the board is only known, and its images read, once the chip is detected.
+    let manifest = esp_web_tools(&[("ESP32", 0x1000), ("ESP32-S3", 0x1_0000_0000)]);
+    let mut progress = Recorder::default();
+    let options = FlashOptions {
+        erase_all: true,
+        ..FlashOptions::default()
+    };
+    let (result, provider) = run_flash(
+        &manifest,
+        &transcript("detect-esp32s3-usb"),
+        &mut fixture_source(),
+        &options,
+        &mut progress,
+    );
+    assert_eq!(
+        result.unwrap_err(),
+        Error::OutsideAddressRange {
+            what: "image \"image at 0x100000000\"".into(),
+            end: 0x1_0000_1000,
+            limit: 0x1_0000_0000,
+            protocol: Protocol::Espressif,
+        }
+    );
+    // Connected, then reset into the application: nothing was erased.
+    provider.finish().unwrap();
+    assert_eq!(progress.stages, [Stage::Connecting, Stage::Resetting]);
+}
+
+#[test]
+fn a_part_beyond_the_flash_of_the_chip_is_refused_before_erasing() {
+    let manifest = esp_web_tools(&[("ESP32-S3", 0x40_0000)]);
+    let mut progress = Recorder::default();
+    let options = FlashOptions {
+        erase_all: true,
+        ..FlashOptions::default()
+    };
+    // The chip reports 4 MiB of flash.
+    let (result, provider) = run_flash(
+        &manifest,
+        &transcript("flash-too-small"),
+        &mut fixture_source(),
+        &options,
+        &mut progress,
+    );
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::OutsideDetectedFlash {
+            what: "image \"image at 0x400000\"".into(),
+            end: 0x40_1000,
+            flash_size: 4 * MEBIBYTE,
+        }
+    );
+    assert!(error.to_string().contains("nothing was erased"), "{error}");
+    provider.finish().unwrap();
+    assert_eq!(progress.stages, [Stage::Connecting, Stage::Resetting]);
 }
