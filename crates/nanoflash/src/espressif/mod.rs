@@ -34,6 +34,9 @@ const COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 const REOPEN_TIMEOUT: Duration = Duration::from_secs(5);
 /// The bytes a command reads without finding its answer before it gives up.
 const BYTE_BUDGET: usize = 1024 * 1024;
+/// The bytes one SYNC try reads before the next try: about 0.35 s of noise at 115200 baud, so a
+/// port that streams boot logs or garbage cannot hold up the connection.
+const SYNC_BYTE_BUDGET: usize = 4 * 1024;
 const READ_CHUNK: usize = 64;
 /// The flash size given to `SPI_SET_PARAMS` when it could not be read.
 const DEFAULT_FLASH_SIZE: u32 = 4 * 1024 * 1024;
@@ -55,8 +58,11 @@ const SPI_POLLS: u8 = 10;
 /// How the Espressif backend connects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EspressifOptions {
-    /// The baud rate to switch to after connecting. `None` means 460800 through a UART bridge,
-    /// and 115200 on USB-Serial-JTAG and the ESP32-C2.
+    /// The baud rate to switch to after connecting; `None` means 460800 through a UART bridge.
+    /// USB-Serial-JTAG and the ESP32-C2 keep 115200 whatever is requested, and say so through
+    /// `Progress::message` when another rate was asked for: USB-Serial-JTAG has no baud rate, and
+    /// the ESP32-C2 ROM loader computes rates for a 40 MHz crystal, which many boards replace with
+    /// a 26 MHz one (the rate would then have to be rescaled for the crystal).
     pub baud_rate: Option<u32>,
     /// How many resets to try before giving up.
     pub connect_attempts: u8,
@@ -240,7 +246,12 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
         let mut tries = 0;
         while tries < SYNC_TRIES {
             match self
-                .exchange(opcode::SYNC, &command::SYNC_DATA, SYNC_TIMEOUT)
+                .exchange(
+                    opcode::SYNC,
+                    &command::SYNC_DATA,
+                    SYNC_TIMEOUT,
+                    SYNC_BYTE_BUDGET,
+                )
                 .await
             {
                 Ok(Some(response)) if response.status == 0 => return Ok(true),
@@ -290,12 +301,14 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
     }
 
     /// Sends a command and waits for the response with its opcode, skipping other frames.
-    /// `None` means a read timed out first; a spent byte budget is `NoResponse`.
+    /// `None` means a read timed out first; `budget` bytes read without the answer is
+    /// `NoResponse`.
     async fn exchange(
         &mut self,
         code: u8,
         data: &[u8],
         timeout: Duration,
+        budget: usize,
     ) -> Result<Option<Response>, Error> {
         self.port
             .write(&slip::encode(&command::request(code, data, 0)))
@@ -308,7 +321,7 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
                     _ => {}
                 }
             }
-            if received >= BYTE_BUDGET {
+            if received >= budget {
                 return Err(Error::NoResponse {
                     command: command::name(code),
                 });
@@ -324,7 +337,10 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
     /// Sends a command the ROM loader must answer and accept.
     async fn command(&mut self, code: u8, data: &[u8]) -> Result<Response, Error> {
         let command = command::name(code);
-        match self.exchange(code, data, COMMAND_TIMEOUT).await? {
+        match self
+            .exchange(code, data, COMMAND_TIMEOUT, BYTE_BUDGET)
+            .await?
+        {
             None => Err(Error::NoResponse { command }),
             Some(response) if response.status != 0 => Err(Error::Rom {
                 command,
@@ -404,7 +420,7 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
     /// secure. A spent byte budget and transport errors stand.
     async fn security_info(&mut self) -> Result<(Option<u32>, bool), Error> {
         let response = match self
-            .exchange(opcode::GET_SECURITY_INFO, &[], COMMAND_TIMEOUT)
+            .exchange(opcode::GET_SECURITY_INFO, &[], COMMAND_TIMEOUT, BYTE_BUDGET)
             .await?
         {
             Some(response) if response.status == 0 => response,

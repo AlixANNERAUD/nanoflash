@@ -1,13 +1,17 @@
 //! Transcript tests of the Espressif backend.
 
+use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::path::Path;
+use std::rc::Rc;
 
 use nanoflash::backend::{ChipInformation, ProgressEvent};
 use nanoflash::espressif::{Chip, EspressifBackend, EspressifOptions};
 use nanoflash::manifest::{Protocol, ResetSequence};
 use nanoflash::testing::{ReplayProvider, Transcript, replay};
-use nanoflash::transport::UsbIdentity;
+use nanoflash::transport::{
+    DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
+};
 use nanoflash::{Error, ErrorClass};
 use pollster::block_on;
 
@@ -242,4 +246,74 @@ fn rom_refusals_name_the_command_and_the_code() {
         "the ROM loader refused SPI_ATTACH: the message is malformed (0x05)"
     );
     assert_eq!(error.class(), ErrorClass::Device);
+}
+
+/// A port that answers every read with a full buffer of noise and counts what it sends.
+struct EndlessNoise {
+    /// The bytes read since each SYNC was written, one entry per SYNC.
+    reads: Rc<RefCell<Vec<usize>>>,
+}
+
+impl SerialPort for EndlessNoise {
+    async fn read(
+        &mut self,
+        buffer: &mut [u8],
+        _timeout: Duration,
+    ) -> Result<usize, TransportError> {
+        buffer.fill(0x55);
+        if let Some(count) = self.reads.borrow_mut().last_mut() {
+            *count += buffer.len();
+        }
+        Ok(buffer.len())
+    }
+
+    async fn write(&mut self, _data: &[u8]) -> Result<(), TransportError> {
+        self.reads.borrow_mut().push(0);
+        Ok(())
+    }
+
+    async fn set_baud_rate(&mut self, _baud_rate: u32) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    async fn set_signals(&mut self, _signals: Signals) -> Result<(), TransportError> {
+        Ok(())
+    }
+
+    async fn sleep(&mut self, _duration: Duration) {}
+
+    fn identity(&self) -> Option<UsbIdentity> {
+        None
+    }
+}
+
+struct NoProvider;
+
+impl PortProvider for NoProvider {
+    type Port = EndlessNoise;
+
+    async fn open(
+        &mut self,
+        _filter: &DeviceFilter,
+        _baud_rate: u32,
+        _timeout: Duration,
+    ) -> Result<EndlessNoise, TransportError> {
+        Err(TransportError::Disconnected)
+    }
+}
+
+#[test]
+fn each_sync_try_gives_up_after_four_kibibytes_of_noise() {
+    let reads = Rc::new(RefCell::new(Vec::new()));
+    let port = EndlessNoise {
+        reads: Rc::clone(&reads),
+    };
+    let mut provider = NoProvider;
+    let mut backend = EspressifBackend::new(port, &mut provider, None, attempts(2, None)).unwrap();
+    assert_eq!(
+        block_on(backend.connect(&mut ())).unwrap_err(),
+        Error::NoSync { attempts: 2 }
+    );
+    // Five SYNC tries after each of the two resets, each reading 4 KiB before the next one.
+    assert_eq!(*reads.borrow(), vec![4096; 10]);
 }
