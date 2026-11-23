@@ -112,8 +112,10 @@ export class NanoflashButton extends HTMLElement {
     const state = this.dataset["state"] ?? "";
     const working = WORKING.includes(state);
     this.#button.textContent = this.getAttribute("label") ?? "Install";
+    // Install stays available beside the bootloader button, to start over.
     this.#button.disabled =
-      this.#prepared === undefined || !(state === "ready" || state === "done" || state === "error");
+      this.#prepared === undefined ||
+      !["ready", "done", "error", "bootloader-permission"].includes(state);
     this.#erase.hidden = !(this.#prepared?.promptErase === true) || this.hasAttribute("erase-all");
     this.#checkbox.disabled = working;
     this.#progress.hidden = !working;

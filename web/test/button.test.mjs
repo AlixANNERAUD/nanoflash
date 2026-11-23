@@ -209,6 +209,7 @@ test("asks for any port when the manifest names no bootloader device", async () 
     },
   });
   mount("esp-web-tools.json");
+  const failures = events(element, "nanoflash-error");
   await waitFor("ready");
   part("button").click();
   await waitFor("bootloader-permission");
@@ -216,6 +217,33 @@ test("asks for any port when the manifest names no bootloader device", async () 
   await new Promise((resolve) => setTimeout(resolve, 50));
   assert.deepEqual(requested[1], {});
   assert.equal(state(), "bootloader-permission");
+  assert.equal(failures.length, 0);
+  assert.equal(part("bootloader-button").disabled, false);
+});
+
+test("Install starts over after the bootloader chooser was closed", async () => {
+  const lost = mockPort(transcript("connect-reopen"));
+  const good = mockPort(transcript("flash-esp32s3-usb"));
+  let requests = 0;
+  restoreNavigator = installNavigator([], {
+    onRequestPort: () => {
+      requests += 1;
+      if (requests === 1) return lost.port;
+      if (requests === 2) throw new DOMException("No port selected by the user.", "NotFoundError");
+      return good.port;
+    },
+  });
+  mount("esp32-s3-usb.json");
+  await waitFor("ready");
+  part("button").click();
+  await waitFor("bootloader-permission");
+  part("bootloader-button").click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(requests, 2);
+  assert.equal(part("button").disabled, false);
+  part("button").click();
+  await waitFor("done");
+  good.finish();
 });
 
 test("loads the manifest once when it is there at connection", async () => {
