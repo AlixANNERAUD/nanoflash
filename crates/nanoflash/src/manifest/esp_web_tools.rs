@@ -62,11 +62,12 @@ pub(super) fn convert(text: &str) -> Result<Manifest, ManifestError> {
             Some(name) => alloc::format!("{name} ({})", build.chip_family),
             None => build.chip_family.clone(),
         };
-        // An unknown `serialType` is read as no reset: the backend then decides from the port.
+        // An absent or unknown `serialType` leaves the reset to the backend, which decides
+        // from the port.
         let reset = match build.serial_type.as_deref() {
-            Some("uart") => ResetSequence::EspressifClassic,
-            Some("cdc") => ResetSequence::EspressifUsbSerialJtag,
-            _ => ResetSequence::None,
+            Some("uart") => Some(ResetSequence::EspressifClassic),
+            Some("cdc") => Some(ResetSequence::EspressifUsbSerialJtag),
+            _ => None,
         };
         boards.push(Board {
             identifier,
@@ -74,7 +75,7 @@ pub(super) fn convert(text: &str) -> Result<Manifest, ManifestError> {
             protocol: Protocol::Espressif,
             chip,
             layout: None,
-            reset: Some(reset),
+            reset,
             application_devices: Vec::new(),
             bootloader_devices: Vec::new(),
             images: build
@@ -129,7 +130,7 @@ mod tests {
                 },
             ]
         );
-        assert_eq!(manifest.boards[1].reset, Some(ResetSequence::None));
+        assert_eq!(manifest.boards[1].reset, None);
         assert_eq!(manifest.boards[1].name.as_deref(), Some("Demo (ESP32-S3)"));
         assert!(manifest.boards[1].application_devices.is_empty());
     }
@@ -139,7 +140,7 @@ mod tests {
         let text = r#"{"builds":[
             {"chipFamily":"ESP32-C3","serialType":"cdc","parts":[]},
             {"chipFamily":"ESP32-C3","parts":[]},
-            {"chipFamily":"ESP32-C3","parts":[]}]}"#;
+            {"chipFamily":"ESP32-C3","serialType":"other","parts":[]}]}"#;
         let manifest = Manifest::from_json(text).unwrap();
         let identifiers: Vec<&str> = manifest
             .boards
@@ -152,6 +153,7 @@ mod tests {
             Some(ResetSequence::EspressifUsbSerialJtag)
         );
         assert_eq!(manifest.boards[0].name, Some("ESP32-C3".into()));
+        assert_eq!(manifest.boards[1].reset, None);
         assert!(!manifest.prompt_erase);
     }
 
