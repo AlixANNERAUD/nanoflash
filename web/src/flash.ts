@@ -1,4 +1,4 @@
-import { dropBackend, loadBackend, settle } from "./backend.js";
+import { assertUsable, loadBackend, settle } from "./backend.js";
 import { camelize } from "./convert.js";
 import { NanoflashError } from "./errors.js";
 import type {
@@ -233,6 +233,7 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
     promptErase: reading.promptErase,
     async flash(options: FlashOptions = {}): Promise<FlashReport> {
       const protocol = chooseProtocol(options.boardIdentifier);
+      assertUsable(protocol);
       // The first await: a click handler loses its user activation after others.
       const port = options.port ?? (await requestPort(reading.filters));
       const backend = await loadBackend(protocol);
@@ -264,7 +265,7 @@ export async function prepare(manifestUrl: string | URL): Promise<Prepared> {
         );
         return camelize<FlashReport>(report);
       } catch (error) {
-        throw await settle(error, () => dropBackend(protocol), [port]);
+        throw await settle(error, protocol, [port]);
       }
     },
   };
@@ -279,9 +280,9 @@ export async function flash(manifestUrl: string | URL, options: FlashOptions = {
 export async function detect(options: {
   protocol: Protocol;
   port?: SerialPortLike;
-  baudRate?: number;
   onProgress?: (event: ProgressEvent) => void;
 }): Promise<ChipInformation> {
+  assertUsable(options.protocol);
   const port = options.port ?? (await requestPort([]));
   const backend = await loadBackend(options.protocol);
   try {
@@ -292,6 +293,6 @@ export async function detect(options: {
     );
     return camelize<ChipInformation>(chip);
   } catch (error) {
-    throw await settle(error, () => dropBackend(options.protocol), [port]);
+    throw await settle(error, options.protocol, [port]);
   }
 }

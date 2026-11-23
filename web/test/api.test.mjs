@@ -314,3 +314,34 @@ test("camelize converts keys, not values", () => {
     },
   );
 });
+
+test("a trap breaks the module: the port is closed and later calls fail fast", async () => {
+  const backend = await loadBackend("espressif");
+  const original = backend.detect;
+  let calls = 0;
+  backend.detect = async () => {
+    calls += 1;
+    throw new WebAssembly.RuntimeError("unreachable");
+  };
+  try {
+    let closed = 0;
+    const port = { close: async () => void (closed += 1) };
+    const error = await rejection(detect({ protocol: "espressif", port }));
+    assert.ok(error instanceof NanoflashError);
+    assert.equal(error.kind, "module-broken");
+    assert.equal(error.errorClass, "device");
+    assert.match(error.message, /reload the page/);
+    assert.equal(closed, 1);
+
+    const untouched = {
+      close: async () => assert.fail("the port must not be touched"),
+    };
+    const again = await rejection(detect({ protocol: "espressif", port: untouched }));
+    assert.strictEqual(again, error);
+    const flashAgain = await rejection(flash(`${BASE}/esp32-s3-usb.json`, { port: untouched }));
+    assert.strictEqual(flashAgain, error);
+    assert.equal(calls, 1);
+  } finally {
+    backend.detect = original;
+  }
+});

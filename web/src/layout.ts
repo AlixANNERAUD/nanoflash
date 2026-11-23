@@ -1,5 +1,5 @@
 import { camelize } from "./convert.js";
-import { settle } from "./backend.js";
+import { assertUsable, settle } from "./backend.js";
 import type { LayoutFormat, LayoutReport } from "./types.js";
 
 type CoreModule = typeof import("./wasm/nanoflash_core.js");
@@ -24,11 +24,10 @@ function loadCore(): Promise<CoreModule> {
 
 async function run<T>(call: (module: CoreModule) => T): Promise<T> {
   try {
+    assertUsable("core");
     return call(await loadCore());
   } catch (error) {
-    throw await settle(error, () => {
-      core = undefined;
-    });
+    throw await settle(error, "core");
   }
 }
 

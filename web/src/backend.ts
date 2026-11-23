@@ -28,8 +28,20 @@ const modules: Partial<Record<Protocol, () => Promise<WasmModule>>> = {
 
 const cache = new Map<Protocol, Promise<BackendModule>>();
 
+// Modules that trapped. An ES module keeps its WebAssembly instance, which cannot be replaced
+// after a trap: every later call fails at once, and the page has to be reloaded.
+const broken = new Map<string, NanoflashError>();
+
+/** Throws the error of the module `key` (a protocol, or `core`) if it trapped before. */
+export function assertUsable(key: string): void {
+  const error = broken.get(key);
+  if (error !== undefined) throw error;
+}
+
 /** Loads and initialises the module of `protocol`, once. */
 export function loadBackend(protocol: Protocol): Promise<BackendModule> {
+  const failure = broken.get(protocol);
+  if (failure !== undefined) return Promise.reject(failure);
   const cached = cache.get(protocol);
   if (cached !== undefined) return cached;
   const load = modules[protocol];
@@ -56,11 +68,6 @@ export function loadBackend(protocol: Protocol): Promise<BackendModule> {
   return promise;
 }
 
-/** Forgets the module of `protocol`, so that the next call instantiates it again. */
-export function dropBackend(protocol: Protocol): void {
-  cache.delete(protocol);
-}
-
 const CLOSE_TIMEOUT_MS = 3000;
 
 /** Closes `port`, ignoring errors and not waiting more than a few seconds. */
@@ -81,17 +88,28 @@ export async function closePort(port: SerialPortLike): Promise<void> {
 }
 
 /**
- * Turns what a call of a module threw into a `NanoflashError`. A trap leaves the module in an
- * unknown state: `drop` forgets it and the ports the call held are closed.
+ * Turns what a call of the module `key` threw into a `NanoflashError`. A trap leaves the module
+ * in an unknown state and it cannot be instantiated again: the ports the call held are closed,
+ * the module is marked broken, and every later call on it fails with `module-broken` (the page
+ * has to be reloaded).
  */
 export async function settle(
   error: unknown,
-  drop: () => void,
+  key: string,
   ports: readonly SerialPortLike[] = [],
 ): Promise<NanoflashError> {
-  if (isTrap(error)) {
-    drop();
-    await Promise.all(ports.map(closePort));
-  }
-  return fromWasm(error);
+  if (!isTrap(error)) return fromWasm(error);
+  await Promise.all(ports.map(closePort));
+  const existing = broken.get(key);
+  if (existing !== undefined) return existing;
+  const reason = error instanceof Error ? error.message : String(error);
+  const failure = new NanoflashError(
+    "module-broken",
+    "device",
+    `the WebAssembly module "${key}" stopped on an unexpected failure (${reason}) and cannot be used again: reload the page`,
+    {},
+    { raw: error },
+  );
+  broken.set(key, failure);
+  return failure;
 }

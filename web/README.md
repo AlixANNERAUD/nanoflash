@@ -84,8 +84,9 @@ const table: Uint8Array = await writeLayout(text, "espressif"); // or "mbr", "li
 
 Every failure is a `NanoflashError` with `kind` (such as `no-sync`, `verification-failed`,
 `not-granted`, `disconnected`), `errorClass` (`input`, `device` or `verification`), `message`,
-`details`, `during` and the `raw` object of the library. A WebAssembly trap is fatal: the module
-is instantiated again at the next call and the port is closed.
+`details`, `during` and the `raw` object of the library. A WebAssembly trap is fatal: the port is
+closed, the module is marked broken (it cannot be instantiated again) and every later call that
+needs it fails at once with kind `module-broken` (class `device`). Reload the page.
 
 ## Component
 
