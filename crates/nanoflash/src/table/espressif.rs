@@ -341,6 +341,7 @@ mod tests {
             flash: Flash {
                 size: 16 << 20,
                 alignment: 0x1000,
+                detect: false,
                 base_address: 0,
             },
             partitions,
@@ -648,6 +649,7 @@ mod tests {
             flash: Flash {
                 size: 8 << 30,
                 alignment: 0x1000,
+                detect: false,
                 base_address: 0,
             },
             partitions: vec![

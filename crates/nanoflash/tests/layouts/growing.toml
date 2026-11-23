@@ -1,0 +1,26 @@
+[flash]
+size = "detect"
+minimum = "512 KiB"
+base-address = 0x0
+
+[[partition]]
+name = "bootloader"
+role = "bootloader"
+offset = 0x0
+size = "64 KiB"
+
+[[partition]]
+name = "application"
+role = "firmware"
+size = "256 KiB"
+
+[[partition]]
+name = "storage"
+role = "storage"
+filesystem = "littlefs"
+size = { minimum = "64 KiB", grow = 1 }
+
+[[partition]]
+name = "log"
+role = "custom"
+size = "4 KiB"

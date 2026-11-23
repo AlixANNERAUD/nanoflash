@@ -123,7 +123,12 @@ impl Layout {
                 },
             };
 
-            let size = match partition.size {
+            // Until growth is resolved, a growing size takes its minimum.
+            let declared = match partition.size {
+                Size::Grow { minimum, .. } => Size::Bytes(minimum),
+                other => other,
+            };
+            let size = match declared {
                 Size::Bytes(0) => {
                     errors.push(LayoutError::ZeroSize {
                         partition: partition.name.clone(),
@@ -131,6 +136,7 @@ impl Layout {
                     continue;
                 }
                 Size::Bytes(bytes) => bytes,
+                Size::Grow { .. } => continue,
                 Size::Remaining => {
                     let next = self.partitions.get(index + 1);
                     let limit = match next {
@@ -278,6 +284,7 @@ mod tests {
         Flash {
             size,
             alignment,
+            detect: false,
             base_address: 0,
         }
     }
@@ -355,6 +362,7 @@ mod tests {
         let a = resolved.partition("a").unwrap();
         assert_eq!(a.address(&resolved.flash), Some(0x0800_1000));
         let far = Flash {
+            detect: false,
             base_address: u64::MAX,
             ..resolved.flash
         };
@@ -667,6 +675,7 @@ mod tests {
                 flash: Flash {
                     size: size - size % alignment,
                     alignment,
+                    detect: false,
                     base_address,
                 },
                 partitions: parts

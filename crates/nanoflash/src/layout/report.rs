@@ -216,6 +216,7 @@ mod tests {
             flash: Flash {
                 size: 0xE000,
                 alignment: 0x1000,
+                detect: false,
                 base_address: 0,
             },
             partitions: vec![part("a", Some(0), 0x4000), part("b", Some(0x5000), 0x7000)],
@@ -236,6 +237,18 @@ mod tests {
             mbr: None,
             linker: None,
         }
+    }
+
+    #[test]
+    fn sizes_round_trip_through_json() {
+        let grow = Size::Grow {
+            minimum: 4096,
+            grow: core::num::NonZeroU32::new(3).unwrap(),
+            maximum: None,
+        };
+        let text = r#"{"grow":{"minimum":4096,"grow":3,"maximum":null}}"#;
+        assert_eq!(serde_json::to_string(&grow).unwrap(), text);
+        assert_eq!(serde_json::from_str::<Size>(text).unwrap(), grow);
     }
 
     #[test]
