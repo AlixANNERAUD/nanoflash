@@ -8,6 +8,7 @@ use core::fmt;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
+use super::intel_hex::{IntelHexError, decode_intel_hex, is_eeprom_image, is_intel_hex};
 use super::{ImageSource, ImageVerifier};
 use crate::backend::Region;
 use crate::error::Error;
@@ -151,6 +152,29 @@ struct Placement<'a> {
     /// The size of the partition the image is meant for.
     partition_size: Option<u64>,
     origin: Origin<'a>,
+}
+
+/// The span of the largest flash of the chips nanoflash supports (32 MiB), the bound of an Intel
+/// HEX image when the board has no layout.
+const MAXIMUM_HEX_SPAN: u64 = 0x200_0000;
+
+/// Decodes the Intel HEX `text` read from `path`.
+fn intel_hex_image(
+    path: &str,
+    text: &[u8],
+    maximum_span: u64,
+) -> Result<super::IntelHexImage, Error> {
+    decode_intel_hex(text, maximum_span).map_err(|error| match error {
+        IntelHexError::Invalid { line, message } => Error::IntelHex {
+            path: path.to_string(),
+            line,
+            message,
+        },
+        IntelHexError::OutOfMemory { size } => Error::OutOfMemory {
+            what: format!("Intel HEX image \"{path}\""),
+            size,
+        },
+    })
 }
 
 fn hexadecimal(bytes: &[u8]) -> String {
@@ -325,6 +349,10 @@ fn check_erase(
 /// lands on, the table generated from the layout is added. Images and erase entries are checked
 /// against the erase unit and the address range of the protocol, and the flash of the layout.
 /// A board without images and erase entries, and an empty image, are refused.
+///
+/// A file named `.hex` or `.ihex` is Intel HEX: the digest and the verifier see the text, the
+/// image is the decoded span, and its lowest address must be the placement of the image plus the
+/// base address of the flash of the layout. A file named `.eep` is refused: EEPROM is not written.
 pub async fn prepare<S: ImageSource>(
     board: &Board,
     source: &mut S,
@@ -452,7 +480,39 @@ pub async fn prepare<S: ImageSource>(
                         path: path.to_string(),
                         reason,
                     })?;
-                bytes
+                if is_eeprom_image(path) {
+                    return Err(Error::ImageRejected {
+                        path: path.to_string(),
+                        reason: "EEPROM images are not written; remove it from the manifest"
+                            .to_string(),
+                    });
+                }
+                if is_intel_hex(path) {
+                    // Addresses of an Intel HEX file are the addresses of the memory map: the
+                    // offset of the placement plus the base address of the flash of the layout.
+                    let base = layout
+                        .as_ref()
+                        .map_or(0, |layout| layout.flash.base_address);
+                    let expected = base.saturating_add(placement.offset);
+                    let maximum = layout
+                        .as_ref()
+                        .map_or(MAXIMUM_HEX_SPAN, |layout| layout.flash.size);
+                    let image = intel_hex_image(path, &bytes, maximum)?;
+                    if image.start != expected {
+                        return Err(Error::IntelHex {
+                            path: path.to_string(),
+                            line: None,
+                            message: format!(
+                                "starts at 0x{:x}, and the manifest places it at 0x{expected:x}: set the offset of the image to 0x{:x}, or name the partition that starts there",
+                                image.start,
+                                image.start.saturating_sub(base)
+                            ),
+                        });
+                    }
+                    image.bytes
+                } else {
+                    bytes
+                }
             }
         };
         if let Some((table_index, name, Some(generated))) = &table_image {
@@ -1162,5 +1222,125 @@ mod tests {
             )),
             Err(Error::BoardRequired { .. })
         ));
+    }
+
+    const HEX: &str = include_str!("../../tests/images/avr-application.hex");
+    const UNO: &str = include_str!("../../tests/layouts/uno.toml");
+
+    fn hex_source(layout: &str) -> MemorySource {
+        let mut source = fixture_source();
+        source
+            .files
+            .insert("../layouts/uno.toml".into(), layout.as_bytes().to_vec());
+        source
+            .files
+            .insert("avr-application.hex".into(), HEX.as_bytes().to_vec());
+        source
+    }
+
+    fn hex_board(offset: &str, extra: &str) -> Board {
+        let text = format!(
+            "[[board]]\nidentifier = \"u\"\nprotocol = \"espressif\"\nchip = \"esp32\"\nlayout = \"../layouts/uno.toml\"\n[[board.image]]\noffset = {offset}\npath = \"avr-application.hex\"\n{extra}"
+        );
+        Manifest::from_toml(&text).unwrap().boards.remove(0)
+    }
+
+    #[test]
+    fn hex_images_are_placed_where_they_start() {
+        let prepared = prepare_with(&hex_board("0", ""), &mut hex_source(UNO)).unwrap();
+        assert_eq!(prepared.images.len(), 1);
+        assert_eq!(prepared.images[0].bytes.len(), 300);
+        assert_eq!(prepared.images[0].offset, 0);
+
+        let error = prepare_with(&hex_board("0x1000", ""), &mut hex_source(UNO)).unwrap_err();
+        match &error {
+            Error::IntelHex {
+                line: None,
+                message,
+                ..
+            } => {
+                assert!(
+                    message.contains("0x0") && message.contains("0x1000"),
+                    "{message}"
+                );
+            }
+            other => panic!("{other:?}"),
+        }
+        // The digest is the one of the file, not of the decoded bytes.
+        let file = "c4ba8536e262509cb35fbe5da801c89d3695d5f5d46c99cccae49aae6b8152da";
+        let decoded = "b1b36f51f514d11c6cd3a9656327f180209d503961ff0616db46cf88921deb28";
+        let accepted = hex_board("0", &format!("sha256 = \"{file}\"\n"));
+        assert!(prepare_with(&accepted, &mut hex_source(UNO)).is_ok());
+        let refused = hex_board("0", &format!("sha256 = \"{decoded}\"\n"));
+        assert!(matches!(
+            prepare_with(&refused, &mut hex_source(UNO)),
+            Err(Error::ChecksumMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn hex_addresses_include_the_base_address_of_the_flash() {
+        let layout = UNO.replace("base-address = 0x0", "base-address = 0x1000");
+        let error = prepare_with(&hex_board("0", ""), &mut hex_source(&layout)).unwrap_err();
+        match &error {
+            Error::IntelHex { message, .. } => {
+                assert!(
+                    message.contains("starts at 0x0") && message.contains("0x1000"),
+                    "{message}"
+                )
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut source = hex_source(&layout);
+        source.files.insert(
+            "avr-application.hex".into(),
+            b":020000040000FA\n:0100000055AA\n:00000001FF\n".to_vec(),
+        );
+        assert!(prepare_with(&hex_board("0", ""), &mut source).is_err());
+    }
+
+    #[test]
+    fn eeprom_images_are_refused() {
+        let mut source = hex_source(UNO);
+        source
+            .files
+            .insert("sketch.eep".into(), HEX.as_bytes().to_vec());
+        let board = Manifest::from_toml(
+            "[[board]]\nidentifier = \"u\"\nprotocol = \"espressif\"\nchip = \"esp32\"\n[[board.image]]\noffset = 0\npath = \"sketch.eep\"\n",
+        )
+        .unwrap()
+        .boards
+        .remove(0);
+        match prepare_with(&board, &mut source) {
+            Err(Error::ImageRejected { reason, .. }) => assert!(reason.contains("EEPROM")),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn hex_errors_name_the_image_and_the_line() {
+        let mut source = hex_source(UNO);
+        source
+            .files
+            .insert("avr-application.hex".into(), b":0100000055AB\n".to_vec());
+        let error = prepare_with(&hex_board("0", ""), &mut source).unwrap_err();
+        let text = error.to_string();
+        assert!(
+            text.contains("\"avr-application.hex\" is invalid at line 1"),
+            "{text}"
+        );
+        assert!(
+            text.ends_with("rebuild it, or give its binary form"),
+            "{text}"
+        );
+        let nothing = Error::IntelHex {
+            path: "a.hex".into(),
+            line: None,
+            message: "m".into(),
+        };
+        assert_eq!(
+            nothing.to_string(),
+            "the Intel HEX image \"a.hex\" is invalid: m: rebuild it, or give its binary form"
+        );
     }
 }

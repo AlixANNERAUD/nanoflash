@@ -2,6 +2,7 @@
 //! backend: choosing the board a device is, preparing its images, then connecting, erasing,
 //! writing, verifying and resetting.
 
+mod intel_hex;
 mod prepare;
 mod select;
 
@@ -18,6 +19,7 @@ use crate::backend::{
 use crate::error::Error;
 use crate::manifest::{Board, Manifest, Protocol};
 use crate::transport::{DeviceFilter, PortProvider, SerialPort};
+pub use intel_hex::{IntelHexError, IntelHexImage, decode_intel_hex, is_intel_hex};
 pub use prepare::{Prepared, PreparedErase, PreparedImage, Warning, image_build, prepare};
 pub use select::{Selection, protocol_for_identity, select};
 
@@ -32,6 +34,9 @@ pub trait ImageSource {
 }
 
 /// Decides whether an image may be flashed, such as by checking a signature.
+///
+/// It sees the file as read: for an Intel HEX image (`.hex`), the text, not the bytes it decodes
+/// to.
 pub trait ImageVerifier {
     /// Accepts the image read from `path`, or says why not.
     fn verify(&mut self, path: &str, bytes: &[u8]) -> Result<(), String>;

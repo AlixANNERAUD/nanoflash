@@ -346,6 +346,11 @@ sha256 = "9f86d0..."               # optional
 - Hooks supplied by the caller: `ImageSource` (fetch bytes; files natively, `fetch` in the
   browser), `ImageVerifier` (called after SHA-256, for signatures or anything else),
   `Progress` (events: stage, bytes done and total).
+- **Intel HEX images** (`.hex`, `.ihex`, by extension) are decoded in `prepare` for every protocol,
+  after the SHA-256 check and the verifier, which see the file as read. The image is the span from
+  the lowest to the highest address, `0xFF` in the gaps. Its lowest address is an address of the
+  memory map: it must equal the offset of the image plus the `base-address` of the flash of the
+  layout. `.eep` files (EEPROM) are refused.
 
 ### Command line
 

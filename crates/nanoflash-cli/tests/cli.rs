@@ -1178,3 +1178,46 @@ fn replays_the_emulator_recording() {
     assert_eq!(document["ok"], true);
     assert_eq!(document["report"]["verified"], true);
 }
+
+#[test]
+fn layout_check_counts_hex_images_decoded() {
+    let layout = fixture("uno.toml");
+    let hex = images("avr-application.hex");
+    let argument = format!("application={}", path_text(&hex));
+    let output = run(&[
+        "layout",
+        "check",
+        path_text(&layout),
+        "--image",
+        &argument,
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let document: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let entry = document["report"]["partitions"]
+        .as_array()
+        .or_else(|| document["partitions"].as_array())
+        .and_then(|partitions| {
+            partitions
+                .iter()
+                .find(|entry| entry["name"] == "application")
+        })
+        .unwrap_or_else(|| panic!("{document}"));
+    assert_eq!(entry["image_size"], 300, "{entry}");
+}
+
+#[test]
+fn layout_check_names_the_line_of_a_bad_hex_image() {
+    let directory = tempfile::tempdir().unwrap();
+    let hex = directory.path().join("broken.hex");
+    fs::write(&hex, ":0100000055AB\n:00000001FF\n").unwrap();
+    let layout = fixture("uno.toml");
+    let argument = format!("application={}", path_text(&hex));
+    let output = run(&["layout", "check", path_text(&layout), "--image", &argument]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        text(&output.stderr).contains("is invalid at line 1"),
+        "{}",
+        text(&output.stderr)
+    );
+}

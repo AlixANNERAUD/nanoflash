@@ -3,7 +3,8 @@
 use crate::Format;
 use crate::output::{self, Failure};
 use crate::source;
-use nanoflash::flash::{Warning, prepare};
+use nanoflash::error::Error;
+use nanoflash::flash::{IntelHexError, Warning, decode_intel_hex, is_intel_hex, prepare};
 use nanoflash::layout::{ImageSize, Layout, LayoutErrors, ResolvedLayout};
 use nanoflash::manifest::{Board, Manifest};
 use nanoflash::table::{TableError, espressif, linker, mbr};
@@ -20,7 +21,9 @@ pub fn load(path: &Path) -> Result<ResolvedLayout, Failure> {
         .map_err(|LayoutErrors(errors)| Failure::Layout(errors))
 }
 
-fn image_size(argument: &str) -> Result<ImageSize, Failure> {
+/// The size of the image of an `--image` argument: its file, or its decoded span for Intel HEX
+/// (`.hex`), which may span at most `maximum_span` bytes.
+fn image_size(argument: &str, maximum_span: u64) -> Result<ImageSize, Failure> {
     let Some((partition, file)) = argument.split_once('=') else {
         return Err(Failure::Input(format!(
             "bad --image argument \"{argument}\": expected PARTITION=FILE"
@@ -38,9 +41,27 @@ fn image_size(argument: &str) -> Result<ImageSize, Failure> {
             "cannot read image {file}: not a regular file"
         )));
     }
+    let size = if is_intel_hex(file) {
+        let text = fs::read(file)
+            .map_err(|error| Failure::Input(format!("cannot read image {file}: {error}")))?;
+        let image = decode_intel_hex(&text, maximum_span).map_err(|error| {
+            Failure::Input(match error {
+                IntelHexError::Invalid { line, message } => Error::IntelHex {
+                    path: file.to_string(),
+                    line,
+                    message,
+                }
+                .to_string(),
+                IntelHexError::OutOfMemory { .. } => format!("cannot read image {file}: {error}"),
+            })
+        })?;
+        u64::try_from(image.bytes.len()).unwrap_or(u64::MAX)
+    } else {
+        metadata.len()
+    };
     Ok(ImageSize {
         partition: partition.to_string(),
-        size: metadata.len(),
+        size,
     })
 }
 
@@ -153,7 +174,7 @@ pub fn check(
         }
         None => images
             .iter()
-            .map(|argument| image_size(argument))
+            .map(|argument| image_size(argument, resolved.flash.size))
             .collect::<Result<Vec<_>, _>>()?,
     };
     let report = resolved

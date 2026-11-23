@@ -104,6 +104,15 @@ pub enum Error {
         /// What went wrong.
         message: String,
     },
+    /// An Intel HEX image is invalid, or does not go where the manifest places it.
+    IntelHex {
+        /// The path, as written in the manifest, or the file given to the command line.
+        path: String,
+        /// The 1-based line of the problem, when it is on one line.
+        line: Option<usize>,
+        /// What is wrong.
+        message: String,
+    },
     /// An image does not have the SHA-256 digest the manifest gives.
     ChecksumMismatch {
         /// The path, as written in the manifest.
@@ -389,6 +398,7 @@ impl Error {
             | Error::ImageSource { .. }
             | Error::ChecksumMismatch { .. }
             | Error::ImageRejected { .. }
+            | Error::IntelHex { .. }
             | Error::ImageNeedsLayout { .. }
             | Error::UnknownPartition { .. }
             | Error::MisalignedImage { .. }
@@ -537,6 +547,20 @@ impl fmt::Display for Error {
                 formatter,
                 "the image \"{path}\" has the SHA-256 digest {actual} instead of {expected}: rebuild the image or update the \"sha256\" of the manifest"
             ),
+            Error::IntelHex {
+                path,
+                line,
+                message,
+            } => {
+                write!(formatter, "the Intel HEX image \"{path}\" is invalid")?;
+                if let Some(line) = line {
+                    write!(formatter, " at line {line}")?;
+                }
+                write!(
+                    formatter,
+                    ": {message}: rebuild it, or give its binary form"
+                )
+            }
             Error::ImageRejected { path, reason } => {
                 write!(formatter, "the image \"{path}\" was rejected: {reason}")
             }
