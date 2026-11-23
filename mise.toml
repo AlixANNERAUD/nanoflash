@@ -41,6 +41,8 @@ run = [
   "cargo test -p nanoflash --no-default-features --features flash",
   "cargo test -p nanoflash --no-default-features --features espressif",
   "cargo test -p nanoflash --no-default-features --features samba",
+  # The flash tests without the samba feature, so that `disabled_protocol` runs.
+  "cargo test -p nanoflash --no-default-features --features espressif,json,testing --test flash",
   "cargo test -p nanoflash --no-default-features --features toml,json",
   "cargo test -p nanoflash --no-default-features --features web",
 ]
