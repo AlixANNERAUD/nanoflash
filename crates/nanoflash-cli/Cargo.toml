@@ -2,7 +2,7 @@
 name = "nanoflash-cli"
 version = "0.1.0"
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.88"
 authors.workspace = true
 license.workspace = true
 repository.workspace = true
@@ -15,7 +15,8 @@ name = "nanoflash"
 path = "src/main.rs"
 
 [dependencies]
-clap.workspace = true
+getargs = "0.5"
+getargs-derive = { version = "0.1", features = ["std"] }
 nanoflash = { path = "../nanoflash", version = "0.1.0", features = ["toml", "table-espressif", "table-mbr", "table-linker"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

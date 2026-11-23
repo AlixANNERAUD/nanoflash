@@ -4,7 +4,7 @@
 
 mod output;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use getargs_derive::{Error as ArgumentError, GetArgs, Subcommand, ValueEnum};
 use nanoflash::layout::{ImageSize, Layout, LayoutErrors, ResolvedLayout};
 use nanoflash::table::{TableError, espressif, linker, mbr};
 use output::Failure;
@@ -15,8 +15,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 /// Lay out flash and write firmware to microcontroller boards of any vendor.
-#[derive(Debug, Parser)]
-#[command(name = "nanoflash", version, about)]
+#[derive(Debug, GetArgs)]
+#[command(name = "nanoflash", version)]
 struct Arguments {
     #[command(subcommand)]
     command: Command,
@@ -60,7 +60,7 @@ enum LayoutCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 enum Format {
     /// The Espressif partition table (binary).
     Espressif,
@@ -85,7 +85,7 @@ impl Format {
 
 fn main() -> ExitCode {
     let raw: Vec<OsString> = std::env::args_os().collect();
-    let arguments = match Arguments::try_parse_from(&raw) {
+    let arguments = match Arguments::from_args_os() {
         Ok(arguments) => arguments,
         Err(error) => return argument_error(&error, &raw),
     };
@@ -123,16 +123,15 @@ fn emit(destination: &mut impl Write, text: &str, code: u8) -> ExitCode {
 
 /// Report an argument error: help and version succeed, anything else exits 1, as JSON when
 /// `--json` was given.
-fn argument_error(error: &clap::Error, raw: &[OsString]) -> ExitCode {
-    if !error.use_stderr() {
-        let _ = error.print();
-        return ExitCode::SUCCESS;
+fn argument_error(error: &ArgumentError<'_>, raw: &[OsString]) -> ExitCode {
+    if error.is_help() || error.is_version() {
+        return emit(&mut io::stdout().lock(), &format!("{error}\n"), 0);
     }
     if raw.iter().any(|argument| argument == "--json") {
-        let message = error.render().to_string().trim_end().to_string();
+        let message = error.to_string().trim_end().to_string();
         emit(&mut io::stdout().lock(), &Failure::Input(message).json(), 1)
     } else {
-        emit(&mut io::stderr().lock(), &error.render().to_string(), 1)
+        emit(&mut io::stderr().lock(), &format!("error: {error}\n"), 1)
     }
 }
 
