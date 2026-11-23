@@ -61,10 +61,10 @@ pub struct ResetStep {
     pub dtr: bool,
     /// Request to send.
     pub rts: bool,
-    /// How long to wait after setting the lines.
+    /// How long to wait after setting the lines, at most 10 s.
     #[serde(
         default,
-        deserialize_with = "deserialize_duration",
+        deserialize_with = "deserialize_wait",
         serialize_with = "serialize_duration"
     )]
     pub wait: Duration,
@@ -75,6 +75,21 @@ fn serialize_duration<S: Serializer>(
     serializer: S,
 ) -> Result<S::Ok, S::Error> {
     serializer.collect_str(&format_args!("{} ms", duration.as_millis()))
+}
+
+/// The longest a custom reset step may wait: resets take milliseconds, and the wait blocks.
+pub const MAXIMUM_RESET_WAIT: Duration = Duration::from_secs(10);
+
+fn deserialize_wait<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+    let wait = deserialize_duration(deserializer)?;
+    if wait > MAXIMUM_RESET_WAIT {
+        return Err(de::Error::custom(alloc::format!(
+            "a reset step waits {} ms, longer than the {} ms a step may wait: shorten the wait",
+            wait.as_millis(),
+            MAXIMUM_RESET_WAIT.as_millis()
+        )));
+    }
+    Ok(wait)
 }
 
 fn deserialize_duration<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
@@ -495,9 +510,11 @@ impl Manifest {
         Manifest::try_from(raw)
     }
 
-    /// Read a manifest, as JSON when the first non-blank character is `{`, as TOML otherwise.
+    /// Read a manifest, as JSON when the first non-blank character is `{`, as TOML otherwise. A
+    /// leading UTF-8 byte order mark, which some editors write, is skipped.
     #[cfg(any(feature = "toml", feature = "json"))]
     pub fn parse(text: &str) -> Result<Manifest, ManifestError> {
+        let text = text.strip_prefix('\u{FEFF}').unwrap_or(text);
         let json = text.trim_start().starts_with('{');
         #[cfg(feature = "json")]
         if json {
@@ -664,6 +681,29 @@ sha256 = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
         assert!(message.contains("espressif-classic"), "{message}");
         assert!(message.contains("touch-1200"), "{message}");
         assert!(message.contains("custom"), "{message}");
+    }
+
+    #[test]
+    fn reset_waits_are_capped_at_ten_seconds() {
+        let wait = |value: &str| {
+            Manifest::from_toml(&board(&alloc::format!(
+                "reset = {{ custom = [{{ dtr = true, rts = false, wait = {value} }}] }}"
+            )))
+        };
+        assert!(wait("\"10 s\"").is_ok());
+        assert!(wait("10000").is_ok());
+        for value in ["\"11 s\"", "10001", "\"18446744073709551 s\""] {
+            let message = wait(value).unwrap_err().to_string();
+            assert!(message.contains("10000 ms a step may wait"), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_byte_order_mark_is_skipped() {
+        let json = alloc::format!("\u{FEFF}{JSON}");
+        assert_eq!(Manifest::parse(&json), Manifest::from_json(JSON));
+        let toml = alloc::format!("\u{FEFF}{TOML}");
+        assert_eq!(Manifest::parse(&toml), Manifest::from_toml(TOML));
     }
 
     #[test]
