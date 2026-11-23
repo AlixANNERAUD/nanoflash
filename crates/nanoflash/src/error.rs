@@ -329,6 +329,28 @@ pub enum Error {
         /// The lowest flash offset the bootloader writes.
         writable_from: u64,
     },
+    /// An erase region stops before the end of flash, and the bootloader only erases from an
+    /// offset to the end of flash.
+    EraseShortOfFlashEnd {
+        /// The chip, such as `samd21g18a`.
+        chip: String,
+        /// The flash offset of the region.
+        offset: u64,
+        /// Its exclusive end.
+        end: u64,
+        /// The flash size of the chip, where every erase ends.
+        flash_size: u64,
+    },
+    /// An image comes after an image written above it, and the bootloader erases from the
+    /// start of an image to the end of flash before writing it.
+    ImageBelowWritten {
+        /// The chip, such as `samd21g18a`.
+        chip: String,
+        /// The image.
+        label: String,
+        /// Its offset.
+        offset: u64,
+    },
 }
 
 /// Who can fix an error: the input (exit code 1), the device or its connection (2), or the
@@ -380,7 +402,9 @@ impl Error {
             | Error::UnknownFlashSize
             | Error::FlashTooSmall { .. }
             | Error::UnknownBootloaderDevice { .. }
-            | Error::BelowWritableFlash { .. } => ErrorClass::Input,
+            | Error::BelowWritableFlash { .. }
+            | Error::EraseShortOfFlashEnd { .. }
+            | Error::ImageBelowWritten { .. } => ErrorClass::Input,
             Error::Transport { .. }
             | Error::NoResponse { .. }
             | Error::NoSync { .. }
@@ -696,6 +720,23 @@ impl fmt::Display for Error {
                 formatter,
                 "the {what} starts at 0x{offset:x}, below 0x{writable_from:x}: the bootloader occupies the flash below 0x{writable_from:x} and does not write it; remove it from the manifest or move it to 0x{writable_from:x} or above"
             ),
+            Error::EraseShortOfFlashEnd {
+                chip,
+                offset,
+                end,
+                flash_size,
+            } => write!(
+                formatter,
+                "the bootloader of the {chip} erases from an offset to the end of flash, so erasing 0x{offset:x}..0x{end:x} would also erase 0x{end:x}..0x{flash_size:x}; nothing was erased: make the erase entry end at 0x{flash_size:x}, or remove it from the manifest"
+            ),
+            Error::ImageBelowWritten {
+                chip,
+                label,
+                offset,
+            } => write!(
+                formatter,
+                "the image \"{label}\" at 0x{offset:x} is written after an image above it, and the bootloader of the {chip} erases from 0x{offset:x} to the end of flash before writing it, which would erase that image, so it was not written: write the images in order of offset"
+            ),
         }
     }
 }
@@ -775,6 +816,27 @@ mod tests {
         assert_eq!(
             below.to_string(),
             "the image \"bootloader\" starts at 0x0, below 0x10000: the bootloader occupies the flash below 0x10000 and does not write it; remove it from the manifest or move it to 0x10000 or above"
+        );
+        let short = Error::EraseShortOfFlashEnd {
+            chip: "samd21g18a".into(),
+            offset: 0x8000,
+            end: 0x9000,
+            flash_size: 0x4_0000,
+        };
+        assert_eq!(short.class(), ErrorClass::Input);
+        assert_eq!(
+            short.to_string(),
+            "the bootloader of the samd21g18a erases from an offset to the end of flash, so erasing 0x8000..0x9000 would also erase 0x9000..0x40000; nothing was erased: make the erase entry end at 0x40000, or remove it from the manifest"
+        );
+        let order = Error::ImageBelowWritten {
+            chip: "samd21g18a".into(),
+            label: "low".into(),
+            offset: 0x2000,
+        };
+        assert_eq!(order.class(), ErrorClass::Input);
+        assert_eq!(
+            order.to_string(),
+            "the image \"low\" at 0x2000 is written after an image above it, and the bootloader of the samd21g18a erases from 0x2000 to the end of flash before writing it, which would erase that image, so it was not written: write the images in order of offset"
         );
     }
 

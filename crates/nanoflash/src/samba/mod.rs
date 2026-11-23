@@ -3,6 +3,7 @@
 
 pub(crate) mod command;
 pub(crate) mod family;
+mod write;
 
 pub use command::crc16;
 
@@ -63,6 +64,9 @@ struct Session {
     capabilities: Capabilities,
     /// The lowest flash offset erased by `X` in this session, when any.
     erased_from: Option<u64>,
+    /// Whether an image was written in this session: where `X` erases to the end of flash, an
+    /// `X` below it would erase it.
+    written: bool,
 }
 
 /// A connection to an Arduino SAM-BA bootloader.
@@ -170,6 +174,7 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             family,
             capabilities,
             erased_from: None,
+            written: false,
         });
         Ok(ChipInformation {
             protocol: Protocol::Samba,

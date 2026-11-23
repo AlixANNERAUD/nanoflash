@@ -1,0 +1,21 @@
+# application.bin (8192 bytes) written at 0x2000 of a MKR WiFi 1010, checked, then the AIRCR
+# word write: addresses are absolute, and X erases from 0x2000 to the end of flash
+> "X00002000#"
+< "X\n\r"
+> "S20004034,00001000#" ..4096
+! sleep 10
+> "Y20004034,0#"
+< "Y\n\r"
+> "Y00002000,00001000#"
+< "Y\n\r"
+> "S20004034,00001000#" ..4096
+! sleep 10
+> "Y20004034,0#"
+< "Y\n\r"
+> "Y00003000,00001000#"
+< "Y\n\r"
+> "Z00002000,00001000#"
+< "Z0000D5B0#\n\r"
+> "Z00003000,00001000#"
+< "Z0000D5B0#\n\r"
+> "WE000ED0C,05FA0004#"

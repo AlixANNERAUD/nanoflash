@@ -1,0 +1,9 @@
+# The first copy of write-nano33ble answered with a lowercase y
+> "X00000000#"
+< "X\n\r"
+> "S00000034,00001000#" ..4096
+! sleep 10
+> "Y00000034,0#"
+< "Y\n\r"
+> "Y00000000,00001000#"
+< "y\n\r"

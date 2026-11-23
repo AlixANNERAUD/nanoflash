@@ -1,0 +1,21 @@
+# application.bin (8192 bytes) written at 0x10000 of a Nano 33 BLE, checked, then K: addresses
+# count from the application start, and X erases nothing on the nRF52840
+> "X00000000#"
+< "X\n\r"
+> "S00000034,00001000#" ..4096
+! sleep 10
+> "Y00000034,0#"
+< "Y\n\r"
+> "Y00000000,00001000#"
+< "Y\n\r"
+> "S00000034,00001000#" ..4096
+! sleep 10
+> "Y00000034,0#"
+< "Y\n\r"
+> "Y00001000,00001000#"
+< "Y\n\r"
+> "Z00000000,00001000#"
+< "Z0000D5B0#\n\r"
+> "Z00001000,00001000#"
+< "Z0000D5B0#\n\r"
+> "K#"

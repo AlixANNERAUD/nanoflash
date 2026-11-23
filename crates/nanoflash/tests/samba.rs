@@ -3,10 +3,12 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-use nanoflash::backend::{ChipInformation, ProgressEvent};
+use nanoflash::backend::{Backend, ChipInformation, ProgressEvent, Region, Segment, Stage};
 use nanoflash::manifest::{Protocol, ResetSequence};
-use nanoflash::samba::{SambaBackend, SambaOptions};
-use nanoflash::testing::{ReplayPort, ReplayProvider, Transcript, replay};
+use nanoflash::samba::{SambaBackend, SambaOptions, crc16};
+use nanoflash::testing::{
+    Event, HostToken, ReplayPort, ReplayProvider, Transcript, record, replay,
+};
 use nanoflash::transport::{
     DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
 };
@@ -568,4 +570,586 @@ fn baud_rate_is_reported_as_ignored() {
         connection.messages
     );
     connection.provider.finish().unwrap();
+}
+
+/// The progress events and messages of a session.
+#[derive(Default)]
+struct Recorder {
+    events: Vec<ProgressEvent>,
+    messages: Vec<String>,
+}
+
+impl nanoflash::backend::Progress for Recorder {
+    fn report(&mut self, event: ProgressEvent) {
+        self.events.push(event);
+    }
+
+    fn message(&mut self, text: &str) {
+        self.messages.push(text.to_string());
+    }
+}
+
+fn event(stage: Stage, offset: u64, done: u64, total: u64) -> ProgressEvent {
+    ProgressEvent {
+        stage,
+        offset,
+        done,
+        total,
+    }
+}
+
+fn application() -> Vec<u8> {
+    std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/images/application.bin"))
+        .unwrap()
+}
+
+/// `connect-<board>` followed by `text`: the Nano 33 BLE in its bootloader, or the MKR WiFi
+/// 1010.
+fn after_connect(board: &str, text: &str) -> String {
+    let name = match board {
+        "nano33ble" => "connect-nano33ble-bootloader",
+        _ => "connect-mkrwifi1010",
+    };
+    let mut full = transcript(name);
+    full.push_str(text);
+    full
+}
+
+/// Connects over a replay of `text`, then runs `body`, which gets the backend and a progress
+/// recorder; the replay ends when `body` returns.
+fn run<T>(
+    text: &str,
+    body: impl FnOnce(&mut SambaBackend<'_, ReplayProvider>, &mut Recorder) -> T,
+) -> (T, ReplayProvider, Recorder) {
+    let (port, mut provider) = replay(Transcript::parse(text).unwrap());
+    let mut recorder = Recorder::default();
+    let result = {
+        let mut backend =
+            SambaBackend::new(port, &mut provider, None, SambaOptions::default()).unwrap();
+        block_on(Backend::connect(&mut backend)).unwrap();
+        body(&mut backend, &mut recorder)
+    };
+    (result, provider, recorder)
+}
+
+/// The lines of one buffered write: `S`, the bytes as `bytes`, the selection of the buffer and
+/// the copy of `length` bytes to `address`.
+fn copy_lines(buffer: u32, address: u32, length: usize, bytes: &str) -> String {
+    format!(
+        "> \"S{buffer:08X},{length:08X}#\" {bytes}\n! sleep 10\n> \"Y{buffer:08X},0#\"\n< \"Y\\n\\r\"\n> \"Y{address:08X},{length:08X}#\"\n< \"Y\\n\\r\"\n"
+    )
+}
+
+fn hexadecimal(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The data the host wrote after each `S` command of a recorded session.
+fn payloads(transcript: &Transcript) -> Vec<Vec<u8>> {
+    let writes: Vec<Vec<u8>> = transcript
+        .events
+        .iter()
+        .filter_map(|entry| match &entry.event {
+            Event::Host(tokens) => Some(
+                tokens
+                    .iter()
+                    .map(|token| match token {
+                        HostToken::Byte(byte) => *byte,
+                        HostToken::Any | HostToken::Count(_) => {
+                            panic!("a recording has no wildcard")
+                        }
+                    })
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    writes
+        .windows(2)
+        .filter(|pair| pair[0].starts_with(b"S"))
+        .map(|pair| pair[1].clone())
+        .collect()
+}
+
+#[test]
+fn writes_and_verifies_a_nano_33_ble() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0x1_0000,
+        data: &image,
+    };
+    let text = after_connect("nano33ble", &transcript("write-nano33ble"));
+    let (result, provider, recorder) = run(&text, |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))?;
+        block_on(backend.reset_to_application())
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+    // `X` erases nothing on the nRF52840: `Y` erases the pages it programs, inside `Writing`.
+    assert_eq!(
+        recorder.events,
+        [
+            event(Stage::Writing, 0x1_0000, 0x1000, 0x2000),
+            event(Stage::Writing, 0x1_0000, 0x2000, 0x2000),
+            event(Stage::Verifying, 0x1_0000, 0x1000, 0x2000),
+            event(Stage::Verifying, 0x1_0000, 0x2000, 0x2000),
+        ]
+    );
+    assert!(recorder.messages.is_empty(), "{:?}", recorder.messages);
+}
+
+#[test]
+fn sends_the_image_through_the_buffer() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0x1_0000,
+        data: &image,
+    };
+    let text = after_connect("nano33ble", &transcript("write-nano33ble"));
+    let (port, provider) = replay(Transcript::parse(&text).unwrap());
+    let (port, mut provider) = record(port, provider);
+    {
+        let mut backend =
+            SambaBackend::new(port, &mut provider, None, SambaOptions::default()).unwrap();
+        block_on(Backend::connect(&mut backend)).unwrap();
+        block_on(backend.write(&[segment], &mut ())).unwrap();
+    }
+    assert_eq!(
+        payloads(&provider.transcript()),
+        [image[..0x1000].to_vec(), image[0x1000..].to_vec()]
+    );
+}
+
+#[test]
+fn writes_a_samd21_and_says_x_erases_to_the_end() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0x2000,
+        data: &image,
+    };
+    let text = after_connect("mkrwifi1010", &transcript("write-mkrwifi1010"));
+    let (result, provider, recorder) = run(&text, |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))?;
+        block_on(backend.reset_to_application())
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+    assert_eq!(
+        recorder.events[..3],
+        [
+            event(Stage::Erasing, 0x2000, 0, 0x3_E000),
+            event(Stage::Erasing, 0x2000, 0x3_E000, 0x3_E000),
+            event(Stage::Writing, 0x2000, 0x1000, 0x2000),
+        ]
+    );
+    assert_eq!(recorder.messages.len(), 1, "{:?}", recorder.messages);
+    let message = &recorder.messages[0];
+    assert!(
+        message.contains("0x2000") && message.contains("0x40000"),
+        "{message}"
+    );
+}
+
+#[test]
+fn pads_the_last_chunk_and_checks_the_image_bytes_only() {
+    let image: Vec<u8> = (0..5000_u32).map(|index| (index * 7 % 251) as u8).collect();
+    let tail = &image[0x1000..];
+    assert_eq!(tail.len(), 904);
+    let checksums = |first: u32, second: u32| {
+        format!(
+            "> \"Z{first:08X},00001000#\"\n< \"Z0000{:04X}#\\n\\r\"\n> \"Z{second:08X},00000388#\"\n< \"Z0000{:04X}#\\n\\r\"\n",
+            crc16(&image[..0x1000]),
+            crc16(tail)
+        )
+    };
+    // The nRF52840 pads the last chunk to a whole 4 KiB page.
+    let mut text = String::from("> \"X00000000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&copy_lines(0x34, 0, 0x1000, "..4096"));
+    let padding = hexadecimal(&[0xFF; 3192]);
+    text.push_str(&copy_lines(
+        0x34,
+        0x1000,
+        0x1000,
+        &format!("{} {padding}", hexadecimal(tail)),
+    ));
+    text.push_str(&checksums(0, 0x1000));
+    let segment = Segment {
+        label: "application",
+        offset: 0x1_0000,
+        data: &image,
+    };
+    let (result, provider, _) = run(&after_connect("nano33ble", &text), |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+    // The SAMD21 pads it to 64 bytes: 960.
+    let mut text = String::from("> \"X00002000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&copy_lines(0x2000_4034, 0x2000, 0x1000, "..4096"));
+    let padding = hexadecimal(&[0xFF; 56]);
+    text.push_str(&copy_lines(
+        0x2000_4034,
+        0x3000,
+        0x3C0,
+        &format!("{} {padding}", hexadecimal(tail)),
+    ));
+    text.push_str(&checksums(0x2000, 0x3000));
+    let segment = Segment {
+        label: "application",
+        offset: 0x2000,
+        data: &image,
+    };
+    let (result, provider, _) = run(&after_connect("mkrwifi1010", &text), |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn x_is_sent_once_per_session() {
+    let data = [0xAB_u8; 0x1000];
+    let at = |offset| Segment {
+        label: "data",
+        offset,
+        data: &data,
+    };
+    // In offset order, in two calls: one X.
+    let mut text = String::from("> \"X00000000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&copy_lines(0x34, 0, 0x1000, "..4096"));
+    text.push_str(&copy_lines(0x34, 0x1_0000, 0x1000, "..4096"));
+    let (result, provider, _) = run(&after_connect("nano33ble", &text), |backend, progress| {
+        block_on(backend.write(&[at(0x1_0000)], progress))?;
+        block_on(backend.write(&[at(0x2_0000)], progress))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+    // A segment below the first one erased: a second X (which erases nothing on the nRF52840).
+    let mut text = String::from("> \"X00010000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&copy_lines(0x34, 0x1_0000, 0x1000, "..4096"));
+    text.push_str("> \"X00000000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&copy_lines(0x34, 0, 0x1000, "..4096"));
+    let (result, provider, _) = run(&after_connect("nano33ble", &text), |backend, progress| {
+        block_on(backend.write(&[at(0x2_0000)], progress))?;
+        block_on(backend.write(&[at(0x1_0000)], progress))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn a_samd21_write_below_written_images_is_refused() {
+    // X would erase from 0x2000 to the end of flash, the image at 0x3000 with it.
+    let data = [0xAB_u8; 0x1000];
+    let at = |offset| Segment {
+        label: if offset == 0x2000 { "low" } else { "high" },
+        offset,
+        data: &data,
+    };
+    let mut text = String::from("> \"X00003000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&copy_lines(0x2000_4034, 0x3000, 0x1000, "..4096"));
+    let (result, provider, _) = run(&after_connect("mkrwifi1010", &text), |backend, progress| {
+        block_on(backend.write(&[at(0x3000)], progress))?;
+        block_on(backend.write(&[at(0x2000)], progress))
+    });
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::ImageBelowWritten {
+            chip: "samd21g18a".into(),
+            label: "low".into(),
+            offset: 0x2000,
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Input);
+    provider.finish().unwrap();
+    // In one call, the order is checked before the first X.
+    let (result, provider, _) = run(&after_connect("mkrwifi1010", ""), |backend, progress| {
+        block_on(backend.write(&[at(0x3000), at(0x2000)], progress))
+    });
+    assert!(
+        matches!(result, Err(Error::ImageBelowWritten { offset: 0x2000, .. })),
+        "{result:?}"
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn crc_mismatch_is_a_verification_failure() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0x1_0000,
+        data: &image,
+    };
+    let text = after_connect("nano33ble", &transcript("crc-mismatch"));
+    let (result, provider, _) = run(&text, |backend, progress| {
+        block_on(backend.write(&[segment], progress)).unwrap();
+        let result = block_on(backend.verify(&[segment], progress));
+        block_on(backend.reset_to_application()).unwrap();
+        result
+    });
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::VerificationFailed {
+            label: "application".into(),
+            offset: 0x1_1000,
+            size: 0x1000,
+            expected: "d5b0".into(),
+            actual: "1234".into(),
+            checksum: "CRC-16",
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Verification);
+    provider.finish().unwrap();
+}
+
+#[test]
+fn malformed_replies_name_the_command() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0x1_0000,
+        data: &image,
+    };
+    let text = after_connect("nano33ble", &transcript("copy-refused"));
+    let (result, provider, _) = run(&text, |backend, progress| {
+        block_on(backend.write(&[segment], progress))
+    });
+    assert_eq!(
+        result.unwrap_err(),
+        Error::InvalidResponse {
+            command: "Y",
+            message: "expected Y\\n\\r, got y".into()
+        }
+    );
+    provider.finish().unwrap();
+    // A checksum of two digits.
+    let text = transcript("write-nano33ble");
+    let text = &text[..text.find("< \"Z0000D5B0#").unwrap()];
+    let text = after_connect("nano33ble", &format!("{text}< \"Z12#\\n\\r\"\n"));
+    let (result, provider, _) = run(&text, |backend, progress| {
+        block_on(backend.write(&[segment], progress))?;
+        block_on(backend.verify(&[segment], progress))
+    });
+    match result.unwrap_err() {
+        Error::InvalidResponse { command, message } => {
+            assert_eq!(command, "Z");
+            assert!(message.contains("Z12#"), "{message}");
+        }
+        other => panic!("{other:?}"),
+    }
+    provider.finish().unwrap();
+    // A selection of the buffer never answered.
+    let text = after_connect(
+        "nano33ble",
+        "> \"X00000000#\"\n< \"X\\n\\r\"\n> \"S00000034,00001000#\" ..4096\n! sleep 10\n> \"Y00000034,0#\"\n",
+    );
+    let (result, provider, _) = run(&text, |backend, progress| {
+        block_on(backend.write(&[segment], progress))
+    });
+    assert_eq!(result.unwrap_err(), Error::NoResponse { command: "Y" });
+    provider.finish().unwrap();
+    // A reply longer than 64 bytes.
+    let text = after_connect(
+        "nano33ble",
+        &format!("> \"X00000000#\"\n< \"X{}\\n\\r\"\n", "x".repeat(70)),
+    );
+    let (result, _, _) = run(&text, |backend, progress| {
+        block_on(backend.write(&[segment], progress))
+    });
+    assert!(
+        matches!(result, Err(Error::InvalidResponse { command: "X", .. })),
+        "{result:?}"
+    );
+}
+
+#[test]
+fn erasing_an_nrf52840_region_writes_erased_pages() {
+    let mut text = copy_lines(0x34, 0xE_0000, 0x1000, "..4096");
+    text.push_str(&copy_lines(0x34, 0xE_1000, 0x1000, "..4096"));
+    let text = after_connect("nano33ble", &text);
+    let (port, provider) = replay(Transcript::parse(&text).unwrap());
+    let (port, mut provider) = record(port, provider);
+    let mut recorder = Recorder::default();
+    {
+        let mut backend =
+            SambaBackend::new(port, &mut provider, None, SambaOptions::default()).unwrap();
+        block_on(Backend::connect(&mut backend)).unwrap();
+        let region = Region {
+            offset: 0xF_0000,
+            size: 0x2000,
+        };
+        block_on(backend.erase(region, &mut recorder)).unwrap();
+    }
+    provider.inner().finish().unwrap();
+    assert_eq!(
+        payloads(&provider.transcript()),
+        [vec![0xFF; 0x1000], vec![0xFF; 0x1000]]
+    );
+    // The orchestration reports the start and the end of the region: only the pages between.
+    assert_eq!(
+        recorder.events,
+        [event(Stage::Erasing, 0xF_0000, 0x1000, 0x2000)]
+    );
+    assert!(recorder.messages.is_empty(), "{:?}", recorder.messages);
+}
+
+#[test]
+fn erasing_a_samd21_region_is_one_x() {
+    let data = [0xAB_u8; 0x1000];
+    let segment = Segment {
+        label: "data",
+        offset: 0x9000,
+        data: &data,
+    };
+    let mut text = String::from("> \"X00008000#\"\n< \"X\\n\\r\"\n");
+    text.push_str(&copy_lines(0x2000_4034, 0x9000, 0x1000, "..4096"));
+    let (result, provider, recorder) =
+        run(&after_connect("mkrwifi1010", &text), |backend, progress| {
+            let region = Region {
+                offset: 0x8000,
+                size: 0x3_8000,
+            };
+            block_on(backend.erase(region, progress))?;
+            block_on(backend.write(&[segment], progress))
+        });
+    result.unwrap();
+    provider.finish().unwrap();
+    assert_eq!(recorder.messages.len(), 1, "{:?}", recorder.messages);
+    assert!(
+        recorder.messages[0].contains("0x8000"),
+        "{:?}",
+        recorder.messages
+    );
+    // The orchestration reports the erase itself.
+    assert!(
+        recorder
+            .events
+            .iter()
+            .all(|event| event.stage == Stage::Writing),
+        "{:?}",
+        recorder.events
+    );
+}
+
+#[test]
+fn a_samd21_region_must_reach_the_end_of_flash() {
+    // X erases to the end of flash: 0x9000..0x40000 would go too.
+    let (result, provider, _) = run(&after_connect("mkrwifi1010", ""), |backend, progress| {
+        let region = Region {
+            offset: 0x8000,
+            size: 0x1000,
+        };
+        block_on(backend.erase(region, progress))
+    });
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::EraseShortOfFlashEnd {
+            chip: "samd21g18a".into(),
+            offset: 0x8000,
+            end: 0x9000,
+            flash_size: 0x4_0000,
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Input);
+    provider.finish().unwrap();
+}
+
+#[test]
+fn resets_a_samd21_with_aircr() {
+    let text = after_connect("mkrwifi1010", &transcript("reset-samd"));
+    let (result, provider, _) = run(&text, |backend, _| block_on(backend.reset_to_application()));
+    result.unwrap();
+    provider.finish().unwrap();
+    // The board may leave before the write completes.
+    let text = after_connect("nano33ble", "! disconnect\n");
+    let (result, provider, _) = run(&text, |backend, _| block_on(backend.reset_to_application()));
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn below_the_application_is_refused_before_sending() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0,
+        data: &image,
+    };
+    let (result, provider, _) = run(&after_connect("nano33ble", ""), |backend, progress| {
+        let write = block_on(backend.write(&[segment], progress));
+        let verify = block_on(backend.verify(&[segment], progress));
+        let region = Region {
+            offset: 0x8000,
+            size: 0x1000,
+        };
+        let erase = block_on(backend.erase(region, progress));
+        (write, verify, erase)
+    });
+    let below = |what: &str, offset| Error::BelowWritableFlash {
+        what: what.into(),
+        offset,
+        writable_from: 0x1_0000,
+    };
+    assert_eq!(result.0, Err(below("image \"application\"", 0)));
+    assert_eq!(result.1, Err(below("image \"application\"", 0)));
+    assert_eq!(result.2, Err(below("erase region at 0x8000", 0x8000)));
+    provider.finish().unwrap();
+}
+
+#[test]
+fn past_the_flash_is_refused_before_sending() {
+    let image = application();
+    let segment = Segment {
+        label: "application",
+        offset: 0xF_F000,
+        data: &image,
+    };
+    let (result, provider, _) = run(&after_connect("nano33ble", ""), |backend, progress| {
+        block_on(backend.write(&[segment], progress))
+    });
+    assert_eq!(
+        result.unwrap_err(),
+        Error::OutsideDetectedFlash {
+            what: "image \"application\"".into(),
+            end: 0x10_1000,
+            flash_size: 0x10_0000,
+        }
+    );
+    provider.finish().unwrap();
+}
+
+#[test]
+fn nothing_is_done_before_connecting() {
+    let (port, mut provider) = replay(Transcript::parse("").unwrap());
+    let mut backend =
+        SambaBackend::new(port, &mut provider, None, SambaOptions::default()).unwrap();
+    let segment = Segment {
+        label: "application",
+        offset: 0x1_0000,
+        data: &[0; 4],
+    };
+    let region = Region {
+        offset: 0x1_0000,
+        size: 0x1000,
+    };
+    let none = Err(Error::NoBootloader { waited_for: None });
+    assert_eq!(block_on(backend.write(&[segment], &mut ())), none);
+    assert_eq!(block_on(backend.verify(&[segment], &mut ())), none);
+    assert_eq!(block_on(backend.erase(region, &mut ())), none);
+    assert_eq!(block_on(backend.reset_to_application()), none);
 }
