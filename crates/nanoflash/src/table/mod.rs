@@ -2,6 +2,8 @@
 
 #[cfg(feature = "table-espressif")]
 pub mod espressif;
+#[cfg(feature = "table-mbr")]
+pub mod mbr;
 
 use alloc::string::String;
 use core::fmt;
