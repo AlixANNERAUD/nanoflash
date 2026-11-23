@@ -182,6 +182,22 @@ impl<'p, P: PortProvider> Backends<'p, P> {
             }
         }
     }
+
+    /// Resets the board into its bootloader and detects the chip, without changing the baud
+    /// rate: enough to tell the chip.
+    pub async fn identify(
+        &mut self,
+        progress: &mut dyn Progress,
+    ) -> Result<ChipInformation, Error> {
+        match self {
+            #[cfg(feature = "espressif")]
+            Backends::Espressif(backend) => backend.identify(progress).await,
+            Backends::Unavailable(never, _) => {
+                let _ = progress;
+                match *never {}
+            }
+        }
+    }
 }
 
 impl<P: PortProvider> Backend for Backends<'_, P> {

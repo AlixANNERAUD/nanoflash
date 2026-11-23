@@ -251,7 +251,6 @@ impl Operation for FlashOperation {
 
 struct DetectOperation {
     protocol: Option<Protocol>,
-    options: BackendOptions,
     progress: ProgressFormat,
 }
 
@@ -264,7 +263,7 @@ impl Operation for DetectOperation {
         provider: &mut P,
     ) -> Result<ChipInformation, Error> {
         let mut reporter = Reporter::new(self.progress);
-        detect(port, provider, self.protocol, &self.options, &mut reporter).await
+        detect(port, provider, self.protocol, &mut reporter).await
     }
 }
 
@@ -364,7 +363,6 @@ fn flash_text(report: &FlashReport) -> String {
 pub struct DetectArguments<'a> {
     pub port: Option<&'a str>,
     pub protocol: Option<ProtocolArgument>,
-    pub baud_rate: Option<u32>,
     pub progress: Option<ProgressFormat>,
     pub json: bool,
     pub record: Option<&'a Path>,
@@ -384,9 +382,6 @@ pub fn detect_command(arguments: &DetectArguments<'_>) -> Result<String, Failure
             protocol: arguments.protocol.map(|protocol| match protocol {
                 ProtocolArgument::Espressif => Protocol::Espressif,
             }),
-            options: BackendOptions {
-                baud_rate: arguments.baud_rate,
-            },
             progress: progress_format(arguments.progress, arguments.json),
         },
     )?;

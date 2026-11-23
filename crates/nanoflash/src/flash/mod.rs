@@ -351,14 +351,13 @@ async fn flash_connected<P: PortProvider, S: ImageSource>(
 }
 
 /// Connects to the device on `port` and tells what chip it is, then resets it into its
-/// application.
+/// application. The baud rate the bootloader starts at is kept: nothing is transferred.
 ///
 /// The protocol is `protocol`, else the one the USB vendor of the port speaks.
 pub async fn detect<P: PortProvider>(
     port: P::Port,
     provider: &mut P,
     protocol: Option<Protocol>,
-    options: &BackendOptions,
     progress: &mut dyn Progress,
 ) -> Result<ChipInformation, Error> {
     let identity = port.identity();
@@ -366,8 +365,12 @@ pub async fn detect<P: PortProvider>(
         Some(protocol) => protocol,
         None => return Err(Error::ProtocolRequired { identity }),
     };
-    let mut backend = Backends::new(protocol, port, provider, None, options)?;
-    let chip = connect(&mut backend, progress).await?;
+    let mut backend = Backends::new(protocol, port, provider, None, &BackendOptions::default())?;
+    report(progress, Stage::Connecting, 0, 0, 0);
+    let chip = backend
+        .identify(progress)
+        .await
+        .map_err(|error| error.during(|| "connecting".into()))?;
     reset(&mut backend, progress).await?;
     Ok(chip)
 }

@@ -69,9 +69,6 @@ enum Command {
         /// The protocol of the device, when its USB identity does not tell.
         #[arg(long, value_enum)]
         protocol: Option<ProtocolArgument>,
-        /// The baud rate to use [default: 460800 through a UART bridge, 115200 on USB-Serial-JTAG].
-        #[arg(long)]
-        baud_rate: Option<u32>,
         /// How to report progress on standard error; quiet with --json.
         #[arg(long, value_enum)]
         progress: Option<ProgressFormat>,
@@ -259,7 +256,6 @@ fn run(command: Command) -> (bool, Result<String, Failure>) {
         Command::Detect {
             port,
             protocol,
-            baud_rate,
             progress,
             json,
             record,
@@ -269,7 +265,6 @@ fn run(command: Command) -> (bool, Result<String, Failure>) {
             device::detect_command(&device::DetectArguments {
                 port: port.as_deref(),
                 protocol,
-                baud_rate,
                 progress,
                 json,
                 record: record.as_deref(),

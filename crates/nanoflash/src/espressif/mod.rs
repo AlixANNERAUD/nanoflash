@@ -190,6 +190,23 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
     /// and its flash, and switches to the requested baud rate. Settings it cannot apply are
     /// reported through `progress.message`.
     pub async fn connect(&mut self, progress: &mut dyn Progress) -> Result<ChipInformation, Error> {
+        self.connect_with(progress, true).await
+    }
+
+    /// Connects like [`connect`](Self::connect) and stays at the 115200 baud the ROM loader
+    /// starts at: enough to tell the chip, as `nanoflash detect` does.
+    pub async fn identify(
+        &mut self,
+        progress: &mut dyn Progress,
+    ) -> Result<ChipInformation, Error> {
+        self.connect_with(progress, false).await
+    }
+
+    async fn connect_with(
+        &mut self,
+        progress: &mut dyn Progress,
+        change_baud_rate: bool,
+    ) -> Result<ChipInformation, Error> {
         self.chip = None;
         let mut reopened = false;
         let mut synced = false;
@@ -218,7 +235,7 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
             });
         }
         self.drain().await?;
-        self.detect(progress).await
+        self.detect(progress, change_baud_rate).await
     }
 
     /// Opens the device again after it left, once per connection, when it has an identity.
@@ -387,7 +404,11 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
         Ok(())
     }
 
-    async fn detect(&mut self, progress: &mut dyn Progress) -> Result<ChipInformation, Error> {
+    async fn detect(
+        &mut self,
+        progress: &mut dyn Progress,
+        change_baud_rate: bool,
+    ) -> Result<ChipInformation, Error> {
         let identity = self.port.identity();
         let usb_serial_jtag = identity.as_ref().is_some_and(is_usb_serial_jtag);
         let (chip_id, secure_download_mode) = self.security_info().await?;
@@ -419,7 +440,12 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
             &words(&[0, parameter_size, 0x1_0000, 0x1000, 0x100, 0xFFFF]),
         )
         .await?;
-        match plan_baud_rate(self.options.baud_rate, chip, usb_serial_jtag) {
+        let plan = if change_baud_rate {
+            plan_baud_rate(self.options.baud_rate, chip, usb_serial_jtag)
+        } else {
+            BaudRatePlan::Keep
+        };
+        match plan {
             BaudRatePlan::Keep => {}
             BaudRatePlan::Refuse(rate, reason) => {
                 progress.message(&format!("keeping 115200 baud instead of {rate}: {reason}"))

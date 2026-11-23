@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use nanoflash::Error;
-use nanoflash::backend::{BackendOptions, Progress, ProgressEvent, Stage};
+use nanoflash::backend::{Progress, ProgressEvent, Stage};
 use nanoflash::flash::{FlashOptions, Hooks, detect, flash};
 use nanoflash::manifest::{EraseTarget, Manifest, Protocol};
 use nanoflash::testing::{MemorySource, ReplayProvider, Transcript, replay};
@@ -88,13 +88,7 @@ fn run_detect(
     ReplayProvider,
 ) {
     let (port, mut provider) = replay(Transcript::parse(text).unwrap());
-    let result = block_on(detect(
-        port,
-        &mut provider,
-        protocol,
-        &BackendOptions::default(),
-        &mut (),
-    ));
+    let result = block_on(detect(port, &mut provider, protocol, &mut ()));
     (result, provider)
 }
 
@@ -566,4 +560,14 @@ fn secure_download_mode_skips_the_verification() {
         progress.messages
     );
     assert!(!progress.stages.contains(&Stage::Verifying));
+}
+
+#[test]
+fn detect_keeps_the_baud_rate_of_the_bootloader() {
+    // An ESP32 behind a UART bridge: flashing would switch to 460800 baud, detecting does not.
+    let text = transcript("connect-esp32-classic")
+        + "! signals dtr=0 rts=1\n! sleep 100\n! signals dtr=0 rts=0\n";
+    let (result, provider) = run_detect(&text, Some(Protocol::Espressif));
+    assert_eq!(result.unwrap().chip, "esp32");
+    provider.finish().unwrap();
 }
