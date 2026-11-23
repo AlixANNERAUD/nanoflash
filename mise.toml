@@ -7,7 +7,7 @@ mr-boxington = "latest"
 
 [vars]
 # The WebAssembly modules of the web package: core, then one per backend feature of nanoflash-web.
-web_modules = "core espressif"
+web_modules = "core espressif samba"
 
 [tasks.fmt]
 description = "Check formatting"
@@ -92,7 +92,7 @@ run = [
 ]
 
 [tasks.web-wasm]
-description = "Build the WebAssembly modules of the web package (core, and espressif with the Espressif backend) into web/src/wasm"
+description = "Build the WebAssembly modules of the web package (core, espressif with the Espressif backend and samba with the SAM-BA backend) into web/src/wasm"
 tools = { "cargo:wasm-bindgen-cli" = "0.2.130", "github:WebAssembly/binaryen" = { version = "133", version_prefix = "version_" } }
 env.RUSTFLAGS = "-D warnings"
 run = [
@@ -155,13 +155,14 @@ run = [
 ]
 
 [tasks.web-demo]
-description = "Build the web package and serve the demo page at http://localhost:8000/web/demo/ (open it in Chrome or Edge)"
+description = "Build the web package and serve the demo page at http://localhost:8000/web/demo/ (open it in Chrome or Edge, with the manifest of the ESP32-S3 or of the Nano 33 BLE)"
 depends = ["web-wasm"]
 tools = { node = "22" }
 run = [
   "npm --prefix web ci",
   "npm --prefix web run build",
   "echo 'Open http://localhost:8000/web/demo/?manifest=/hardware/esp32-s3/manifest.json'",
+  "echo 'or http://localhost:8000/web/demo/?manifest=/hardware/nano33ble/manifest.json'",
   "python3 -m http.server 8000 --bind 127.0.0.1",
 ]
 

@@ -21,8 +21,8 @@ import { mockPort } from "./mock-serial.mjs";
 const TESTS = "crates/nanoflash/tests";
 const BASE = "https://boards.test/boards";
 
-function transcript(name) {
-  return repositoryFile(`${TESTS}/transcripts/espressif/${name}.transcript`);
+function transcript(name, protocol = "espressif") {
+  return repositoryFile(`${TESTS}/transcripts/${protocol}/${name}.transcript`);
 }
 
 let fetchRecord = null;
@@ -194,12 +194,20 @@ test("a manifest of several protocols flashes the board the port identifies", as
 
 test("a manifest of several protocols loads the module of the port it is given", async () => {
   const prepared = await prepare(serveMixedManifest());
+  // A Nano 33 BLE in its bootloader: the samba module flashes it, without a touch.
+  const bootloader = mockPort(
+    transcript("connect-nano33ble-bootloader", "samba") + transcript("write-nano33ble", "samba"),
+  );
+  const flashed = await prepared.flash({ port: bootloader.port });
+  assert.equal(flashed.board, "arduino-nano-33-ble");
+  assert.equal(flashed.chip.protocol, "samba");
+  assert.equal(flashed.chip.writableFrom, 0x10000);
+  assert.equal(flashed.verified, true);
+  bootloader.finish();
   const port = (usbVendorId, usbProductId) => ({
     getInfo: () => (usbVendorId === undefined ? {} : { usbVendorId, usbProductId }),
     open: async () => assert.fail("the port must not be opened"),
   });
-  const samba = await rejection(prepared.flash({ port: port(0x2341, 0x005a) }));
-  assert.equal(samba.kind, "protocol-not-enabled");
   const unknown = await rejection(prepared.flash({ port: port(0x1a86, 0x7523) }));
   assert.equal(unknown.kind, "no-matching-board");
   assert.equal(unknown.errorClass, "input");
@@ -314,7 +322,7 @@ test("detects the chip", async () => {
 });
 
 test("unknown backends are refused", async () => {
-  const error = await rejection(loadBackend("samba"));
+  const error = await rejection(loadBackend("uf2"));
   assert.ok(error instanceof NanoflashError);
   assert.equal(error.kind, "protocol-not-enabled");
   assert.equal(error.errorClass, "input");
@@ -325,6 +333,13 @@ test("loads each backend once", async () => {
   const backend = await loadBackend("espressif");
   assert.equal(typeof backend.flash, "function");
   assert.equal(typeof backend.detect, "function");
+});
+
+test("loads the samba backend", async () => {
+  const backend = await loadBackend("samba");
+  assert.equal(typeof backend.flash, "function");
+  assert.equal(typeof backend.detect, "function");
+  assert.notStrictEqual(backend, await loadBackend("espressif"));
 });
 
 test("checks a layout", async () => {

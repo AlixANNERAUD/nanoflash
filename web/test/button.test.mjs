@@ -48,8 +48,8 @@ afterEach(() => {
   fetchRecord = null;
 });
 
-function transcript(name) {
-  return repositoryFile(`crates/nanoflash/tests/transcripts/espressif/${name}.transcript`);
+function transcript(name, protocol = "espressif") {
+  return repositoryFile(`crates/nanoflash/tests/transcripts/${protocol}/${name}.transcript`);
 }
 
 function mount(manifest, attributes = {}) {
@@ -66,8 +66,8 @@ function events(target, ...names) {
   return seen;
 }
 
-async function until(predicate, what) {
-  for (let attempt = 0; attempt < 600; attempt += 1) {
+async function until(predicate, what, milliseconds = 6000) {
+  for (let attempt = 0; attempt < milliseconds / 10; attempt += 1) {
     if (predicate()) return;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -76,7 +76,8 @@ async function until(predicate, what) {
 
 const state = () => element.dataset.state;
 const part = (name) => element.shadowRoot.querySelector(`[part~="${name}"]`);
-const waitFor = (wanted) => until(() => state() === wanted, `the state ${wanted}`);
+const waitFor = (wanted, milliseconds) =>
+  until(() => state() === wanted, `the state ${wanted}`, milliseconds);
 
 test("unsupported without Web Serial", async () => {
   mount("esp32-s3-usb.json");
@@ -196,6 +197,35 @@ test("asks for the bootloader port when it was never granted", async () => {
   await waitFor("done");
   good.finish();
   assert.deepEqual(requested[1], { filters: [{ usbVendorId: 0x303a, usbProductId: 0x1001 }] });
+});
+
+test("asks for the Nano 33 BLE bootloader port", async () => {
+  // Waits the 15 s the backend gives the bootloader to appear before it says the page has no
+  // permission for it.
+  const [before, after] = transcript("flash-nano33ble", "samba").split("! reopen 2341:005a\n");
+  const sketch = mockPort(before);
+  const bootloader = mockPort(`! identity 2341:005a\n${after}`);
+  const requested = [];
+  restoreNavigator = installNavigator([], {
+    onRequestPort: (options) => {
+      requested.push(options);
+      return requested.length === 1 ? sketch.port : bootloader.port;
+    },
+  });
+  mount("nano33ble.json");
+  await waitFor("ready");
+  part("button").click();
+  await waitFor("bootloader-permission", 30000);
+  sketch.finish();
+  assert.match(part("message").textContent, /2341:005a/);
+  assert.equal(part("bootloader-button").hidden, false);
+  part("bootloader-button").click();
+  await waitFor("done");
+  bootloader.finish();
+  assert.deepEqual(requested[1], { filters: [{ usbVendorId: 0x2341, usbProductId: 0x005a }] });
+  // The bootloader's port is flashed as it is: opened once, no touch.
+  assert.deepEqual(bootloader.port.log, ["open 115200", "close"]);
+  assert.match(part("message").textContent, /^Done: arduino-nano-33-ble was written and restarted\.$/);
 });
 
 test("asks for any port when the manifest names no bootloader device", async () => {

@@ -1,4 +1,4 @@
-/** A flashing protocol. `samba` is known, but no module speaks it yet. */
+/** A flashing protocol, each spoken by a WebAssembly module of its own. */
 export type Protocol = "espressif" | "samba";
 
 /** What the package needs from a Web Serial `SerialPort` (a mock fits as well). */

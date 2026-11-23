@@ -3,7 +3,8 @@
 Flash microcontroller boards from a web page, over Web Serial. This is the browser package of
 [nanoflash](https://github.com/AlixANNERAUD/nanoflash): the Rust library compiled to
 WebAssembly, behind a small TypeScript API with no runtime dependency. It lays out the flash of
-a board and writes firmware to it (Espressif chips for now).
+a board and writes firmware to it: Espressif chips, and Arduino boards over SAM-BA (the Nano 33
+BLE and the SAMD21 boards).
 
 ## Install
 
@@ -72,6 +73,24 @@ const chip = await detect({ protocol: "espressif" });
 console.log(chip.chip, chip.flashSize);
 ```
 
+`protocol` (`"espressif"` or `"samba"`) names the module to load.
+`ChipInformation` has `protocol`, `chip`, `flashSize`, `secureDownloadMode`, `usb`,
+`writableFrom` (the lowest offset the bootloader writes, `0x10000` on the Nano 33 BLE, `0x2000`
+on the SAMD21 boards: nothing below it is written or erased) and `erasesToEnd` (the SAMD21
+bootloader erases from the first written offset to the end of flash).
+
+### Arduino boards
+
+An Arduino board running a sketch is reset into its SAM-BA bootloader by opening its port at
+1200 baud and clearing DTR; the bootloader then appears as another USB device (the Nano 33 BLE
+goes from `2341:805a` to `2341:005a`), which the page has no permission for the first time.
+`flash` waits 15 s for it among the granted ports, then fails with `not-granted`. From a
+second click, ask for that port with `navigator.serial.requestPort({ filters:
+prepared.bootloaderFilters })` (the `bootloader-devices` of the manifest) and call
+`prepared.flash({ port })` with it; the component does this with its second button. The browser
+keeps the grant, so the next flash finds the bootloader by itself. A board already in its
+bootloader (double tap on reset) is flashed as it is.
+
 ## Layouts
 
 ```ts
@@ -131,8 +150,8 @@ report) and `nanoflash-error` (the error). Style it with `--nanoflash-button-bac
 ## Bundlers
 
 The WebAssembly modules ship in `dist/wasm` and are loaded relative to the module that imports
-them (`new URL("...wasm", import.meta.url)`). Each protocol is a separate dynamic import, so a
-bundler loads only the module of the board that is flashed. If your bundler does not copy `.wasm`
+them (`new URL("...wasm", import.meta.url)`). Each protocol (`espressif`, `samba`) is a separate
+dynamic import, so a bundler loads only the module of the board that is flashed. If your bundler does not copy `.wasm`
 files it finds this way, copy `node_modules/nanoflash/dist/wasm` next to the chunk.
 
 ## Licence

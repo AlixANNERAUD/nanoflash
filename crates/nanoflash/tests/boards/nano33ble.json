@@ -1,0 +1,21 @@
+{
+  "board": [
+    {
+      "identifier": "arduino-nano-33-ble",
+      "name": "Arduino Nano 33 BLE",
+      "protocol": "samba",
+      "chip": "nrf52840",
+      "layout": "../layouts/nrf52840-arduino.toml",
+      "reset": "touch-1200",
+      "application-devices": [{ "vendor": "0x2341", "product": "0x805a" }],
+      "bootloader-devices": [{ "vendor": "0x2341", "product": "0x005a" }],
+      "image": [
+        {
+          "partition": "application",
+          "path": "../images/application.bin",
+          "sha256": "ae67473d61aff10931b12a78a128124f77f9d0d9c3691f255f1c885a8bc4673d"
+        }
+      ]
+    }
+  ]
+}

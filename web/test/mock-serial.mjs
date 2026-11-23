@@ -2,18 +2,124 @@
 // replay of the library does, with what differs in a browser: `! sleep` and `! timeout` lines are
 // skipped (timing is real), the bytes of `<` lines are delivered as soon as every earlier event
 // is consumed (consecutive `<` lines as one chunk), `! baud n` is a `close()` then an
-// `open({ baudRate: n })`, and `! disconnect` loses the device.
+// `open({ baudRate: n })`, and `! disconnect` loses the device. `! open-fails` is refused: a
+// browser test gives `navigator.serial.getPorts()` no port instead.
 
 /** Event kinds a browser session does not reproduce: they are skipped. */
 const SKIPPED = new Set(["sleep", "timeout"]);
 
 const ANY = "..";
 
+/** The largest number of bytes a `..N` wildcard may take, as in the library. */
+const MAXIMUM_COUNT = 16_777_216;
+
 function parseByte(word, line) {
   if (!/^[0-9a-fA-F]{2}$/.test(word)) {
     throw new Error(`transcript line ${line}: \`${word}\` is not a hexadecimal byte`);
   }
   return Number.parseInt(word, 16);
+}
+
+/** `..N`: exactly `N` bytes of any value, as `{ count: N }`. */
+function parseCount(word, line) {
+  const digits = word.slice(2);
+  const count = /^[0-9]+$/.test(digits) ? Number(digits) : Number.NaN;
+  if (!Number.isSafeInteger(count) || count < 1 || count > MAXIMUM_COUNT) {
+    throw new Error(
+      `transcript line ${line}: \`${word}\` is not a count, write \`..\` and a number from 1 to ${MAXIMUM_COUNT}`,
+    );
+  }
+  return { count };
+}
+
+const ESCAPES = { n: 0x0a, r: 0x0d, "\\": 0x5c, '"': 0x22 };
+
+/**
+ * Splits the text of a `>` or `<` line into words and quoted texts (`{ bytes }`): printable
+ * ASCII, with the escapes `\n`, `\r`, `\\`, `\"` and `\xNN`.
+ */
+function pieces(text, line) {
+  const found = [];
+  const fail = (message) => {
+    throw new Error(`transcript line ${line}: ${message}`);
+  };
+  let index = 0;
+  while (index < text.length) {
+    if (/\s/.test(text[index])) {
+      index += 1;
+    } else if (text[index] === '"') {
+      const bytes = [];
+      index += 1;
+      for (;;) {
+        if (index >= text.length) fail('a quoted text is not closed, add a closing `"`');
+        const character = text[index];
+        index += 1;
+        if (character === '"') break;
+        if (character === "\\") {
+          const escape = text[index];
+          index += 1;
+          if (escape === "x") {
+            const digits = text.slice(index, index + 2);
+            if (!/^[0-9a-fA-F]{2}$/.test(digits)) {
+              fail(`\`\\x${digits}\` is not an escape, write \`\\x\` and two hexadecimal digits`);
+            }
+            bytes.push(Number.parseInt(digits, 16));
+            index += 2;
+          } else if (escape !== undefined && Object.hasOwn(ESCAPES, escape)) {
+            bytes.push(ESCAPES[escape]);
+          } else if (escape === undefined) {
+            fail('a quoted text is not closed, add a closing `"`');
+          } else {
+            fail(`\`\\${escape}\` is not an escape, use \`\\n\`, \`\\r\`, \`\\\\\`, \`\\"\` or \`\\xNN\``);
+          }
+        } else if (character >= " " && character <= "~") {
+          bytes.push(character.charCodeAt(0));
+        } else {
+          fail(`\`${character}\` is not printable ASCII in a quoted text, use \`\\xNN\``);
+        }
+      }
+      if (index < text.length && !/\s/.test(text[index])) {
+        fail("a quoted text must be followed by a space or the end of the line");
+      }
+      found.push({ bytes });
+    } else {
+      const start = index;
+      while (index < text.length && !/\s/.test(text[index])) index += 1;
+      found.push(text.slice(start, index));
+    }
+  }
+  return found;
+}
+
+/** The tokens of a `>` line: bytes, `..` and `{ count }`. */
+function parseHost(text, line) {
+  const tokens = [];
+  for (const piece of pieces(text, line)) {
+    if (typeof piece !== "string") tokens.push(...piece.bytes);
+    else if (piece === ANY) tokens.push(ANY);
+    else if (piece.startsWith("..")) tokens.push(parseCount(piece, line));
+    else tokens.push(parseByte(piece, line));
+  }
+  if (tokens.length === 0) throw new Error(`transcript line ${line}: a \`>\` line needs at least one byte`);
+  tokens.forEach((token, index) => {
+    if (token === ANY && typeof tokens[index + 1] !== "number") {
+      throw new Error(`transcript line ${line}: \`..\` must be followed by a literal byte on its line`);
+    }
+  });
+  return tokens;
+}
+
+/** The bytes of a `<` line. */
+function parseDevice(text, line) {
+  const bytes = [];
+  for (const piece of pieces(text, line)) {
+    if (typeof piece !== "string") bytes.push(...piece.bytes);
+    else if (piece.startsWith("..")) {
+      throw new Error(`transcript line ${line}: \`..\` is only allowed in a \`>\` line`);
+    } else bytes.push(parseByte(piece, line));
+  }
+  if (bytes.length === 0) throw new Error(`transcript line ${line}: a \`<\` line needs at least one byte`);
+  return bytes;
 }
 
 function parseIdentity(words, line) {
@@ -48,10 +154,10 @@ export function parseTranscript(text) {
     const event = { line, text: trimmed };
     if (trimmed.startsWith(">")) {
       event.kind = "host";
-      event.tokens = words.map((word) => (word === ANY ? ANY : parseByte(word, line)));
+      event.tokens = parseHost(rest, line);
     } else if (trimmed.startsWith("<")) {
       event.kind = "device";
-      event.bytes = words.map((word) => parseByte(word, line));
+      event.bytes = parseDevice(rest, line);
     } else if (trimmed.startsWith("!")) {
       const [name, ...argumentsList] = words;
       switch (name) {
@@ -82,6 +188,15 @@ export function parseTranscript(text) {
           event.kind = "reopen";
           event.identity = argumentsList.length > 0 ? parseIdentity(argumentsList, line) : null;
           break;
+        case "open-fails":
+          if (argumentsList.length !== 1 || !["not-found", "not-granted"].includes(argumentsList[0])) {
+            throw new Error(
+              `transcript line ${line}: expected \`open-fails not-found\` or \`open-fails not-granted\``,
+            );
+          }
+          event.kind = "open-fails";
+          event.failure = argumentsList[0];
+          break;
         default:
           throw new Error(`transcript line ${line}: unknown directive \`${name}\``);
       }
@@ -109,6 +224,13 @@ function lostDevice() {
  */
 export function mockPort(transcriptText, { stallWrites = false } = {}) {
   const { identity, events } = parseTranscript(transcriptText);
+  const failing = events.find((event) => event.kind === "open-fails");
+  if (failing !== undefined) {
+    // A failed open happens in the provider, which lists the ports of `navigator.serial`.
+    throw new Error(
+      `transcript line ${failing.line}: \`${failing.text}\` is not reproducible in a browser: give navigator.serial.getPorts() no port instead`,
+    );
+  }
   let next = 0;
   // Within a `>` event: the token the next byte is compared with, and the bytes a `..` took.
   let hostPosition = 0;
@@ -194,7 +316,15 @@ export function mockPort(transcriptText, { stallWrites = false } = {}) {
     if (event?.kind !== "host") throw divergence("a write");
     const { tokens } = event;
     const token = tokens[hostPosition];
-    if (token === ANY) {
+    if (typeof token === "object") {
+      // `..N`: the Nth byte ends it.
+      if (wildcardCount + 1 >= token.count) {
+        hostPosition += 1;
+        wildcardCount = 0;
+      } else {
+        wildcardCount += 1;
+      }
+    } else if (token === ANY) {
       if (wildcardCount > 0 && tokens[hostPosition + 1] === byte) {
         hostPosition += 2;
         wildcardCount = 0;

@@ -169,5 +169,7 @@ The browser package (`web/`) is checked by hand against a board:
 4. Confirm `Hello world!` with `nanoflash detect --port <port>` and a serial terminal.
 
 For the Nano 33 BLE, build its firmware as above and run `mise run web-demo` with
-`?manifest=/hardware/nano33ble/manifest.json`, pick the Nano's port, then answer the second button
-with the bootloader's port when Chrome asks.
+`?manifest=/hardware/nano33ble/manifest.json` (the JSON twin of its `manifest.toml`), pick the
+Nano's port, then answer the second button with the bootloader's port (`2341:005a`) when Chrome
+asks. The page asks for it once: Chrome remembers the grant, and the next Install finds the
+bootloader by itself.

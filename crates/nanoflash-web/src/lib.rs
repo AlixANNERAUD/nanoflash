@@ -1,12 +1,12 @@
 //! The WebAssembly modules of the nanoflash web package.
 //!
-//! Every module exports `checkLayout` and `writeLayout`; with the feature of a
-//! backend (`espressif`), it also exports `flash` and `detect`, which run that backend over Web
-//! Serial. Values cross as plain JavaScript objects in the serde form of the library (snake_case
-//! fields, kebab-case `kind`). A failure is thrown as the serde form of a [`nanoflash::Error`]
-//! with its `message` (the text to show) and its `class` (`input`, `device` or `verification`);
-//! a malformed argument of these functions is `{ kind: "invalid-argument", message, class:
-//! "input" }`.
+//! Every module exports `checkLayout` and `writeLayout`; with the feature of a backend
+//! (`espressif` or `samba`), it also exports `flash` and `detect`, which run that backend over
+//! Web Serial. Values cross as plain JavaScript objects in the serde form of the library
+//! (snake_case fields, kebab-case `kind`). A failure is thrown as the serde form of a
+//! [`nanoflash::Error`] with its `message` (the text to show) and its `class` (`input`, `device`
+//! or `verification`); a malformed argument of these functions is `{ kind: "invalid-argument",
+//! message, class: "input" }`.
 
 #![forbid(unsafe_code)]
 
@@ -103,7 +103,7 @@ pub fn write_layout(text: &str, format: &str, name: &str) -> Result<Vec<u8>, JsV
     .map_err(|error| failure(&Error::Table { error }))
 }
 
-#[cfg(feature = "espressif")]
+#[cfg(any(feature = "espressif", feature = "samba"))]
 mod device {
     //! Flashing and detecting over Web Serial.
 
@@ -143,7 +143,8 @@ mod device {
         string(error).unwrap_or_else(|_| "an unknown error".to_string())
     }
 
-    /// The baud rate the port is opened at: the one ROM loaders start at.
+    /// The baud rate the port is opened at: the one Espressif's ROM loaders start at, which
+    /// Arduino's SAM-BA bootloaders also use.
     const INITIAL_BAUD_RATE: u32 = 115_200;
 
     /// The options of `flash`, as JSON.

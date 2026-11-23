@@ -9,8 +9,8 @@ import { mockPort } from "./mock-serial.mjs";
 
 const TESTS = "crates/nanoflash/tests";
 
-function transcript(name) {
-  return repositoryFile(`${TESTS}/transcripts/espressif/${name}.transcript`);
+function transcript(name, protocol = "espressif") {
+  return repositoryFile(`${TESTS}/transcripts/${protocol}/${name}.transcript`);
 }
 
 /** Reads the paths of a manifest of `crates/nanoflash/tests/boards`, as a browser would fetch them. */
@@ -327,6 +327,94 @@ test("refuses unknown options", async () => {
   assert.equal(error.class, "input");
   assert.match(error.message, /baud_rate/);
   assert.equal(port.isOpen, false);
+});
+
+/**
+ * The ports of `flash-nano33ble`: the sketch, up to the touch, and the bootloader the board comes
+ * back as.
+ */
+function nano33ble() {
+  const [sketch, bootloader] = transcript("flash-nano33ble", "samba").split("! reopen 2341:005a\n");
+  return { sketch: mockPort(sketch), bootloader: mockPort(`! identity 2341:005a\n${bootloader}`) };
+}
+
+test("the mock refuses failed opens and malformed lines", () => {
+  assert.throws(
+    () => mockPort(transcript("connect-not-granted", "samba")),
+    /line 5: `! open-fails not-granted` is not reproducible in a browser/,
+  );
+  assert.throws(() => mockPort('> "N#\n'), /line 1: a quoted text is not closed/);
+  assert.throws(() => mockPort('> "N#"X\n'), /line 1: a quoted text must be followed by a space/);
+  assert.throws(() => mockPort('> "\\q"\n'), /line 1: `\\q` is not an escape/);
+  assert.throws(() => mockPort("> ..0\n"), /line 1: `..0` is not a count/);
+  assert.throws(() => mockPort("< ..2\n"), /line 1: `..` is only allowed in a `>` line/);
+});
+
+test("the mock follows quoted text and counted wildcards", async () => {
+  const { port, finish } = mockPort('> "S#" ..3 01\n< "a b\\n"\n');
+  await port.open({ baudRate: 115200 });
+  const writer = port.writable.getWriter();
+  await writer.write(new Uint8Array([0x53, 0x23, 0xff, 0x01, 0x02, 0x01]));
+  writer.releaseLock();
+  const reader = port.readable.getReader();
+  const { value } = await reader.read();
+  reader.releaseLock();
+  assert.deepEqual([...value], [0x61, 0x20, 0x62, 0x0a]);
+  finish();
+});
+
+test("flashes a Nano 33 BLE through the touch", async () => {
+  const { flash } = await loadModule("samba");
+  const { sketch, bootloader } = nano33ble();
+  restoreNavigator = installNavigator([bootloader.port]);
+  const events = [];
+  const report = await flash(
+    repositoryFile(`${TESTS}/boards/nano33ble.json`),
+    sketch.port,
+    FLASH_OPTIONS,
+    (path) => boardFile(path),
+    (event) => events.push(event),
+  );
+  assert.equal(report.board, "arduino-nano-33-ble");
+  assert.equal(report.chip.chip, "nrf52840");
+  assert.equal(report.chip.protocol, "samba");
+  assert.equal(report.chip.writable_from, 0x10000);
+  assert.equal(report.chip.erases_to_end, false);
+  assert.equal(report.verified, true);
+  assert.deepEqual(
+    report.images.map((image) => [image.label, image.offset, image.size]),
+    [["application", 0x10000, 8192]],
+  );
+  assert.ok(events.some((event) => event.stage === "writing"));
+  // The touch: 1200 baud, then DTR cleared (the transcript checks `setSignals`).
+  sketch.finish();
+  bootloader.finish();
+  assert.deepEqual(sketch.port.log, ["open 115200", "close", "open 1200", "close"]);
+  assert.equal(sketch.port.isOpen, false);
+  assert.deepEqual(bootloader.port.log, ["open 115200", "close"]);
+});
+
+test("the bootloader port must be granted", async () => {
+  // Waits the 15 s the backend gives the bootloader to appear before it says the page has no
+  // permission for it.
+  const { flash } = await loadModule("samba");
+  const { sketch } = nano33ble();
+  restoreNavigator = installNavigator([]);
+  const error = await rejection(
+    flash(
+      repositoryFile(`${TESTS}/boards/nano33ble.json`),
+      sketch.port,
+      FLASH_OPTIONS,
+      (path) => boardFile(path),
+      () => {},
+    ),
+  );
+  assert.equal(error.kind, "transport");
+  assert.equal(error.error.kind, "not-granted");
+  assert.equal(error.error.filter, "2341:005a");
+  assert.equal(error.class, "device");
+  sketch.finish();
+  assert.equal(sketch.port.isOpen, false);
 });
 
 test("checks a layout with the core module", async () => {

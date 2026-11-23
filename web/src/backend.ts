@@ -24,6 +24,7 @@ interface WasmModule extends BackendModule {
 // Static imports, so that bundlers split each module into a chunk of its own.
 const modules: Partial<Record<Protocol, () => Promise<WasmModule>>> = {
   espressif: () => import("./wasm/nanoflash_espressif.js"),
+  samba: () => import("./wasm/nanoflash_samba.js"),
 };
 
 const cache = new Map<Protocol, Promise<BackendModule>>();

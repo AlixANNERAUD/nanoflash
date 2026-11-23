@@ -15,7 +15,7 @@ the headroom of every partition, and writes the table each family needs. See `RE
 | --- | --- |
 | `nanoflash` (`crates/nanoflash`) | The library, `no_std` with `alloc`. Features: `toml`, `json`, `table-espressif`, `table-mbr`, `table-linker`, `flash`, `espressif`, `testing`, `native`, `build`, `web`. |
 | `nanoflash-cli` (`crates/nanoflash-cli`) | The `nanoflash` command: `layout check`, `layout write`, `flash`, `detect`, `image build`. |
-| `nanoflash-web` (`crates/nanoflash-web`) | The WebAssembly modules of the browser package (`publish = false`): `core` (layouts), and one module per backend feature (`espressif`) that adds `flash` and `detect`. |
+| `nanoflash-web` (`crates/nanoflash-web`) | The WebAssembly modules of the browser package (`publish = false`): `core` (layouts), and one module per backend feature (`espressif`, `samba`) that adds `flash` and `detect`. |
 
 The browser package is the npm package `nanoflash` in `web/`: TypeScript (`strict`), ES modules,
 no runtime dependency, the `<nanoflash-button>` component in `web/src/button.ts`, a demo in

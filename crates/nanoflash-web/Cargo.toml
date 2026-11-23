@@ -16,6 +16,8 @@ crate-type = ["cdylib", "rlib"]
 default = []
 # Flashing and detecting Espressif chips over Web Serial.
 espressif = ["nanoflash/espressif"]
+# Flashing and detecting Arduino boards over SAM-BA, through Web Serial.
+samba = ["nanoflash/samba"]
 
 [dependencies]
 nanoflash = { path = "../nanoflash", version = "0.1.0", default-features = false, features = ["flash", "json", "table-espressif", "table-mbr", "table-linker", "web"] }
