@@ -1,0 +1,18 @@
+[[board]]
+identifier = "esp32-s3-devkitc"
+name = "ESP32-S3-DevKitC"
+protocol = "espressif"
+chip = "esp32-s3"
+layout = "../layouts/esp32-s3-8mb.toml"
+reset = "espressif-usb-serial-jtag"
+application-devices = [{ vendor = 0x303a, product = 0x1001 }]
+bootloader-devices = [{ vendor = 0x303a, product = 0x1001 }]
+
+[[board.image]]
+partition = "bootloader"
+path = "../images/bootloader.bin"
+sha256 = "d67c656e01756650d77717b0839985a056ec28ffe174601d690fc407a2ceffca"
+
+[[board.image]]
+partition = "application"
+path = "../images/application.bin"

@@ -10,6 +10,7 @@
 extern crate alloc;
 
 pub mod layout;
+pub mod manifest;
 #[cfg(feature = "native")]
 pub mod native;
 pub mod quantity;

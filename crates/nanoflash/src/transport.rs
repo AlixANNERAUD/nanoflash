@@ -32,12 +32,45 @@ pub struct UsbIdentity {
 }
 
 /// Selects the devices a provider may open.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawDeviceFilter")]
 pub struct DeviceFilter {
     /// The USB vendor identifier.
     pub vendor: u16,
     /// The USB product identifier; any product when `None`.
     pub product: Option<u16>,
+}
+
+/// A filter as written in a manifest: integers or text for the identifiers.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDeviceFilter {
+    #[serde(deserialize_with = "crate::quantity::deserialize")]
+    vendor: u64,
+    #[serde(default, deserialize_with = "crate::quantity::deserialize_optional")]
+    product: Option<u64>,
+}
+
+impl TryFrom<RawDeviceFilter> for DeviceFilter {
+    type Error = String;
+
+    fn try_from(raw: RawDeviceFilter) -> Result<Self, String> {
+        let vendor = u16::try_from(raw.vendor).map_err(|_| {
+            alloc::format!(
+                "the USB vendor identifier 0x{:x} does not fit in 16 bits (at most 0xffff)",
+                raw.vendor
+            )
+        })?;
+        let product = match raw.product {
+            None => None,
+            Some(product) => Some(u16::try_from(product).map_err(|_| {
+                alloc::format!(
+                    "the USB product identifier 0x{product:x} does not fit in 16 bits (at most 0xffff)"
+                )
+            })?),
+        };
+        Ok(DeviceFilter { vendor, product })
+    }
 }
 
 impl DeviceFilter {

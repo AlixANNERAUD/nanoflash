@@ -1,0 +1,28 @@
+{
+  "name": "Demo",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "funding_url": "https://example.com/fund",
+  "builds": [
+    {
+      "chipFamily": "ESP32",
+      "serialType": "uart",
+      "parts": [
+        { "path": "../images/bootloader.bin", "offset": 4096 },
+        { "path": "../images/application.bin", "offset": 65536 }
+      ]
+    },
+    {
+      "chipFamily": "ESP32-S3",
+      "improv": true,
+      "parts": [
+        { "path": "../images/bootloader.bin", "offset": 0 },
+        { "path": "../images/application.bin", "offset": 65536 }
+      ]
+    },
+    {
+      "chipFamily": "ESP8266",
+      "parts": [{ "path": "../images/application.bin", "offset": 0 }]
+    }
+  ]
+}

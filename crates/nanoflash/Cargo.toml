@@ -15,6 +15,8 @@ categories = ["embedded", "no-std"]
 default = []
 # Read layout files from TOML.
 toml = ["dep:toml"]
+# Read board manifests from JSON, and esp-web-tools manifests.
+json = ["dep:serde_json"]
 # Writers of the partition table each family needs.
 table-espressif = ["dep:md-5"]
 table-mbr = []
@@ -30,6 +32,7 @@ build = ["toml", "table-linker"]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
 md-5 = { version = "0.11", optional = true, default-features = false }
 serialport = { version = "4.10", optional = true, default-features = false }
+serde_json = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde"] }
 
 [lints]

@@ -67,6 +67,44 @@ pub fn format(bytes: u64) -> String {
     alloc::format!("{bytes} B")
 }
 
+/// Deserialise a size or offset written as an integer or as text [`parse`] accepts.
+pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u64, D::Error> {
+    use serde::de::{Error, Visitor};
+
+    struct QuantityVisitor;
+
+    impl Visitor<'_> for QuantityVisitor {
+        type Value = u64;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("an integer, hexadecimal or a number with a unit")
+        }
+
+        fn visit_u64<E: Error>(self, value: u64) -> Result<u64, E> {
+            Ok(value)
+        }
+
+        fn visit_i64<E: Error>(self, value: i64) -> Result<u64, E> {
+            u64::try_from(value).map_err(|_| E::custom(alloc::format!("negative number {value}")))
+        }
+
+        fn visit_str<E: Error>(self, value: &str) -> Result<u64, E> {
+            parse(value).map_err(E::custom)
+        }
+    }
+
+    deserializer.deserialize_any(QuantityVisitor)
+}
+
+/// [`deserialize`] for an optional key.
+pub(crate) fn deserialize_optional<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error> {
+    deserialize(deserializer).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
