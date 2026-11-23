@@ -1,0 +1,18 @@
+# Firmware: ESP-IDF's hello_world for the ESP32-S3, built locally (see ../README.md).
+[[board]]
+identifier = "esp32-s3-devkitc-1"
+name = "ESP32-S3-DevKitC-1"
+protocol = "espressif"
+chip = "esp32-s3"
+layout = "layout.toml"
+reset = "espressif-usb-serial-jtag"
+application-devices = [{ vendor = 0x303a, product = 0x1001 }]
+bootloader-devices = [{ vendor = 0x303a, product = 0x1001 }]
+
+[[board.image]]
+partition = "bootloader"
+path = "firmware/bootloader.bin"
+
+[[board.image]]
+partition = "application"
+path = "firmware/hello_world.bin"

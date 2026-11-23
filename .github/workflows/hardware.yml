@@ -1,0 +1,20 @@
+name: Hardware
+
+# Flashes the boards attached to a self-hosted runner. Run it by hand from the Actions tab.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  hardware:
+    name: Boards on the runner
+    runs-on: [self-hosted, nanoflash-hardware]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - run: mise run test-hardware

@@ -1,0 +1,7 @@
+# Copy to hardware/boards.toml (ignored by git) on the machine the boards are attached to.
+# `manifest` is relative to this file; `expect` is a string the firmware prints after a flash.
+[[board]]
+name = "esp32-s3-devkitc-1"
+manifest = "esp32-s3/manifest.toml"
+port = "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_<serial>-if00"
+expect = "Hello world!"

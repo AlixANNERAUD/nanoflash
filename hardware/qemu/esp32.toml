@@ -1,0 +1,16 @@
+# Flashed into Espressif's QEMU by hardware/qemu/run.sh; no reset, QEMU starts in download mode.
+[[board]]
+identifier = "esp32-qemu"
+name = "ESP32 in QEMU"
+protocol = "espressif"
+chip = "esp32"
+layout = "esp32-4mb.toml"
+reset = "none"
+
+[[board.image]]
+partition = "bootloader"
+path = "../../crates/nanoflash/tests/images/bootloader.bin"
+
+[[board.image]]
+partition = "application"
+path = "../../crates/nanoflash/tests/images/application.bin"

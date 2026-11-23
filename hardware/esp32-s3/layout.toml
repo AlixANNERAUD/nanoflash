@@ -1,0 +1,35 @@
+[flash]
+size = "8 MiB"
+alignment = "4 KiB"
+base-address = 0x0
+
+[[partition]]
+name = "bootloader"
+role = "bootloader"
+offset = 0x0
+size = "32 KiB"
+
+[[partition]]
+name = "partition-table"
+role = "partition-table"
+offset = 0x8000
+size = "4 KiB"
+
+[[partition]]
+name = "nvs"
+role = "custom"
+size = "24 KiB"
+espressif = { type = "data", subtype = "nvs" }
+
+[[partition]]
+name = "phy_init"
+role = "custom"
+size = "4 KiB"
+espressif = { type = "data", subtype = "phy" }
+
+[[partition]]
+name = "application"
+role = "firmware"
+offset = 0x10000
+size = "1 MiB"
+alignment = "64 KiB"

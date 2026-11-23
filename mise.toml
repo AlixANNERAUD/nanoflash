@@ -90,3 +90,15 @@ run = [
 [tasks.check]
 description = "Everything to run before pushing"
 depends = ["fmt", "clippy", "test", "cross"]
+
+[tasks.test-qemu]
+description = "Flash Espressif's QEMU (ESP32 and ESP32-C3) in download mode and replay the traffic (x86-64 Linux, needs socat)"
+run = [
+  "hardware/qemu/run.sh esp32",
+  "hardware/qemu/run.sh esp32c3",
+]
+
+[tasks.test-hardware]
+description = "Flash the boards listed in hardware/boards.toml (see hardware/README.md)"
+env.NANOFLASH_HARDWARE = "hardware/boards.toml"
+run = "cargo test -p nanoflash-cli --test hardware -- --ignored --nocapture"
