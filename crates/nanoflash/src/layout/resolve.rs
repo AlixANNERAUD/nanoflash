@@ -613,6 +613,54 @@ mod tests {
             })
     }
 
+    /// Layouts that must resolve: aligned sizes, ascending fixed offsets or none, no `remaining`,
+    /// everything inside the flash.
+    fn valid_layout() -> impl Strategy<Value = Layout> {
+        let alignment = 0x1000u64;
+        (
+            0u64..0x10,
+            proptest::collection::vec((any::<bool>(), 0u64..4, 1u64..0x10), 1..12),
+        )
+            .prop_map(move |(spare, parts)| {
+                let mut cursor = 0u64;
+                let mut partitions = Vec::new();
+                for (index, (fixed, gap, units)) in parts.into_iter().enumerate() {
+                    let size = units * alignment;
+                    let offset = if fixed {
+                        cursor += gap * alignment;
+                        Some(cursor)
+                    } else {
+                        None
+                    };
+                    cursor += size;
+                    partitions.push(partition(&format!("p{index}"), offset, Size::Bytes(size)));
+                }
+                Layout {
+                    flash: flash(cursor + spare * alignment, alignment),
+                    partitions,
+                }
+            })
+    }
+
+    proptest! {
+        #[test]
+        fn valid_layouts_resolve_soundly(layout in valid_layout()) {
+            let resolved = layout.resolve();
+            prop_assert!(resolved.is_ok(), "{:?}", resolved);
+            let resolved = resolved.unwrap();
+            prop_assert_eq!(resolved.partitions.len(), layout.partitions.len());
+            let mut previous_end = 0u64;
+            for partition in &resolved.partitions {
+                prop_assert_eq!(partition.offset % partition.alignment, 0);
+                prop_assert!(partition.offset >= previous_end);
+                previous_end = partition.end();
+            }
+            prop_assert!(previous_end <= layout.flash.size);
+            let used: u64 = resolved.partitions.iter().map(|partition| partition.size).sum();
+            prop_assert_eq!(resolved.unallocated(), layout.flash.size - used);
+        }
+    }
+
     proptest! {
         #[test]
         fn resolution_never_panics_and_ok_means_sound(layout in arbitrary_layout()) {
