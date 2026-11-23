@@ -1,0 +1,16 @@
+# Arduino Mega 2560 (ATmega16U2, the wiring bootloader at 115200): DTR pulse, CMD_SIGN_ON, then
+# CMD_READ_SIGNATURE_ISP for each signature byte
+! identity 2341:0042
+! baud 115200
+! signals dtr=0 rts=0
+! sleep 250
+! signals dtr=1 rts=1
+! sleep 50
+> 1b 01 00 01 0e 01 14
+< 1b 01 00 0b 0e 01 00 08 "AVRISP_2" 74
+> 1b 02 00 06 0e 1b 04 30 00 00 00 3e
+< 1b 02 00 04 0e 1b 00 1e 00 16
+> 1b 03 00 06 0e 1b 04 30 00 01 00 3e
+< 1b 03 00 04 0e 1b 00 98 00 91
+> 1b 04 00 06 0e 1b 04 30 00 02 00 3a
+< 1b 04 00 04 0e 1b 00 01 00 0f

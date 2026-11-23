@@ -83,3 +83,7 @@ required-features = ["espressif", "json", "testing"]
 [[test]]
 name = "samba"
 required-features = ["samba", "testing"]
+
+[[test]]
+name = "avr"
+required-features = ["avr", "testing"]

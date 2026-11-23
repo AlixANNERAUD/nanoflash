@@ -2,19 +2,26 @@
 
 //! The AVR109 commands of Caterina, the bootloader of the Leonardo and the Micro.
 
+#[cfg(test)]
 use alloc::vec::Vec;
+
+// The page commands are compiled for the tests only until the page loop programs and reads
+// pages with them.
 
 /// The command that answers the software identifier, `CATERIN`.
 pub(crate) const IDENTIFIER: u8 = b'S';
 /// The command that answers the signature.
 pub(crate) const SIGNATURE: u8 = b's';
 /// The command that leaves the bootloader.
+#[cfg(test)]
 pub(crate) const EXIT: u8 = b'E';
 /// The memory type of flash, `F`.
+#[cfg(test)]
 const FLASH: u8 = b'F';
 
 /// Set the address to a byte offset, which the protocol takes as a 16-bit word address; `None`
 /// when the word does not fit.
+#[cfg(test)]
 pub(crate) fn set_address(offset: u64) -> Option<[u8; 3]> {
     let word = u16::try_from(offset / 2).ok()?;
     let [high, low] = word.to_be_bytes();
@@ -22,6 +29,7 @@ pub(crate) fn set_address(offset: u64) -> Option<[u8; 3]> {
 }
 
 /// Write a block of flash. The length saturates at 65535: blocks are a page long.
+#[cfg(test)]
 pub(crate) fn write_block(data: &[u8]) -> Vec<u8> {
     let length = u16::try_from(data.len()).unwrap_or(u16::MAX);
     let [high, low] = length.to_be_bytes();
@@ -32,6 +40,7 @@ pub(crate) fn write_block(data: &[u8]) -> Vec<u8> {
 }
 
 /// Read a block of flash.
+#[cfg(test)]
 pub(crate) fn read_block(length: u16) -> [u8; 4] {
     let [high, low] = length.to_be_bytes();
     [b'g', high, low, FLASH]

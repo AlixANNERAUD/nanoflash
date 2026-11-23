@@ -814,9 +814,15 @@ impl fmt::Display for Error {
                         }
                         formatter.write_str(" baud")?;
                     }
-                    formatter.write_str(
-                        ": check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)",
-                    )
+                    if *reset == Some("custom") {
+                        formatter.write_str(
+                            " after the reset sequence \"custom\" of the board: check the port and the cable and the reset sequence of the board in the manifest, or press the reset button of the board just before flashing",
+                        )
+                    } else {
+                        formatter.write_str(
+                            ": check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)",
+                        )
+                    }
                 }
             },
             Error::NotConnected { protocol } => write!(
@@ -1083,6 +1089,16 @@ mod tests {
         assert_eq!(
             wiring.to_string(),
             "no STK500v2 bootloader answered on the port at 115200 baud: check the port and the cable, or press the reset button of the board just before flashing (its automatic reset through DTR may be missing)"
+        );
+        let custom = Error::NoBootloader {
+            waited_for: None,
+            reset: Some("custom"),
+            protocol: Protocol::Stk500v1,
+            rates: alloc::vec![57_600],
+        };
+        assert_eq!(
+            custom.to_string(),
+            "no STK500v1 bootloader answered on the port at 57600 baud after the reset sequence \"custom\" of the board: check the port and the cable and the reset sequence of the board in the manifest, or press the reset button of the board just before flashing"
         );
     }
 

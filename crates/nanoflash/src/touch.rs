@@ -2,20 +2,11 @@
 //! and AVR109): opening the port at 1200 baud with DTR cleared asks the sketch to restart into
 //! its bootloader, which shows another USB identity; the backend then waits for that device.
 
-// The AVR backend comes with its module; until then only SAM-BA calls the touch.
-#![cfg_attr(
-    not(feature = "samba"),
-    expect(
-        dead_code,
-        reason = "only the SAM-BA backend touches the sketch so far"
-    )
-)]
-
 use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::error::Error;
-use crate::manifest::{Protocol, ResetSequence};
+use crate::manifest::{Protocol, ResetSequence, ResetStep};
 use crate::transport::{
     DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
 };
@@ -59,14 +50,16 @@ fn built_in_bootloader(identity: &UsbIdentity, protocol: Protocol) -> Option<u16
 }
 
 /// The filter of the bootloader device to wait for after touching the sketch of `identity`: a
-/// listed filter of its vendor and product with bit 15 cleared, else the first listed filter,
-/// else the built-in rules of `protocol`.
+/// listed filter of its vendor and of the bootloader product the built-in rules of `protocol`
+/// give (else its product with bit 15 cleared), else the first listed filter, else the built-in
+/// rules.
 pub(crate) fn bootloader_filter(
     identity: &UsbIdentity,
     devices: &[DeviceFilter],
     protocol: Protocol,
 ) -> Result<DeviceFilter, Error> {
-    let product = identity.product & !SKETCH_PRODUCT_BIT;
+    let product =
+        built_in_bootloader(identity, protocol).unwrap_or(identity.product & !SKETCH_PRODUCT_BIT);
     let same_product = devices
         .iter()
         .find(|filter| filter.vendor == identity.vendor && filter.product == Some(product));
@@ -171,18 +164,7 @@ async fn touch<S: SerialPort>(
             })
             .await?;
         }
-        ResetSequence::Custom(steps) => {
-            for step in steps {
-                port.set_signals(Signals {
-                    dtr: step.dtr,
-                    rts: step.rts,
-                })
-                .await?;
-                if !step.wait.is_zero() {
-                    port.sleep(step.wait).await;
-                }
-            }
-        }
+        ResetSequence::Custom(steps) => run_steps(port, steps).await?,
         // The board sits in its bootloader already.
         ResetSequence::None => {}
         // Refused by the backends' constructors.
@@ -193,6 +175,24 @@ async fn touch<S: SerialPort>(
                 protocol,
                 reset: sequence.to_string(),
             });
+        }
+    }
+    Ok(())
+}
+
+/// Runs the steps of a custom reset: each sets DTR and RTS, then waits.
+pub(crate) async fn run_steps<S: SerialPort>(
+    port: &mut S,
+    steps: &[ResetStep],
+) -> Result<(), Error> {
+    for step in steps {
+        port.set_signals(Signals {
+            dtr: step.dtr,
+            rts: step.rts,
+        })
+        .await?;
+        if !step.wait.is_zero() {
+            port.sleep(step.wait).await;
         }
     }
     Ok(())
@@ -242,6 +242,12 @@ mod tests {
         assert_eq!(
             bootloader_filter(&usb(0x2341, 0x8036), &two, Protocol::Avr109),
             Ok(filter(0x2341, 0x0036))
+        );
+        // SparkFun's products do not follow bit 15: the built-in pair finds the listed one.
+        let sparkfun = [filter(0x1b4f, 0x9205), filter(0x1b4f, 0x9203)];
+        assert_eq!(
+            bootloader_filter(&usb(0x1b4f, 0x9204), &sparkfun, Protocol::Avr109),
+            Ok(filter(0x1b4f, 0x9203))
         );
         assert_eq!(
             bootloader_filter(&usb(0x1209, 0x0001), &[], Protocol::Avr109),

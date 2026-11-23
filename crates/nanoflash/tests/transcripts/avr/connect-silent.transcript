@@ -1,0 +1,32 @@
+# No bootloader answers: two attempts of three tries at 115200, then at 57600
+! identity 2341:0043
+! baud 115200
+! signals dtr=0 rts=0
+! sleep 250
+! signals dtr=1 rts=1
+! sleep 50
+> 30 20
+> 30 20
+> 30 20
+! signals dtr=0 rts=0
+! sleep 250
+! signals dtr=1 rts=1
+! sleep 50
+> 30 20
+> 30 20
+> 30 20
+! baud 57600
+! signals dtr=0 rts=0
+! sleep 250
+! signals dtr=1 rts=1
+! sleep 50
+> 30 20
+> 30 20
+> 30 20
+! signals dtr=0 rts=0
+! sleep 250
+! signals dtr=1 rts=1
+! sleep 50
+> 30 20
+> 30 20
+> 30 20

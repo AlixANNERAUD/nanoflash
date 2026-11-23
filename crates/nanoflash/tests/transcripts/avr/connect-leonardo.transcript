@@ -1,0 +1,9 @@
+# Arduino Leonardo running a sketch: the 1200-baud touch, then Caterina on its own USB identity
+! identity 2341:8036
+! baud 1200
+! signals dtr=0 rts=0
+! reopen 2341:0036
+> "S"
+< "CATERIN"
+> "s"
+< 87 95 1e

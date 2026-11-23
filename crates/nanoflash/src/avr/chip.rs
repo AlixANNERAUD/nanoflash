@@ -47,13 +47,15 @@ pub fn from_signature(signature: [u8; 3]) -> Option<&'static Chip> {
 
 /// The bytes at the top of the flash that the bootloader of a protocol may occupy. The size
 /// cannot be read back: Optiboot (512 bytes) answers at 115200 baud, ATmegaBOOT (2 KiB) at the
-/// slower rates; the wiring bootloader of the Mega 2560 takes 8 KiB and Caterina 4 KiB.
+/// slower rates; the wiring bootloader of the Mega 2560 takes 8 KiB and Caterina 4 KiB. The
+/// bootloaders of the other protocols do not sit at the top of the flash.
 pub(crate) fn bootloader_size(protocol: Protocol, baud_rate: u32) -> u64 {
     match protocol {
         Protocol::Stk500v1 if baud_rate == 115_200 => 0x200,
         Protocol::Stk500v1 => 0x800,
         Protocol::Stk500v2 => 0x2000,
-        _ => 0x1000,
+        Protocol::Avr109 => 0x1000,
+        Protocol::Espressif | Protocol::Samba => 0,
     }
 }
 
@@ -87,26 +89,16 @@ mod tests {
         assert_eq!(bootloader_size(Protocol::Stk500v1, 57_600), 0x800);
         assert_eq!(bootloader_size(Protocol::Stk500v2, 115_200), 0x2000);
         assert_eq!(bootloader_size(Protocol::Avr109, 57_600), 0x1000);
+        assert_eq!(bootloader_size(Protocol::Samba, 115_200), 0);
     }
 
     #[test]
     fn erase_units_cover_every_page() {
         let chip = |name| CHIPS.iter().find(|chip| chip.name == name).unwrap();
-        assert_eq!(
-            erase_unit(Protocol::Stk500v1) % chip("atmega328p").page_size,
-            0
-        );
-        assert_eq!(
-            erase_unit(Protocol::Stk500v2) % chip("atmega2560").page_size,
-            0
-        );
-        assert_eq!(
-            erase_unit(Protocol::Avr109) % chip("atmega32u4").page_size,
-            0
-        );
-        for protocol in [Protocol::Stk500v1, Protocol::Avr109, Protocol::Stk500v2] {
-            assert!(erase_unit(protocol).is_power_of_two(), "{protocol}");
-        }
+        // Images start on a page of the chip each protocol flashes.
+        assert_eq!(erase_unit(Protocol::Stk500v1), chip("atmega328p").page_size);
+        assert_eq!(erase_unit(Protocol::Stk500v2), chip("atmega2560").page_size);
+        assert_eq!(erase_unit(Protocol::Avr109), chip("atmega32u4").page_size);
         assert_eq!(address_limit(Protocol::Stk500v2), 1 << 32);
     }
 }

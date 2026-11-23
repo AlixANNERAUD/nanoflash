@@ -1,0 +1,13 @@
+# Optiboot blinks its LED before it listens: the first sync goes unanswered, then the answers to
+# both tries arrive together
+! identity 2341:0043
+! baud 115200
+! signals dtr=0 rts=0
+! sleep 250
+! signals dtr=1 rts=1
+! sleep 50
+> 30 20
+> 30 20
+< 14 10 14 10
+> 75 20
+< 14 1e 95 0f 10

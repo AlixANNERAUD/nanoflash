@@ -1,0 +1,11 @@
+# Arduino Uno R3 (ATmega16U2, Optiboot at 115200): DTR pulse, sync, signature
+! identity 2341:0043
+! baud 115200
+! signals dtr=0 rts=0
+! sleep 250
+! signals dtr=1 rts=1
+! sleep 50
+> 30 20
+< 14 10
+> 75 20
+< 14 1e 95 0f 10

@@ -1,0 +1,6 @@
+# Arduino Leonardo already in Caterina (its LED pulses): no touch
+! identity 2341:0036
+> "S"
+< "CATERIN"
+> "s"
+< 87 95 1e
