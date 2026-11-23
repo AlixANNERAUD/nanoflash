@@ -11,3 +11,6 @@ extern crate alloc;
 
 pub mod layout;
 pub mod quantity;
+
+#[cfg(test)]
+extern crate std;

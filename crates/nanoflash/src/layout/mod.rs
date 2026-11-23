@@ -1,5 +1,11 @@
 //! The layout model: the flash of a board and its named partitions.
 
+mod error;
+mod resolve;
+
+pub use error::{LayoutError, LayoutErrors};
+pub use resolve::{ResolvedLayout, ResolvedPartition};
+
 use crate::quantity;
 use alloc::string::String;
 use alloc::vec::Vec;
