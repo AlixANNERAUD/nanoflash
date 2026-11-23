@@ -5,10 +5,11 @@ use std::fmt::Write as _;
 use std::path::Path;
 use std::rc::Rc;
 
-use nanoflash::backend::{ChipInformation, ProgressEvent};
+use md5::{Digest, Md5};
+use nanoflash::backend::{Backend, ChipInformation, ProgressEvent, Region, Segment, Stage};
 use nanoflash::espressif::{Chip, EspressifBackend, EspressifOptions};
 use nanoflash::manifest::{Protocol, ResetSequence};
-use nanoflash::testing::{ReplayProvider, Transcript, replay};
+use nanoflash::testing::{Event, HostToken, ReplayProvider, Transcript, record, replay};
 use nanoflash::transport::{
     DeviceFilter, Duration, PortProvider, SerialPort, Signals, TransportError, UsbIdentity,
 };
@@ -316,4 +317,341 @@ fn each_sync_try_gives_up_after_four_kibibytes_of_noise() {
     );
     // Five SYNC tries after each of the two resets, each reading 4 KiB before the next one.
     assert_eq!(*reads.borrow(), vec![4096; 10]);
+}
+
+fn image(name: &str) -> Vec<u8> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/images")
+        .join(name);
+    std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+/// The connection to the ESP32-S3 over USB followed by `name`.
+fn after_connect(name: &str) -> String {
+    transcript("connect-esp32s3-usb") + &transcript(name)
+}
+
+/// Connects through the `Backend` interface over a replay of `text`, then runs `then`.
+fn session<T>(
+    text: &str,
+    reset: Option<ResetSequence>,
+    then: impl FnOnce(&mut EspressifBackend<'_, ReplayProvider>) -> T,
+) -> (T, ReplayProvider) {
+    let (port, mut provider) = replay(Transcript::parse(text).unwrap());
+    let result = {
+        let mut backend =
+            EspressifBackend::new(port, &mut provider, reset, EspressifOptions::default()).unwrap();
+        assert_eq!(
+            block_on(Backend::connect(&mut backend)).unwrap().chip,
+            "esp32-s3"
+        );
+        then(&mut backend)
+    };
+    (result, provider)
+}
+
+fn hexadecimal(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// The `<` line of an `SPI_FLASH_MD5` answer carrying `digits`.
+fn md5_answer(digits: &str) -> String {
+    let mut line = String::from("< c0 01 13 24 00 00 00 00 00");
+    for byte in digits.bytes() {
+        write!(line, " {byte:02x}").unwrap();
+    }
+    line.push_str(" 00 00 00 00 c0\n");
+    line
+}
+
+/// Undoes the SLIP framing of one frame.
+fn slip_decode(frame: &[u8]) -> Vec<u8> {
+    let inner = &frame[1..frame.len() - 1];
+    let mut out = Vec::new();
+    let mut escaped = false;
+    for &byte in inner {
+        match (escaped, byte) {
+            (false, 0xDB) => escaped = true,
+            (false, _) => out.push(byte),
+            (true, 0xDC) => {
+                out.push(0xC0);
+                escaped = false;
+            }
+            (true, 0xDD) => {
+                out.push(0xDB);
+                escaped = false;
+            }
+            (true, _) => panic!("bad escape {byte:02x}"),
+        }
+    }
+    out
+}
+
+#[test]
+fn writes_and_verifies_two_images() {
+    let bootloader = image("bootloader.bin");
+    let application = image("application.bin");
+    let segments = [
+        Segment {
+            label: "bootloader",
+            offset: 0,
+            data: &bootloader,
+        },
+        Segment {
+            label: "application",
+            offset: 0x1_0000,
+            data: &application,
+        },
+    ];
+    let mut events = Vec::new();
+    let (result, provider) = session(
+        &after_connect("write-esp32s3"),
+        None,
+        |backend| -> Result<(), Error> {
+            let mut progress = |event: ProgressEvent| events.push(event);
+            block_on(backend.write(&segments, &mut progress))?;
+            block_on(backend.verify(&segments, &mut progress))?;
+            block_on(backend.reset_to_application())
+        },
+    );
+    result.unwrap();
+    provider.finish().unwrap();
+    let writing: Vec<_> = events
+        .iter()
+        .filter(|event| event.stage == Stage::Writing)
+        .collect();
+    for (offset, size) in [(0, 0x1000), (0x1_0000, 0x2000)] {
+        let last = writing
+            .iter()
+            .rfind(|event| event.offset == offset)
+            .unwrap();
+        assert_eq!((last.done, last.total), (size, size), "{events:?}");
+    }
+    let first_verifying = events
+        .iter()
+        .position(|event| event.stage == Stage::Verifying)
+        .unwrap();
+    assert!(
+        events[first_verifying..]
+            .iter()
+            .all(|event| event.stage == Stage::Verifying),
+        "{events:?}"
+    );
+    for offset in [0, 0x1_0000] {
+        assert!(
+            events[first_verifying..]
+                .iter()
+                .any(|event| event.offset == offset && event.done == event.total),
+            "{events:?}"
+        );
+    }
+}
+
+#[test]
+fn compressed_blocks_inflate_to_the_image() {
+    let bootloader = image("bootloader.bin");
+    let application = image("application.bin");
+    let segments = [
+        Segment {
+            label: "bootloader",
+            offset: 0,
+            data: &bootloader,
+        },
+        Segment {
+            label: "application",
+            offset: 0x1_0000,
+            data: &application,
+        },
+    ];
+    let (port, provider) = replay(Transcript::parse(&after_connect("write-esp32s3")).unwrap());
+    let (port, mut provider) = record(port, provider);
+    {
+        let mut backend =
+            EspressifBackend::new(port, &mut provider, None, EspressifOptions::default()).unwrap();
+        block_on(Backend::connect(&mut backend)).unwrap();
+        block_on(backend.write(&segments, &mut ())).unwrap();
+        block_on(backend.verify(&segments, &mut ())).unwrap();
+        block_on(backend.reset_to_application()).unwrap();
+    }
+    provider.inner().finish().unwrap();
+    // The data of the blocks of each FLASH_DEFL_BEGIN, in order.
+    let mut streams: Vec<Vec<u8>> = Vec::new();
+    for entry in provider.transcript().events {
+        let Event::Host(tokens) = entry.event else {
+            continue;
+        };
+        let frame: Vec<u8> = tokens
+            .iter()
+            .map(|token| match token {
+                HostToken::Byte(byte) => *byte,
+                HostToken::Any => panic!("a recording has no wildcard"),
+            })
+            .collect();
+        let packet = slip_decode(&frame);
+        match packet[1] {
+            0x10 => streams.push(Vec::new()),
+            0x11 => {
+                let length = u32::from_le_bytes(packet[8..12].try_into().unwrap()) as usize;
+                let data = &packet[24..];
+                assert_eq!(data.len(), length);
+                streams.last_mut().unwrap().extend_from_slice(data);
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(streams.len(), 2);
+    for (stream, expected) in streams.iter().zip([&bootloader, &application]) {
+        assert_eq!(
+            &miniz_oxide::inflate::decompress_to_vec_zlib(stream).unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn pads_to_four_bytes() {
+    let data = b"hello";
+    let mut padded = data.to_vec();
+    padded.extend_from_slice(&[0xFF; 3]);
+    let digest = hexadecimal(&Md5::digest(&padded));
+    let mut text = transcript("connect-esp32s3-usb");
+    // 0x1000 bytes erased, one block, at 0x0.
+    text.push_str(
+        "> c0 00 10 14 00 00 00 00 00 00 10 00 00 01 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 c0\n\
+         < c0 01 10 04 00 00 00 00 00 00 00 00 00 c0\n\
+         > c0 00 11 .. c0\n\
+         < c0 01 11 04 00 00 00 00 00 00 00 00 00 c0\n\
+         > c0 00 13 10 00 00 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00 00 00 00 00 c0\n",
+    );
+    text.push_str(&md5_answer(&digest));
+    let segments = [Segment {
+        label: "hello",
+        offset: 0,
+        data,
+    }];
+    let (result, provider) = session(&text, None, |backend| -> Result<(), Error> {
+        block_on(backend.write(&segments, &mut ()))?;
+        block_on(backend.verify(&segments, &mut ()))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn erases_a_region() {
+    let (result, provider) = session(&after_connect("erase-esp32s3"), None, |backend| {
+        block_on(backend.erase(Region {
+            offset: 0,
+            size: 0x80_0000,
+        }))
+    });
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn md5_mismatch_is_a_verification_failure() {
+    let bootloader = image("bootloader.bin");
+    let segments = [Segment {
+        label: "bootloader",
+        offset: 0,
+        data: &bootloader,
+    }];
+    let (result, provider) = session(
+        &after_connect("md5-mismatch"),
+        None,
+        |backend| -> Result<(), Error> {
+            block_on(backend.write(&segments, &mut ()))?;
+            block_on(backend.verify(&segments, &mut ()))
+        },
+    );
+    provider.finish().unwrap();
+    let error = result.unwrap_err();
+    let expected = "a0c16616c91907bd14e999986cf822d5";
+    let actual = "0".repeat(32);
+    assert_eq!(
+        error,
+        Error::VerificationFailed {
+            offset: 0,
+            size: 0x1000,
+            expected: expected.into(),
+            actual: actual.clone(),
+        }
+    );
+    assert_eq!(error.class(), ErrorClass::Verification);
+    let message = error.to_string();
+    assert!(message.contains(expected), "{message}");
+    assert!(message.contains(&actual), "{message}");
+    assert!(message.contains("0x0"), "{message}");
+}
+
+#[test]
+fn rom_errors_name_the_command() {
+    let bootloader = image("bootloader.bin");
+    let segments = [Segment {
+        label: "bootloader",
+        offset: 0,
+        data: &bootloader,
+    }];
+    let (result, provider) = session(&after_connect("rom-error"), None, |backend| {
+        block_on(backend.write(&segments, &mut ()))
+    });
+    provider.finish().unwrap();
+    let error = result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::Rom {
+            command: "FLASH_DEFL_DATA",
+            code: 7
+        }
+    );
+    assert!(error.to_string().contains("bad checksum"), "{error}");
+}
+
+#[test]
+fn soft_reset_without_lines() {
+    let (result, provider) = session(
+        &transcript("reset-none"),
+        Some(ResetSequence::None),
+        |backend| block_on(backend.reset_to_application()),
+    );
+    result.unwrap();
+    provider.finish().unwrap();
+}
+
+#[test]
+fn offsets_beyond_four_gibibytes_are_refused() {
+    let data = [0_u8; 16];
+    let segments = [
+        Segment {
+            label: "bootloader",
+            offset: 0,
+            data: &data,
+        },
+        Segment {
+            label: "application",
+            offset: 1 << 32,
+            data: &data,
+        },
+    ];
+    let (result, provider) = session(&transcript("connect-esp32s3-usb"), None, |backend| {
+        (
+            block_on(backend.write(&segments, &mut ())),
+            block_on(backend.verify(&segments, &mut ())),
+            block_on(backend.erase(Region {
+                offset: 1 << 32,
+                size: 0x1000,
+            })),
+        )
+    });
+    // Nothing was sent: the transcript ends with the connection.
+    provider.finish().unwrap();
+    let refused = Error::OutOfRange {
+        what: "application offset".into(),
+        value: 1 << 32,
+    };
+    assert_eq!(result.0, Err(refused.clone()));
+    assert_eq!(result.1, Err(refused.clone()));
+    assert!(matches!(result.2, Err(Error::OutOfRange { value, .. }) if value == 1 << 32));
+    assert_eq!(refused.class(), ErrorClass::Input);
 }

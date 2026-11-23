@@ -70,6 +70,17 @@ pub enum Error {
         /// The value.
         value: u64,
     },
+    /// The flash does not hold what was written.
+    VerificationFailed {
+        /// The flash offset of the image.
+        offset: u64,
+        /// The number of bytes checked.
+        size: u64,
+        /// The MD5 digest of the image, in lowercase hexadecimal.
+        expected: String,
+        /// The MD5 digest the board computed over the flash, in lowercase hexadecimal.
+        actual: String,
+    },
 }
 
 /// Who can fix an error: the input (exit code 1), the device or its connection (2), or the
@@ -98,6 +109,7 @@ impl Error {
             | Error::InvalidResponse { .. }
             | Error::UnknownChip { .. }
             | Error::UnsupportedChip { .. } => ErrorClass::Device,
+            Error::VerificationFailed { .. } => ErrorClass::Verification,
         }
     }
 }
@@ -147,6 +159,15 @@ impl fmt::Display for Error {
             Error::OutOfRange { what, value } => write!(
                 formatter,
                 "the {what} 0x{value:x} is beyond what the protocol can address"
+            ),
+            Error::VerificationFailed {
+                offset,
+                size,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "the 0x{size:x} bytes of flash at 0x{offset:x} have the MD5 digest {actual} instead of {expected}: flash again, and check the power supply and the flash size of the board if it fails again"
             ),
         }
     }

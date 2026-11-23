@@ -1,0 +1,6 @@
+# Follows connect-esp32s3-usb: the ROM loader refuses the first block of bootloader.bin with
+# error 0x07 (bad checksum).
+> c0 00 10 14 00 00 00 00 00 00 10 00 00 01 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 c0
+< c0 01 10 04 00 00 00 00 00 00 00 00 00 c0
+> c0 00 11 .. c0
+< c0 01 11 04 00 00 00 00 00 01 07 00 00 c0

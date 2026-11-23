@@ -5,6 +5,7 @@ pub(crate) mod chip;
 pub(crate) mod command;
 pub(crate) mod reset;
 pub(crate) mod slip;
+mod write;
 
 pub use chip::Chip;
 
@@ -249,6 +250,7 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
                 .exchange(
                     opcode::SYNC,
                     &command::SYNC_DATA,
+                    0,
                     SYNC_TIMEOUT,
                     SYNC_BYTE_BUDGET,
                 )
@@ -300,6 +302,14 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
         Ok(count)
     }
 
+    /// Sends a command without waiting for an answer.
+    async fn send(&mut self, code: u8, data: &[u8], checksum: u32) -> Result<(), Error> {
+        self.port
+            .write(&slip::encode(&command::request(code, data, checksum)))
+            .await?;
+        Ok(())
+    }
+
     /// Sends a command and waits for the response with its opcode, skipping other frames.
     /// `None` means a read timed out first; `budget` bytes read without the answer is
     /// `NoResponse`.
@@ -307,12 +317,11 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
         &mut self,
         code: u8,
         data: &[u8],
+        checksum: u32,
         timeout: Duration,
         budget: usize,
     ) -> Result<Option<Response>, Error> {
-        self.port
-            .write(&slip::encode(&command::request(code, data, 0)))
-            .await?;
+        self.send(code, data, checksum).await?;
         let mut received: usize = 0;
         loop {
             while let Some(frame) = self.frames.pop_front() {
@@ -336,9 +345,21 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
 
     /// Sends a command the ROM loader must answer and accept.
     async fn command(&mut self, code: u8, data: &[u8]) -> Result<Response, Error> {
+        self.command_with(code, data, 0, COMMAND_TIMEOUT).await
+    }
+
+    /// Sends a command with its checksum, which the ROM loader must answer within `timeout`
+    /// and accept.
+    async fn command_with(
+        &mut self,
+        code: u8,
+        data: &[u8],
+        checksum: u32,
+        timeout: Duration,
+    ) -> Result<Response, Error> {
         let command = command::name(code);
         match self
-            .exchange(code, data, COMMAND_TIMEOUT, BYTE_BUDGET)
+            .exchange(code, data, checksum, timeout, BYTE_BUDGET)
             .await?
         {
             None => Err(Error::NoResponse { command }),
@@ -420,7 +441,13 @@ impl<'p, P: PortProvider> EspressifBackend<'p, P> {
     /// secure. A spent byte budget and transport errors stand.
     async fn security_info(&mut self) -> Result<(Option<u32>, bool), Error> {
         let response = match self
-            .exchange(opcode::GET_SECURITY_INFO, &[], COMMAND_TIMEOUT, BYTE_BUDGET)
+            .exchange(
+                opcode::GET_SECURITY_INFO,
+                &[],
+                0,
+                COMMAND_TIMEOUT,
+                BYTE_BUDGET,
+            )
             .await?
         {
             Some(response) if response.status == 0 => response,

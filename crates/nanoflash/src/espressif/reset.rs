@@ -103,8 +103,6 @@ pub(crate) async fn enter_download_mode<S: SerialPort>(
 /// has no line sequence for it (`none`, `custom`): the caller then sends the ROM loader's soft
 /// reset. A port that disconnects meanwhile counts as success, since the USB device left to
 /// start the application.
-// The `Backend` implementation, which comes with writing, is the caller.
-#[allow(dead_code)]
 pub(crate) async fn reset_to_application<S: SerialPort>(
     port: &mut S,
     sequence: &ResetSequence,

@@ -70,8 +70,6 @@ pub(crate) fn words(values: &[u32]) -> Vec<u8> {
 
 /// The payload of `FLASH_BEGIN` and `FLASH_DEFL_BEGIN`; the fifth word is the ROM loader's
 /// encryption flag, absent on the ESP32.
-// Writing and verifying, which come with the `Backend` implementation, use it.
-#[allow(dead_code)]
 pub(crate) fn begin_data(
     size: u32,
     blocks: u32,
@@ -87,8 +85,6 @@ pub(crate) fn begin_data(
 }
 
 /// The payload of a data block and its checksum (XOR of the data seeded with `0xEF`).
-// Writing and verifying, which come with the `Backend` implementation, use it.
-#[allow(dead_code)]
 pub(crate) fn block(data: &[u8], sequence: u32) -> (Vec<u8>, u32) {
     let length = u32::try_from(data.len()).unwrap_or(u32::MAX);
     let mut payload = words(&[length, sequence, 0, 0]);
@@ -134,8 +130,6 @@ pub(crate) fn parse_response(frame: &[u8]) -> Option<Response> {
 }
 
 /// Parses the 32 hexadecimal digits of an `SPI_FLASH_MD5` answer.
-// Writing and verifying, which come with the `Backend` implementation, use it.
-#[allow(dead_code)]
 pub(crate) fn parse_md5(data: &[u8]) -> Option<[u8; 16]> {
     if data.len() != 32 {
         return None;
