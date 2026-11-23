@@ -152,6 +152,9 @@ impl Layout {
         }
 
         check_names_and_slots(&self.partitions, &mut errors);
+        if flash.detect {
+            check_fixed_offsets_ascend(&self.partitions, &mut errors);
+        }
 
         let mut plans = Vec::with_capacity(self.partitions.len());
         let mut cursor = 0u64;
@@ -216,11 +219,10 @@ impl Layout {
                 if let Some(segment) = segment.filter(|segment| segment.shared) {
                     errors.push(no_space_error(
                         &self.partitions,
-                        partition,
+                        &plans,
                         offset,
                         segment,
                         index,
-                        plan,
                     ));
                 }
                 cursor = offset;
@@ -514,27 +516,42 @@ fn flag_dependence(
 /// The error of a `remaining` partition left without space.
 fn no_space_error(
     partitions: &[Partition],
-    partition: &Partition,
+    plans: &[Plan],
     offset: u64,
     segment: &Segment,
     index: usize,
-    plan: &Plan,
 ) -> LayoutError {
+    let name = partitions
+        .get(index)
+        .map(|partition| partition.name.clone())
+        .unwrap_or_default();
     let last = index.checked_add(1) == Some(segment.end);
     if last && segment.free_from >= segment.limit {
-        LayoutError::NoSpaceForRemaining {
-            partition: partition.name.clone(),
+        return LayoutError::NoSpaceForRemaining {
+            partition: name,
             offset,
             limit: segment.limit,
             limited_by: partitions.get(segment.end).map(|next| next.name.clone()),
-        }
-    } else {
-        LayoutError::NoShareForRemaining {
-            partition: partition.name.clone(),
-            start: segment.free_from,
-            limit: segment.limit,
-            step: plan.claim.map_or(1, |claim| claim.unit),
-        }
+        };
+    }
+    let step = plans
+        .get(index)
+        .and_then(|plan| plan.claim)
+        .map_or(1, |claim| claim.unit);
+    // The first partition after it whose alignment is the step, when the step is not one byte.
+    let set_by = partitions
+        .iter()
+        .zip(plans)
+        .take(segment.end)
+        .skip(index.saturating_add(1))
+        .find(|(_, plan)| step > 1 && plan.alignment == step)
+        .map(|(partition, _)| partition.name.clone());
+    LayoutError::NoShareForRemaining {
+        partition: name,
+        start: segment.free_from,
+        limit: segment.limit,
+        step,
+        set_by,
     }
 }
 
@@ -558,6 +575,28 @@ fn is_valid_alignment(alignment: u64) -> bool {
 fn align_up(value: u64, alignment: u64) -> Option<u64> {
     let mask = alignment.checked_sub(1)?;
     Some(value.checked_add(mask)? & !mask)
+}
+
+/// In a `detect` layout the last segment grows to the end of the flash, so no fixed offset may
+/// lie above it: fixed offsets ascend in file order.
+fn check_fixed_offsets_ascend(partitions: &[Partition], errors: &mut Vec<LayoutError>) {
+    let mut previous: Option<(&Partition, u64)> = None;
+    for partition in partitions {
+        let Some(offset) = partition.offset else {
+            continue;
+        };
+        if let Some((before, previous_offset)) = previous {
+            if offset < previous_offset {
+                errors.push(LayoutError::FixedOffsetBelowPrevious {
+                    partition: partition.name.clone(),
+                    offset,
+                    previous: before.name.clone(),
+                    previous_offset,
+                });
+            }
+        }
+        previous = Some((partition, offset));
+    }
 }
 
 fn check_names_and_slots(partitions: &[Partition], errors: &mut Vec<LayoutError>) {
@@ -906,12 +945,72 @@ mod tests {
                 start: 0x11000,
                 limit: 0x20000,
                 step: 0x10000,
+                set_by: Some("next".into()),
             }]
         );
         assert_eq!(
             LayoutErrors(errors_of(&rounded)).to_string(),
-            "partition \"rest\" uses the remaining space, but its share of the free space from 0x11000 to 0x20000 rounds down to zero bytes in steps of 0x10000"
+            "partition \"rest\" uses the remaining space, but its share of the free space from 0x11000 to 0x20000 rounds down to zero bytes in steps of 0x10000, the alignment of partition \"next\" after it"
         );
+
+        // One byte for two: each share rounds down to zero, in steps of one byte.
+        let mut tiny = Layout {
+            flash: flash(1, 1),
+            partitions: vec![
+                partition("a", None, Size::Remaining),
+                partition("b", None, Size::Remaining),
+            ],
+        };
+        tiny.partitions[0].alignment = Some(1);
+        tiny.partitions[1].alignment = Some(1);
+        assert_eq!(
+            errors_of(&tiny)[0],
+            LayoutError::NoShareForRemaining {
+                partition: "a".into(),
+                start: 0,
+                limit: 1,
+                step: 1,
+                set_by: None,
+            }
+        );
+        assert_eq!(
+            errors_of(&tiny)[0].to_string(),
+            "partition \"a\" uses the remaining space, but its share of the free space from 0x0 to 0x1 rounds down to zero bytes in steps of 0x1"
+        );
+    }
+
+    #[test]
+    fn fixed_offsets_ascend_in_a_detect_layout() {
+        let mut layout = Layout {
+            flash: Flash {
+                size: 0x10000,
+                alignment: 0x1000,
+                detect: true,
+                base_address: 0,
+            },
+            partitions: vec![
+                partition("a", Some(0xF000), Size::Bytes(0x1000)),
+                partition("b", Some(0), grow(0x1000, 1, None)),
+                aligned(partition("c", None, Size::Bytes(0x1000)), 0x8000),
+            ],
+        };
+        let expected = vec![LayoutError::FixedOffsetBelowPrevious {
+            partition: "b".into(),
+            offset: 0,
+            previous: "a".into(),
+            previous_offset: 0xF000,
+        }];
+        assert_eq!(errors_of(&layout), expected);
+        // On a larger flash, `b` would also grow over `a`.
+        let larger = layout.resolve_for(Some(0x20000)).unwrap_err().0;
+        assert_eq!(larger.first(), expected.first());
+        assert_eq!(
+            LayoutErrors(expected).to_string(),
+            "partition \"b\" has a fixed offset of 0x0, below 0xf000 of \"a\" before it: in a layout with size = \"detect\", fixed offsets ascend in file order"
+        );
+        // A fixed flash size keeps any order.
+        layout.flash.detect = false;
+        assert!(layout.resolve().is_ok());
     }
 
     fn grow(minimum: u64, weight: u32, maximum: Option<u64>) -> Size {
@@ -1576,15 +1675,61 @@ mod tests {
                     prop_assert!(pair[0].1 <= pair[1].0);
                 }
                 prop_assert!(resolved.unallocated() <= flash_size);
+                if layout.flash.detect {
+                    let fixed: Vec<u64> =
+                        layout.partitions.iter().filter_map(|partition| partition.offset).collect();
+                    prop_assert!(fixed.windows(2).all(|pair| pair[0] <= pair[1]));
+                }
             }
         }
     }
 
-    /// `detect` layouts whose segments start in ascending order, most of them valid: mixed
-    /// alignments, fixed, `remaining` and growing sizes, and roles.
+    /// Where a fixed offset of `detect_layout` goes.
+    #[derive(Debug, Clone, Copy)]
+    enum Placement {
+        /// A number of 4 KiB units after the previous partition.
+        After(u64),
+        /// At this offset, wherever the previous partition ends.
+        At(u64),
+    }
+
+    /// `detect` layouts: mostly the shapes of `any_detect_layout`, sometimes a last segment
+    /// placed below an earlier fixed partition, held at its minimum by the step of growth.
     fn detect_layout() -> impl Strategy<Value = Layout> {
+        prop_oneof![4 => any_detect_layout(), 1 => descending_layout()]
+    }
+
+    /// A partition fixed high, then a segment fixed at 0 whose growing partition steps by the
+    /// alignment of the partition after it: on the minimum the step leaves it at its minimum,
+    /// on a larger flash it would grow over the partition fixed high.
+    fn descending_layout() -> impl Strategy<Value = Layout> {
+        (1u64..0x20, 12u32..=16, 1u64..4, 0u64..4).prop_map(|(high, shift, minimum, spare)| {
+            let high = high * 0x1000;
+            Layout {
+                flash: Flash {
+                    size: high + 0x1000 + spare * 0x1000,
+                    alignment: 0x1000,
+                    detect: true,
+                    base_address: 0,
+                },
+                partitions: vec![
+                    partition("high", Some(high), Size::Bytes(0x1000)),
+                    partition("low", Some(0), grow(minimum * 0x1000, 1, None)),
+                    aligned(partition("next", None, Size::Bytes(0x1000)), 1 << shift),
+                ],
+            }
+        })
+    }
+
+    /// `detect` layouts, most of them valid: mixed alignments, fixed offsets mostly ascending,
+    /// fixed, `remaining` and growing sizes, and roles.
+    fn any_detect_layout() -> impl Strategy<Value = Layout> {
         let part = (
-            prop_oneof![3 => Just(None), 1 => (0u64..4).prop_map(Some)],
+            prop_oneof![
+                5 => Just(None),
+                2 => (0u64..4).prop_map(|gap| Some(Placement::After(gap))),
+                2 => (0u64..0x40).prop_map(|units| Some(Placement::At(units * 0x1000))),
+            ],
             prop_oneof![
                 3 => (1u64..0x10).prop_map(|units| Size::Bytes(units * 0x1000)),
                 1 => Just(Size::Remaining),
@@ -1599,13 +1744,20 @@ mod tests {
             (12u32..=16).prop_map(|shift| 1u64 << shift),
             arbitrary_role(),
         );
-        (0u64..0x40, proptest::collection::vec(part, 1..10)).prop_map(|(spare, parts)| {
+        let spare = prop_oneof![1 => Just(0u64), 1 => 0u64..0x40];
+        (spare, proptest::collection::vec(part, 1..10)).prop_map(|(spare, parts)| {
             let mut cursor = 0u64;
+            let mut highest = 0u64;
             let mut partitions = Vec::new();
             for (index, (gap, size, alignment, role)) in parts.into_iter().enumerate() {
-                let offset = gap.map(|gap| align_up(cursor + gap * 0x1000, alignment).unwrap());
+                let offset = gap.map(|placement| match placement {
+                    Placement::After(gap) => align_up(cursor + gap * 0x1000, alignment).unwrap(),
+                    // Anywhere, also below an earlier fixed offset.
+                    Placement::At(offset) => align_up(offset, alignment).unwrap(),
+                });
                 let start = offset.unwrap_or_else(|| align_up(cursor, alignment).unwrap());
                 cursor = start + size.minimum();
+                highest = highest.max(cursor);
                 let mut partition = partition(&format!("p{index}"), offset, size);
                 partition.alignment = Some(alignment);
                 partition.role = role;
@@ -1613,7 +1765,7 @@ mod tests {
             }
             Layout {
                 flash: Flash {
-                    size: align_up(cursor, 0x1000).unwrap() + spare * 0x1000,
+                    size: align_up(highest, 0x1000).unwrap() + spare * 0x1000,
                     alignment: 0x1000,
                     detect: true,
                     base_address: 0,

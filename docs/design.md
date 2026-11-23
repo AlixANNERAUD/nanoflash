@@ -180,16 +180,18 @@ size = "remaining"            # shares what is left with the other growing parti
 **Resolution** keeps the file order. Partitions with a fixed offset stay where they are; the
 others go at the first offset after the previous partition that satisfies their alignment.
 Resolution and checks fail on: duplicate names, zero sizes, misaligned fixed offsets, overlaps,
-exceeding the flash size, a `remaining` left without space, a `maximum` below its `minimum`, a
-growing `firmware` or `update` partition, a partition whose role needs a fixed offset placed after
-one that grows with the flash, a flash below the minimum of the layout, roles a writer cannot
-express. Each error names the partitions and the addresses involved.
+exceeding the flash size, a `remaining` left without space, fixed offsets that descend in a
+`detect` layout, a `maximum` below its `minimum`, a growing `firmware` or `update` partition, a
+partition whose role needs a fixed offset placed after one that grows with the flash, a flash
+below the minimum of the layout, roles a writer cannot express. Each error names the partitions and the addresses involved.
 
 **Growth.** Partitions place first at their minimum size; the free space is then shared:
 
 - R1 *Segments.* Every partition with a fixed offset starts a segment of the file order; a segment
   ends where the next one starts, the last one at the end of the flash. Growth only fills the free
-  space at the end of its own segment, so only the last segment depends on the flash size.
+  space at the end of its own segment, so only the last segment depends on the flash size. In a
+  `detect` layout, fixed offsets ascend in file order, so that no partition lies above the last
+  segment as it grows; a layout with a fixed flash size keeps any order.
 - R2 *Steps.* The share of a `{ grow }` partition is a multiple of the largest of its alignment
   and the alignments of the partitions after it in its segment, so these move by whole multiples
   of their alignment and need no new padding.

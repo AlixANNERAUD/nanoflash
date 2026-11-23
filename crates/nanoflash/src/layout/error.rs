@@ -91,6 +91,19 @@ pub enum LayoutError {
         limit: u64,
         /// Its share is a multiple of this, the largest alignment of the partitions after it.
         step: u64,
+        /// The partition after it whose alignment is `step`, or `None` for a step of one byte.
+        set_by: Option<String>,
+    },
+    /// A fixed offset of a `detect` layout is below an earlier fixed offset.
+    FixedOffsetBelowPrevious {
+        /// The partition.
+        partition: String,
+        /// Its fixed offset.
+        offset: u64,
+        /// The partition with a fixed offset before it.
+        previous: String,
+        /// The fixed offset of `previous`.
+        previous_offset: u64,
     },
     /// A partition whose role needs a fixed size grows.
     RoleCannotGrow {
@@ -237,9 +250,28 @@ impl fmt::Display for LayoutError {
                 start,
                 limit,
                 step,
+                set_by,
+            } => {
+                write!(
+                    formatter,
+                    "partition \"{partition}\" uses the remaining space, but its share of the free space from {start:#x} to {limit:#x} rounds down to zero bytes in steps of {step:#x}"
+                )?;
+                match set_by {
+                    Some(set_by) => write!(
+                        formatter,
+                        ", the alignment of partition \"{set_by}\" after it"
+                    ),
+                    None => Ok(()),
+                }
+            }
+            Self::FixedOffsetBelowPrevious {
+                partition,
+                offset,
+                previous,
+                previous_offset,
             } => write!(
                 formatter,
-                "partition \"{partition}\" uses the remaining space, but its share of the free space from {start:#x} to {limit:#x} rounds down to zero bytes in steps of {step:#x}"
+                "partition \"{partition}\" has a fixed offset of {offset:#x}, below {previous_offset:#x} of \"{previous}\" before it: in a layout with size = \"detect\", fixed offsets ascend in file order"
             ),
             Self::RoleCannotGrow { partition, role } => write!(
                 formatter,
