@@ -925,14 +925,11 @@ mod tests {
     #[test]
     fn erase_all_stops_at_the_bootloader_of_the_layout() {
         // A Nano: Optiboot reports 0x7E00, but the layout keeps 2 KiB for the bootloader.
-        let layout = crate::layout::Layout::from_toml(
-            "[flash]\nsize = \"32 KiB\"\nalignment = 0x80\n\n\
-             [[partition]]\nname = \"application\"\nrole = \"firmware\"\noffset = 0x0\nsize = 0x7800\n\n\
-             [[partition]]\nname = \"bootloader\"\nrole = \"bootloader\"\noffset = 0x7800\nsize = 0x800\n",
-        )
-        .unwrap()
-        .resolve()
-        .unwrap();
+        let layout =
+            crate::layout::Layout::from_toml(include_str!("../../../../hardware/nano/layout.toml"))
+                .unwrap()
+                .resolve()
+                .unwrap();
         let start = bootloader_above_application(Some(&layout));
         assert_eq!(start, Some(0x7800));
         assert_eq!(

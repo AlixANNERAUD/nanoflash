@@ -1221,3 +1221,150 @@ fn layout_check_names_the_line_of_a_bad_hex_image() {
         text(&output.stderr)
     );
 }
+
+// AVR: Arduino Uno, Nano, Mega 2560 and Leonardo.
+
+fn avr_transcript(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../nanoflash/tests/transcripts/avr")
+        .join(name)
+}
+
+fn flash_uno(transcript: &str) -> Output {
+    let board = boards("uno.toml");
+    let transcript = avr_transcript(transcript);
+    run(&[
+        "flash",
+        "--board",
+        path_text(&board),
+        "--replay",
+        path_text(&transcript),
+        "--json",
+    ])
+}
+
+#[test]
+fn flashes_an_uno_from_a_transcript() {
+    let output = flash_uno("flash-uno.transcript");
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let document = document(&output);
+    assert_eq!(document["ok"], true);
+    assert_eq!(document["report"]["chip"]["writable_to"], 32256);
+    assert_eq!(document["report"]["verified"], true);
+}
+
+#[test]
+fn avr_read_back_difference_exits_3() {
+    let output = flash_uno("flash-uno-read-back.transcript");
+    assert_eq!(output.status.code(), Some(3), "{}", text(&output.stderr));
+    let document = document(&output);
+    assert_eq!(document["errors"][0]["kind"], "read-back-differs");
+    assert_eq!(document["errors"][0]["offset"], 133);
+}
+
+#[test]
+fn avr_image_over_the_bootloader_exits_1() {
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
+    let image = directory.path().join("sketch.bin");
+    fs::write(&image, vec![0x55; 0x7E80]).unwrap();
+    let manifest = directory.path().join("manifest.toml");
+    fs::write(
+        &manifest,
+        format!(
+            "[[board]]\nidentifier = \"arduino-uno-r3\"\nprotocol = \"stk500v1\"\n\
+             chip = \"atmega328p\"\n\n[[board.image]]\noffset = 0\npath = \"{}\"\n",
+            path_text(&image)
+        ),
+    )
+    .unwrap();
+    // The Uno's connection, then the end of the session: nothing is written.
+    let connect = fs::read_to_string(avr_transcript("flash-uno.transcript")).unwrap();
+    let signature = connect.find("< 14 1e 95 0f 10").unwrap() + "< 14 1e 95 0f 10\n".len();
+    let transcript = directory.path().join("over-the-bootloader.transcript");
+    fs::write(
+        &transcript,
+        format!("{}> 51 20\n< 14 10\n", &connect[..signature]),
+    )
+    .unwrap();
+    let output = run(&[
+        "flash",
+        "--board",
+        path_text(&manifest),
+        "--replay",
+        path_text(&transcript),
+        "--json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{}", text(&output.stderr));
+    let document = document(&output);
+    assert_eq!(document["errors"][0]["class"], "input");
+    assert!(
+        document["errors"][0]["message"]
+            .as_str()
+            .unwrap()
+            .contains("0x7e00"),
+        "{document}"
+    );
+}
+
+#[test]
+fn detects_an_uno_and_a_leonardo() {
+    let uno = avr_transcript("detect-uno.transcript");
+    let output = run(&["detect", "--replay", path_text(&uno)]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    for line in ["protocol stk500v1", "chip atmega328p", "writable to 0x7e00"] {
+        assert!(
+            stdout.lines().any(|found| found == line),
+            "{line} in {stdout}"
+        );
+    }
+    let leonardo = avr_transcript("detect-leonardo.transcript");
+    let output = run(&[
+        "detect",
+        "--replay",
+        path_text(&leonardo),
+        "--protocol",
+        "avr109",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let stdout = text(&output.stdout);
+    assert!(stdout.contains("protocol avr109"), "{stdout}");
+    assert!(stdout.contains("chip atmega32u4"), "{stdout}");
+}
+
+#[test]
+fn the_avr_board_files_check() {
+    use nanoflash::manifest::{Manifest, Protocol};
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../hardware");
+    let boards = [
+        ("uno", Protocol::Stk500v1, "atmega328p", 0x7E00),
+        ("nano", Protocol::Stk500v1, "atmega328p", 0x7800),
+        ("mega2560", Protocol::Stk500v2, "atmega2560", 0x3_C000),
+        ("leonardo", Protocol::Avr109, "atmega32u4", 0x7000),
+    ];
+    for (name, protocol, chip, application) in boards {
+        let layout = root.join(name).join("layout.toml");
+        let output = run(&["layout", "check", path_text(&layout)]);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{name}: {}",
+            text(&output.stderr)
+        );
+        let manifest = fs::read_to_string(root.join(name).join("manifest.toml")).unwrap();
+        let parsed = Manifest::parse(&manifest).unwrap();
+        assert_eq!(parsed.boards.len(), 1, "{name}");
+        assert_eq!(parsed.boards[0].protocol, protocol, "{name}");
+        assert_eq!(parsed.boards[0].chip, chip, "{name}");
+        let layout = nanoflash::layout::Layout::from_toml(&fs::read_to_string(&layout).unwrap())
+            .unwrap()
+            .resolve()
+            .unwrap();
+        let size = layout
+            .partitions
+            .iter()
+            .find(|partition| partition.definition.name == "application")
+            .map(|partition| partition.size);
+        assert_eq!(size, Some(application), "{name}");
+    }
+}

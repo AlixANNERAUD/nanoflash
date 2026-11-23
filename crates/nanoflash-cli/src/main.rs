@@ -41,13 +41,13 @@ enum Command {
         /// The board of the manifest to flash, when the device cannot tell.
         #[arg(long)]
         board_identifier: Option<String>,
-        /// Erase the whole flash of the chip before writing; on SAM-BA, all of it after the bootloader.
+        /// Erase the whole flash of the chip before writing; on SAM-BA, all of it after the bootloader; on AVR, the flash below the bootloader.
         #[arg(long)]
         erase_all: bool,
         /// Do not check what was written.
         #[arg(long)]
         no_verify: bool,
-        /// The baud rate to flash at [default: 460800 through a UART bridge, 115200 on USB-Serial-JTAG; ignored on SAM-BA].
+        /// The baud rate to flash at [default: 460800 through a UART bridge, 115200 on USB-Serial-JTAG; ignored on SAM-BA; the bootloader's rate on STK500v1 (default 115200, then 57600) and STK500v2 (115200), ignored on AVR109].
         #[arg(long)]
         baud_rate: Option<u32>,
         /// How to report progress on standard error; quiet with --json.
@@ -127,6 +127,12 @@ enum ProtocolArgument {
     Espressif,
     /// Arduino's SAM-BA bootloaders (Nano 33 BLE, SAMD21 boards).
     Samba,
+    /// STK500v1: Arduino Uno, Nano, Pro Mini (Optiboot, old bootloader).
+    Stk500v1,
+    /// STK500v2: Arduino Mega 2560.
+    Stk500v2,
+    /// AVR109: Arduino Leonardo, Micro, Pro Micro (Caterina).
+    Avr109,
 }
 
 #[derive(Debug, Subcommand)]

@@ -1,0 +1,16 @@
+[flash]
+size = "32 KiB"
+base-address = 0x0
+alignment = 0x80
+
+[[partition]]
+name = "application"
+role = "firmware"
+offset = 0x0
+size = 0x7E00
+
+[[partition]]
+name = "bootloader"
+role = "bootloader"
+offset = 0x7E00
+size = 0x200

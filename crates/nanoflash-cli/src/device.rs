@@ -383,6 +383,9 @@ pub fn detect_command(arguments: &DetectArguments<'_>) -> Result<String, Failure
             protocol: arguments.protocol.map(|protocol| match protocol {
                 ProtocolArgument::Espressif => Protocol::Espressif,
                 ProtocolArgument::Samba => Protocol::Samba,
+                ProtocolArgument::Stk500v1 => Protocol::Stk500v1,
+                ProtocolArgument::Stk500v2 => Protocol::Stk500v2,
+                ProtocolArgument::Avr109 => Protocol::Avr109,
             }),
             progress: progress_format(arguments.progress, arguments.json),
         },
@@ -397,9 +400,13 @@ pub fn detect_command(arguments: &DetectArguments<'_>) -> Result<String, Failure
         || "none".to_string(),
         |usb| format!("{:04x}:{:04x}", usb.vendor, usb.product),
     );
-    let writable = chip
+    let writable_from = chip
         .writable_from
         .map_or_else(String::new, |offset| format!("writable from {offset:#x}\n"));
+    let writable_to = chip
+        .writable_to
+        .map_or_else(String::new, |offset| format!("writable to {offset:#x}\n"));
+    let writable = format!("{writable_from}{writable_to}");
     Ok(format!(
         "protocol {}\nchip {}\nflash {flash}\n{writable}usb {usb}\nsecure download mode {}\n",
         chip.protocol,
