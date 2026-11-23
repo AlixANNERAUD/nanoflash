@@ -340,12 +340,44 @@ fn no_bootloader_device_after_the_touch() {
     assert_eq!(
         error,
         Error::NoBootloader {
-            waited_for: Some("2341:005a".into())
+            waited_for: Some("2341:005a".into()),
+            reset: Some("touch-1200"),
         }
     );
     assert_eq!(error.class(), ErrorClass::Device);
     assert!(error.to_string().contains("double-tap"), "{error}");
+    assert!(
+        error.to_string().contains("after the 1200-baud touch"),
+        "{error}"
+    );
     provider.finish().unwrap();
+}
+
+#[test]
+fn no_bootloader_device_after_custom_steps() {
+    // The message names the reset that ran, not the touch.
+    let reset = ResetSequence::Custom(vec![nanoflash::manifest::ResetStep {
+        dtr: false,
+        rts: false,
+        wait: Duration::ZERO,
+    }]);
+    let text = transcript("connect-no-bootloader-device").replace("! baud 1200\n", "");
+    let connection = connect_text(&text, Some(reset), nano33ble());
+    let error = connection.result.unwrap_err();
+    assert_eq!(
+        error,
+        Error::NoBootloader {
+            waited_for: Some("2341:005a".into()),
+            reset: Some("custom"),
+        }
+    );
+    let message = error.to_string();
+    assert!(!message.contains("1200"), "{message}");
+    assert!(
+        message.contains("after the reset sequence \"custom\" of the board"),
+        "{message}"
+    );
+    connection.provider.finish().unwrap();
 }
 
 #[test]
@@ -366,7 +398,10 @@ fn silent_port_gives_no_bootloader() {
     let (result, provider) = connect("connect-silent", None, nano33ble());
     assert_eq!(
         result.unwrap_err(),
-        Error::NoBootloader { waited_for: None }
+        Error::NoBootloader {
+            waited_for: None,
+            reset: None
+        }
     );
     provider.finish().unwrap();
 }
@@ -400,7 +435,10 @@ fn endless_text_gives_no_bootloader() {
     let connection = connect_text(&text, None, nano33ble());
     assert_eq!(
         connection.result.unwrap_err(),
-        Error::NoBootloader { waited_for: None }
+        Error::NoBootloader {
+            waited_for: None,
+            reset: None
+        }
     );
     connection.provider.finish().unwrap();
 }
@@ -420,7 +458,10 @@ fn version_lines_stop_at_256_bytes() {
     let connection = connect_text(&text, None, nano33ble());
     assert_eq!(
         connection.result.unwrap_err(),
-        Error::NoBootloader { waited_for: None }
+        Error::NoBootloader {
+            waited_for: None,
+            reset: None
+        }
     );
     connection.provider.finish().unwrap();
 }
@@ -1152,7 +1193,9 @@ fn nothing_is_done_before_connecting() {
         offset: 0x1_0000,
         size: 0x1000,
     };
-    let none = Err(Error::NoBootloader { waited_for: None });
+    let none = Err(Error::NotConnected {
+        protocol: Protocol::Samba,
+    });
     assert_eq!(block_on(backend.write(&[segment], &mut ())), none);
     assert_eq!(block_on(backend.verify(&[segment], &mut ())), none);
     assert_eq!(block_on(backend.erase(region, &mut ())), none);

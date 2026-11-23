@@ -10,6 +10,7 @@ use super::family::{self, Family};
 use super::{LINE_END, SambaBackend, Session, command};
 use crate::backend::{Backend, ChipInformation, Progress, ProgressEvent, Region, Segment, Stage};
 use crate::error::Error;
+use crate::manifest::Protocol;
 use crate::transport::{Duration, PortProvider, SerialPort, TransportError};
 
 /// How long `X` may take: the SAMD21 erases up to 256 KiB.
@@ -26,7 +27,9 @@ const DATA_PAUSE: Duration = Duration::from_millis(10);
 const REPLY_BUDGET: usize = 64;
 
 fn not_connected() -> Error {
-    Error::NoBootloader { waited_for: None }
+    Error::NotConnected {
+        protocol: Protocol::Samba,
+    }
 }
 
 fn size_of(data: &[u8]) -> u64 {

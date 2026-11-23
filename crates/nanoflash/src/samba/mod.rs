@@ -158,7 +158,10 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             progress.message("the SAM-BA bootloader talks over USB: the baud rate is ignored");
         }
         let Some(reply) = self.version().await? else {
-            return Err(Error::NoBootloader { waited_for: None });
+            return Err(Error::NoBootloader {
+                waited_for: None,
+                reset: None,
+            });
         };
         let version = command::line(&reply);
         let capabilities = match command::capabilities(&version) {
@@ -228,6 +231,7 @@ impl<'p, P: PortProvider> SambaBackend<'p, P> {
             }
             Err(TransportError::NotFound { .. }) => Err(Error::NoBootloader {
                 waited_for: Some(filter.to_string()),
+                reset: Some(self.reset.name()),
             }),
             Err(error) => Err(error.into()),
         }
