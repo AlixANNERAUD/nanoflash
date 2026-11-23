@@ -1,0 +1,8 @@
+# A port that never answers: three attempts, then no bootloader
+! identity 2341:005a
+> "N#"
+> "V#"
+> "N#"
+> "V#"
+> "N#"
+> "V#"

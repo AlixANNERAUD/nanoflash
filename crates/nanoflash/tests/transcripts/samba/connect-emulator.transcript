@@ -1,0 +1,7 @@
+# The bootloader of a Nano 33 BLE on a port without USB identity (an emulator): no touch
+> "N#"
+< "\n\r"
+> "V#"
+< "Arduino Bootloader (SAM-BA extended) 2.0 [Arduino:IKXYZ]\n\r"
+> "I#"
+< "nRF52840-QIAA\n\r"

@@ -1,0 +1,6 @@
+# A SAM-BA monitor without Arduino's extensions
+! identity 2341:005a
+> "N#"
+< "\n\r"
+> "V#"
+< "v1.1 Dec 15 2010\n\r"

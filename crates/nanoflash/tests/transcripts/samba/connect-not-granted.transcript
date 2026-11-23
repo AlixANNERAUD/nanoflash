@@ -1,0 +1,5 @@
+# The 1200-baud touch in a browser that has no permission for the bootloader device
+! identity 2341:805a
+! baud 1200
+! signals dtr=0 rts=0
+! open-fails not-granted

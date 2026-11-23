@@ -1,0 +1,5 @@
+# The 1200-baud touch, then no bootloader device appears (charge-only cable, sketch without the touch)
+! identity 2341:805a
+! baud 1200
+! signals dtr=0 rts=0
+! open-fails not-found

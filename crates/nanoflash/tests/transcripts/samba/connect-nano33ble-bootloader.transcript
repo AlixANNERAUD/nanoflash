@@ -1,0 +1,8 @@
+# Arduino Nano 33 BLE already in its bootloader (double-tapped): no touch
+! identity 2341:005a
+> "N#"
+< "\n\r"
+> "V#"
+< "Arduino Bootloader (SAM-BA extended) 2.0 [Arduino:IKXYZ]\n\r"
+> "I#"
+< "nRF52840-QIAA\n\r"

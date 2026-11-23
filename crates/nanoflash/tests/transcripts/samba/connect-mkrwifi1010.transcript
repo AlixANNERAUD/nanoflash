@@ -1,0 +1,12 @@
+# Arduino MKR WiFi 1010 running a sketch: 1200-baud touch, then the SAMD21 bootloader on 2341:0054
+! identity 2341:8054
+! baud 1200
+! signals dtr=0 rts=0
+! reopen 2341:0054
+> "N#"
+< "\n\r"
+> "V#"
+< "v2.0 [Arduino:XYZP] Nov 23 2026 12:00:00\n\r"
+# no I: the device identifier of the SAMD21G18A, revision D
+> "w41002018,4#"
+< 05 03 01 10

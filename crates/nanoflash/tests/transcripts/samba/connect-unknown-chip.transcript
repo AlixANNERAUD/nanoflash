@@ -1,0 +1,8 @@
+# A bootloader with Arduino's extensions on a chip nanoflash does not know
+! identity 2341:005a
+> "N#"
+< "\n\r"
+> "V#"
+< "Arduino Bootloader (SAM-BA extended) 2.0 [Arduino:IKXYZ]\n\r"
+> "I#"
+< "R7FA4M1AB\n\r"

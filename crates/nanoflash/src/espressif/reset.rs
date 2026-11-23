@@ -28,23 +28,11 @@ const CLASSIC_APPLICATION: [Step; 2] = [(false, true, 100), (false, false, 0)];
 const USB_SERIAL_JTAG_APPLICATION: [Step; 3] =
     [(false, false, 100), (false, true, 100), (false, false, 0)];
 
-/// The name of a reset sequence, as a manifest writes it.
-pub(crate) fn name(sequence: &ResetSequence) -> &'static str {
-    match sequence {
-        ResetSequence::EspressifClassic => "espressif-classic",
-        ResetSequence::EspressifUsbSerialJtag => "espressif-usb-serial-jtag",
-        ResetSequence::Touch1200 => "touch-1200",
-        ResetSequence::Uf2Touch1200 => "uf2-touch-1200",
-        ResetSequence::None => "none",
-        ResetSequence::Custom(_) => "custom",
-    }
-}
-
 /// The error for a sequence the Espressif backend cannot run.
 pub(crate) fn unsupported(sequence: &ResetSequence) -> Error {
     Error::UnsupportedReset {
         protocol: Protocol::Espressif,
-        reset: name(sequence).into(),
+        reset: sequence.name().into(),
     }
 }
 

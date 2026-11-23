@@ -75,3 +75,7 @@ required-features = ["native"]
 [[test]]
 name = "flash"
 required-features = ["espressif", "json", "testing"]
+
+[[test]]
+name = "samba"
+required-features = ["samba", "testing"]

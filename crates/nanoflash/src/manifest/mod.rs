@@ -53,6 +53,21 @@ pub enum ResetSequence {
     Custom(Vec<ResetStep>),
 }
 
+impl ResetSequence {
+    /// The name of the sequence, as a manifest writes it.
+    #[cfg(any(feature = "espressif", feature = "samba"))]
+    pub(crate) fn name(&self) -> &'static str {
+        match self {
+            ResetSequence::EspressifClassic => "espressif-classic",
+            ResetSequence::EspressifUsbSerialJtag => "espressif-usb-serial-jtag",
+            ResetSequence::Touch1200 => "touch-1200",
+            ResetSequence::Uf2Touch1200 => "uf2-touch-1200",
+            ResetSequence::None => "none",
+            ResetSequence::Custom(_) => "custom",
+        }
+    }
+}
+
 /// One step of a custom reset: set the lines, then wait.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -540,6 +555,27 @@ mod tests {
 
     const TOML: &str = include_str!("../../tests/boards/esp32-s3-usb.toml");
     const JSON: &str = include_str!("../../tests/boards/esp32-s3-usb.json");
+
+    #[test]
+    #[cfg(any(feature = "espressif", feature = "samba"))]
+    fn reset_names_are_the_manifest_names() {
+        for sequence in [
+            ResetSequence::EspressifClassic,
+            ResetSequence::EspressifUsbSerialJtag,
+            ResetSequence::Touch1200,
+            ResetSequence::Uf2Touch1200,
+            ResetSequence::None,
+            ResetSequence::Custom(Vec::new()),
+        ] {
+            let written = serde_json::to_value(&sequence).unwrap();
+            let written = match &written {
+                serde_json::Value::String(name) => name.as_str(),
+                serde_json::Value::Object(map) => map.keys().next().unwrap().as_str(),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(sequence.name(), written);
+        }
+    }
 
     fn board(extra: &str) -> alloc::string::String {
         alloc::format!(

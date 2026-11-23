@@ -1,0 +1,11 @@
+# Arduino Nano 33 BLE running a sketch: 1200-baud touch, then the bootloader on 2341:005a
+! identity 2341:805a
+! baud 1200
+! signals dtr=0 rts=0
+! reopen 2341:005a
+> "N#"
+< "\n\r"
+> "V#"
+< "Arduino Bootloader (SAM-BA extended) 2.0 [Arduino:IKXYZ]\n\r"
+> "I#"
+< "nRF52840-QIAA\n\r"
