@@ -26,7 +26,9 @@ pub struct Generated {
 }
 
 /// Why the files could not be generated.
-#[derive(Debug)]
+///
+/// `Debug` prints the same text as `Display`, so a build script that unwraps the error, or returns
+/// it from `main`, shows the message of `nanoflash layout check`.
 pub enum BuildError {
     /// A file could not be read or written.
     Io {
@@ -58,6 +60,12 @@ impl fmt::Display for BuildError {
                 "the OUT_DIR environment variable is not set, call this from a build script",
             ),
         }
+    }
+}
+
+impl fmt::Debug for BuildError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, formatter)
     }
 }
 
@@ -158,6 +166,9 @@ mod tests {
         let error = generate_into(&layout, &directory).unwrap_err();
         assert!(matches!(error, BuildError::Layout(_)));
         assert!(error.to_string().contains("overlap"), "{error}");
+        let debug = std::format!("{error:?}");
+        assert!(debug.contains("overlap") && debug.contains("0x"), "{debug}");
+        assert_eq!(debug, error.to_string());
         fs::remove_dir_all(&directory).unwrap();
     }
 }

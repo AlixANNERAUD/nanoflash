@@ -132,16 +132,28 @@ impl Layout {
                 }
                 Size::Bytes(bytes) => bytes,
                 Size::Remaining => {
-                    let limit = match self.partitions.get(index + 1) {
-                        Some(next) => next.offset,
-                        None => Some(flash.size),
+                    let next = self.partitions.get(index + 1);
+                    let limit = match next {
+                        Some(next) => match next.offset {
+                            Some(limit) => limit,
+                            None => {
+                                errors.push(LayoutError::RemainingFollowedByUnfixed {
+                                    partition: partition.name.clone(),
+                                    next: next.name.clone(),
+                                });
+                                continue;
+                            }
+                        },
+                        None => flash.size,
                     };
-                    match limit.and_then(|limit| limit.checked_sub(offset)) {
+                    match limit.checked_sub(offset) {
                         Some(size) if size > 0 => size,
                         _ => {
                             errors.push(LayoutError::NoSpaceForRemaining {
                                 partition: partition.name.clone(),
                                 offset,
+                                limit,
+                                limited_by: next.map(|next| next.name.clone()),
                             });
                             continue;
                         }
@@ -168,8 +180,10 @@ impl Layout {
 
         let mut by_offset: Vec<&ResolvedPartition> = resolved.iter().collect();
         by_offset.sort_by_key(|partition| partition.offset);
-        for pair in by_offset.windows(2) {
-            if let [first, second] = pair {
+        // Every partition is compared with all the earlier ones, not only its neighbour: a long
+        // partition can overlap several later ones.
+        for (index, second) in by_offset.iter().enumerate() {
+            for first in by_offset.iter().take(index) {
                 if first.end() > second.offset {
                     errors.push(LayoutError::Overlap {
                         first: first.definition.name.clone(),
@@ -382,6 +396,29 @@ mod tests {
     }
 
     #[test]
+    fn a_long_partition_overlaps_every_later_one() {
+        let layout = Layout {
+            flash: flash(0x20000, 0x1000),
+            partitions: vec![
+                partition("a", Some(0x0), Size::Bytes(0x10000)),
+                partition("b", Some(0x1000), Size::Bytes(0x1000)),
+                partition("c", Some(0x3000), Size::Bytes(0x1000)),
+            ],
+        };
+        let pairs: Vec<(alloc::string::String, alloc::string::String)> = errors_of(&layout)
+            .into_iter()
+            .map(|error| match error {
+                LayoutError::Overlap { first, second, .. } => (first, second),
+                other => panic!("unexpected {other}"),
+            })
+            .collect();
+        assert_eq!(
+            pairs,
+            vec![("a".into(), "b".into()), ("a".into(), "c".into())]
+        );
+    }
+
+    #[test]
     fn overlap_message_names_both_partitions() {
         let layout = Layout {
             flash: flash(0x20000, 0x1000),
@@ -471,10 +508,35 @@ mod tests {
         };
         assert_eq!(
             errors_of(&layout),
+            vec![LayoutError::RemainingFollowedByUnfixed {
+                partition: "rest".into(),
+                next: "next".into()
+            }]
+        );
+        assert_eq!(
+            LayoutErrors(errors_of(&layout)).to_string(),
+            "partition \"rest\" uses the remaining space, so the partition after it, \"next\", needs a fixed offset"
+        );
+
+        let squeezed = Layout {
+            flash: flash(0x10000, 0x1000),
+            partitions: vec![
+                partition("rest", Some(0x2000), Size::Remaining),
+                partition("next", Some(0x2000), Size::Bytes(0x1000)),
+            ],
+        };
+        assert_eq!(
+            errors_of(&squeezed),
             vec![LayoutError::NoSpaceForRemaining {
                 partition: "rest".into(),
-                offset: 0x1000
+                offset: 0x2000,
+                limit: 0x2000,
+                limited_by: Some("next".into())
             }]
+        );
+        assert_eq!(
+            LayoutErrors(errors_of(&squeezed)).to_string(),
+            "partition \"rest\" uses the remaining space but starts at 0x2000, and the next partition \"next\" starts at 0x2000, so no space is left"
         );
 
         let at_end = Layout {
@@ -488,8 +550,14 @@ mod tests {
             errors_of(&at_end),
             vec![LayoutError::NoSpaceForRemaining {
                 partition: "rest".into(),
-                offset: 0x2000
+                offset: 0x2000,
+                limit: 0x2000,
+                limited_by: None
             }]
+        );
+        assert_eq!(
+            LayoutErrors(errors_of(&at_end)).to_string(),
+            "partition \"rest\" uses the remaining space but starts at 0x2000, and the flash ends at 0x2000, so no space is left"
         );
 
         let two = Layout {

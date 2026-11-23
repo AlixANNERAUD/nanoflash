@@ -75,13 +75,23 @@ pub enum LayoutError {
         /// The second one in file order.
         second: String,
     },
-    /// A partition taking the remaining space has no space, or is followed by a partition without
-    /// a fixed offset.
+    /// A partition taking the remaining space is followed by a partition without a fixed offset.
+    RemainingFollowedByUnfixed {
+        /// The partition taking the remaining space.
+        partition: String,
+        /// The partition after it.
+        next: String,
+    },
+    /// A partition taking the remaining space has no space left.
     NoSpaceForRemaining {
         /// The partition.
         partition: String,
         /// Where it starts.
         offset: u64,
+        /// The address where the space ends.
+        limit: u64,
+        /// The partition that starts at `limit`, or `None` when the flash ends there.
+        limited_by: Option<String>,
     },
     /// Two update partitions use the same slot.
     DuplicateSlot {
@@ -172,9 +182,27 @@ impl fmt::Display for LayoutError {
                 formatter,
                 "partitions \"{first}\" and \"{second}\" both take the remaining space"
             ),
-            Self::NoSpaceForRemaining { partition, offset } => write!(
+            Self::RemainingFollowedByUnfixed { partition, next } => write!(
                 formatter,
-                "partition \"{partition}\" takes the remaining space but none is left after {offset:#x}, or the next partition has no fixed offset"
+                "partition \"{partition}\" uses the remaining space, so the partition after it, \"{next}\", needs a fixed offset"
+            ),
+            Self::NoSpaceForRemaining {
+                partition,
+                offset,
+                limit,
+                limited_by: Some(next),
+            } => write!(
+                formatter,
+                "partition \"{partition}\" uses the remaining space but starts at {offset:#x}, and the next partition \"{next}\" starts at {limit:#x}, so no space is left"
+            ),
+            Self::NoSpaceForRemaining {
+                partition,
+                offset,
+                limit,
+                limited_by: None,
+            } => write!(
+                formatter,
+                "partition \"{partition}\" uses the remaining space but starts at {offset:#x}, and the flash ends at {limit:#x}, so no space is left"
             ),
             Self::DuplicateSlot {
                 slot,
