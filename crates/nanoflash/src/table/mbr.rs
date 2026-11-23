@@ -45,6 +45,10 @@ pub fn write(layout: &ResolvedLayout) -> Result<[u8; TABLE_SIZE], TableError> {
         });
     }
 
+    let first = partitions
+        .first()
+        .copied()
+        .map(|partition| partition.definition.name.as_str());
     let mut header = MBRHeader::new([0; 4]);
     for (index, partition) in partitions.into_iter().enumerate() {
         let name = partition.definition.name.as_str();
@@ -110,15 +114,39 @@ pub fn write(layout: &ResolvedLayout) -> Result<[u8; TABLE_SIZE], TableError> {
         }
     }
     // The boot flags written above are the only thing the encoder validates, and they are valid.
-    header.to_bytes().map_err(|_| TableError::OutOfRange {
-        partition: alloc::string::String::new(),
+    header.to_bytes().map_err(|_| encoding_error(first))
+}
+
+/// The error of an encoding that cannot fail: it names the first entry of the table, else the
+/// writer, so that the message names something.
+fn encoding_error(first: Option<&str>) -> TableError {
+    TableError::OutOfRange {
+        partition: first.unwrap_or(WRITER).into(),
         writer: WRITER,
-    })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_encoding_error_names_a_partition() {
+        assert_eq!(
+            encoding_error(Some("storage")),
+            TableError::OutOfRange {
+                partition: "storage".into(),
+                writer: "mbr"
+            }
+        );
+        assert_eq!(
+            encoding_error(None),
+            TableError::OutOfRange {
+                partition: "mbr".into(),
+                writer: "mbr"
+            }
+        );
+    }
     use crate::layout::{Flash, Layout, MbrAttributes, Partition, Size};
     use alloc::string::ToString;
     use alloc::vec;
