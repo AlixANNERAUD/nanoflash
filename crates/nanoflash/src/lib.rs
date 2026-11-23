@@ -31,6 +31,8 @@ pub mod table;
 #[cfg(feature = "testing")]
 pub mod testing;
 pub mod transport;
+#[cfg(feature = "web")]
+pub mod web;
 
 #[cfg(feature = "flash")]
 pub use error::{Error, ErrorClass};

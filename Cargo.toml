@@ -12,3 +12,11 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(docsrs)"] }
 unsafe_code = "forbid"
+
+# The WebAssembly modules of the web package (`mise run web-wasm`), built for size.
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

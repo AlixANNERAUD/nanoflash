@@ -31,6 +31,8 @@ testing = []
 native = ["dep:serialport"]
 # Constants and linker scripts for the `build.rs` of a firmware (needs the standard library).
 build = ["toml", "table-linker"]
+# The serial transport of the browser, over Web Serial (stays `no_std`).
+web = ["dep:wasm-bindgen", "dep:js-sys", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
@@ -40,6 +42,9 @@ sha2 = { version = "0.10", optional = true, default-features = false }
 serialport = { version = "4.10", optional = true, default-features = false }
 serde_json = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 toml = { version = "1", optional = true, default-features = false, features = ["parse", "serde"] }
+wasm-bindgen = { version = "0.2.130", optional = true, default-features = false }
+js-sys = { version = "0.3.107", optional = true, default-features = false }
+wasm-bindgen-futures = { version = "0.4.80", optional = true, default-features = false }
 
 [lints]
 workspace = true

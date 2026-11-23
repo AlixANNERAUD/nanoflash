@@ -37,6 +37,7 @@ run = [
   "cargo test -p nanoflash --no-default-features --features flash",
   "cargo test -p nanoflash --no-default-features --features espressif",
   "cargo test -p nanoflash --no-default-features --features toml,json",
+  "cargo test -p nanoflash --no-default-features --features web",
 ]
 
 [tasks.msrv]
@@ -52,7 +53,7 @@ description = "Build the library for Cortex-M4F and WebAssembly with every no_st
 env.RUSTFLAGS = "-D warnings"
 run = [
   "cargo build -p nanoflash --lib --target thumbv7em-none-eabihf --features toml,json,table-espressif,table-mbr,table-linker,testing,flash,espressif",
-  "cargo build -p nanoflash --lib --target wasm32-unknown-unknown --features toml,json,table-espressif,table-mbr,table-linker,testing,flash,espressif",
+  "cargo build -p nanoflash --lib --target wasm32-unknown-unknown --features toml,json,table-espressif,table-mbr,table-linker,testing,flash,espressif,web",
 ]
 
 [tasks.deny]
@@ -84,6 +85,59 @@ run = [
   "curl --fail --silent --show-error --location --output target/external/gen_esp32part.py https://raw.githubusercontent.com/espressif/esp-idf/v5.5/components/partition_table/gen_esp32part.py",
   "NANOFLASH_EXTERNAL_PARSERS=1 NANOFLASH_GEN_ESP32PART=target/external/gen_esp32part.py cargo test -p nanoflash --all-features --test external_parsers",
 ]
+
+[tasks.web-wasm]
+description = "Build the WebAssembly modules of the web package (core, and espressif with the Espressif backend) into web/src/wasm"
+tools = { "cargo:wasm-bindgen-cli" = "0.2.130", "github:WebAssembly/binaryen" = { version = "133", version_prefix = "version_" } }
+env.RUSTFLAGS = "-D warnings"
+run = [
+  # wasm-bindgen only reads modules built by the wasm-bindgen crate of its own version.
+  '''
+  locked=$(sed -n '/^name = "wasm-bindgen"$/{n;s/^version = "\(.*\)"$/\1/p;}' Cargo.lock)
+  installed=$(wasm-bindgen --version | cut -d ' ' -f 2)
+  if [ "$installed" != "$locked" ]; then
+    echo "wasm-bindgen $installed is installed, Cargo.lock has the wasm-bindgen crate $locked: update the cargo:wasm-bindgen-cli tool of mise.toml" >&2
+    exit 1
+  fi
+  ''',
+  "cargo build -p nanoflash-web --target wasm32-unknown-unknown --profile wasm --no-default-features",
+  "wasm-bindgen --target web --remove-name-section --remove-producers-section --out-dir web/src/wasm --out-name nanoflash_core target/wasm32-unknown-unknown/wasm/nanoflash_web.wasm",
+  # Without inlining functions that have one caller, which makes the gzip of the espressif
+  # module about 26 KB larger (254089 bytes against 227368 with wasm-opt 133).
+  "wasm-opt -Oz --one-caller-inline-max-function-size=0 web/src/wasm/nanoflash_core_bg.wasm -o web/src/wasm/nanoflash_core_bg.wasm",
+  "cargo build -p nanoflash-web --target wasm32-unknown-unknown --profile wasm --features espressif",
+  "wasm-bindgen --target web --remove-name-section --remove-producers-section --out-dir web/src/wasm --out-name nanoflash_espressif target/wasm32-unknown-unknown/wasm/nanoflash_web.wasm",
+  "wasm-opt -Oz --one-caller-inline-max-function-size=0 web/src/wasm/nanoflash_espressif_bg.wasm -o web/src/wasm/nanoflash_espressif_bg.wasm",
+]
+
+[tasks.web-size]
+description = "Check that every WebAssembly module of the web package is at most 256000 bytes once compressed with gzip -9"
+depends = ["web-wasm"]
+run = """
+status=0
+for file in web/src/wasm/*_bg.wasm; do
+  size=$(gzip -9 -c "$file" | wc -c)
+  echo "$file $size"
+  if [ "$size" -gt 256000 ]; then
+    echo "$file is $size bytes compressed, over the budget of 256000 bytes" >&2
+    status=1
+  fi
+done
+exit $status
+"""
+
+[tasks.web-test]
+description = "Run the tests of the web package in Node, against a mocked Web Serial port"
+depends = ["web-wasm"]
+tools = { node = "22" }
+run = [
+  "npm --prefix web ci",
+  "npm --prefix web test",
+]
+
+[tasks.web]
+description = "Build the WebAssembly modules, check their size and run the tests of the web package"
+depends = ["web-size", "web-test"]
 
 [tasks.check]
 description = "Everything to run before pushing"

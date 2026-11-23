@@ -3,3 +3,4 @@ node_modules/
 /web/dist/
 /hardware/boards.toml
 /hardware/*/firmware/
+/web/src/wasm/

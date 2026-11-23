@@ -1,0 +1,30 @@
+[package]
+name = "nanoflash-web"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The WebAssembly modules of the nanoflash web package: layout checks and writers, and flashing over Web Serial."
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+# Flashing and detecting Espressif chips over Web Serial.
+espressif = ["nanoflash/espressif"]
+
+[dependencies]
+nanoflash = { path = "../nanoflash", version = "0.1.0", default-features = false, features = ["flash", "json", "table-espressif", "table-mbr", "table-linker", "web"] }
+# Pinned: the wasm-bindgen command of mise.toml must be of this exact version.
+wasm-bindgen = { version = "=0.2.130", default-features = false }
+js-sys = { version = "0.3.107", default-features = false }
+wasm-bindgen-futures = { version = "0.4.80", default-features = false }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+[lints]
+workspace = true

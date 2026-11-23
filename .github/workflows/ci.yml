@@ -81,6 +81,19 @@ jobs:
           cache-key-suffix: cross
       - run: mise run cross
 
+  # Builds the WebAssembly modules, checks their size and runs the tests of the web package in
+  # Node against a mocked Web Serial port.
+  web:
+    name: Web package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: jdx/mise-action@v5
+      - uses: jdx/mr-boxington-action@v1
+        with:
+          cache-key-suffix: web
+      - run: mise run web
+
   deny:
     name: Dependencies (cargo-deny)
     runs-on: ubuntu-latest
