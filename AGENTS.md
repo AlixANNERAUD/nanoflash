@@ -13,7 +13,7 @@ the headroom of every partition, and writes the table each family needs. See `RE
 
 | Crate | Role |
 | --- | --- |
-| `nanoflash` (`crates/nanoflash`) | The library, `no_std` with `alloc`. Features: `toml`, `json`, `table-espressif`, `table-mbr`, `table-linker`, `flash`, `espressif`, `testing`, `native`, `build`, `web`. |
+| `nanoflash` (`crates/nanoflash`) | The library, `no_std` with `alloc`. Features: `toml`, `json`, `table-espressif`, `table-mbr`, `table-linker`, `flash`, `espressif`, `samba`, `testing`, `native`, `build`, `web`. |
 | `nanoflash-cli` (`crates/nanoflash-cli`) | The `nanoflash` command: `layout check`, `layout write`, `flash`, `detect`, `image build`. |
 | `nanoflash-web` (`crates/nanoflash-web`) | The WebAssembly modules of the browser package (`publish = false`): `core` (layouts), and one module per backend feature (`espressif`, `samba`) that adds `flash` and `detect`. |
 
@@ -32,6 +32,7 @@ Modules of the library:
 | `backend`, `error` | The `Backend` trait, progress events, the errors and their class (`flash`). |
 | `flash` | Board selection, image preparation and checks, the flash and detect orchestration, `image_build` (`flash`). |
 | `espressif` | The ROM loader backend: SLIP, commands, chip table, resets, writes (`espressif`). |
+| `samba` | The SAM-BA backend of Arduino's bootloaders (Nano 33 BLE, SAMD21 boards): the 1200-baud touch, the ASCII commands with Arduino's `X`, `Y` and `Z`, the chip families, writes and CRC-16 checks (`samba`). |
 | `native` | The host serial port over `serialport` (`native`, needs `std`). |
 | `web` | The serial port of the browser over Web Serial, and the provider that finds a device again among the granted ports (`web`, `no_std`, through `wasm-bindgen` and `js-sys`, without `web-sys`). |
 | `testing` | Transcript replay and recording, `MemorySource` (`testing`). |
@@ -57,6 +58,11 @@ describes the boards in the loop.
 - Nothing is erased before every input is checked: images and erase entries are read and checked
   (digest, alignment, overlap, partition, layout and protocol range) before connecting when the
   board is known, and against the flash the chip reports before the first erase.
+- What `connect` reports is checked before the first erase too: every image and erase entry
+  starts at or after `writable_from`, and when the bootloader `erases_to_end`, every erase entry
+  ends at the end of flash.
+- No code from BOSSA or the Arduino bootloaders is copied: they are a behaviour reference only
+  (facts, values and command sequences).
 - Public traits with `async fn` carry `#[allow(async_fn_in_trait)]`; no `Send` bound (browser
   APIs are single-threaded).
 - Spell words out in identifiers, docs and messages (`device`, `directory`, `configuration`),

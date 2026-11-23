@@ -24,11 +24,13 @@ and a drop-in web component).
   supply them through hooks.
 
 > **Status:** layout checks and the table writers (Espressif, MBR, linker regions and constants)
-> are available, in the library and in the `nanoflash` command, and so is flashing Espressif
-> chips (ESP32, -S2, -S3, -C2, -C3, -C5, -C6, -H2, -P4) natively through their ROM loader. The
-> flashing is verified against recorded transcripts and Espressif's QEMU (ESP32 and ESP32-C3),
-> not yet on hardware. The browser package ([`web/`](web/README.md)) flashes the same chips over
-> Web Serial, through a TypeScript API and a `<nanoflash-button>` web component, tested in Node
+> are available, in the library and in the `nanoflash` command, and so is flashing, natively and
+> in the browser: Espressif chips (ESP32, -S2, -S3, -C2, -C3, -C5, -C6, -H2, -P4) through their
+> ROM loader, and through Arduino's SAM-BA bootloaders the Arduino Nano 33 BLE (nRF52840) and the
+> Arduino SAMD21 boards (such as the MKR WiFi 1010). The flashing is verified against recorded
+> transcripts, Espressif's QEMU (ESP32 and ESP32-C3) and arduino/BOSSA's emulated SAM-BA
+> bootloader. The browser package ([`web/`](web/README.md)) flashes the same chips over Web
+> Serial, through a TypeScript API and a `<nanoflash-button>` web component, tested in Node
 > against a mocked port; it is not published on npm yet. The other protocols come next. See
 > [`docs/design.md`](docs/design.md) and [`docs/prior-art.md`](docs/prior-art.md).
 
@@ -143,11 +145,32 @@ flashed esp32-s3-devkitc (esp32-s3, 8 MiB)
 verified
 ```
 
-The port is the only one that suits the board, or `--port`. `--erase-all` erases the whole
-flash first, `--no-verify` skips the MD5 checks, `--baud-rate` changes the speed (460800 through
-a UART bridge by default), `--json` prints one JSON document. The exit code is 0 on success, 1
-for an input error, 2 for a device or connection error and 3 when the flash does not read back
-as written.
+A board behind Arduino's SAM-BA bootloader flashes the same way: nanoflash touches the sketch's
+port at 1200 baud, waits for the bootloader's port, writes and checks the images with CRC-16, then
+resets into the application. Its `chip` is `nrf52840` (Nano 33 BLE), or `samd21g18a`,
+`samd21j18a` or `samd21e18a` (Arduino SAMD21 boards); the bootloader at the start of flash is
+never written.
+
+```console
+$ nanoflash flash --board hardware/nano33ble/manifest.toml
+connecting
+writing at 0x10000
+verifying
+resetting
+flashed arduino-nano-33-ble (nrf52840, 1 MiB)
+  0x10000  application  84 KiB
+verified
+```
+
+The SAMD21 bootloader erases from the lowest image to the end of flash before writing: what was
+stored after it is gone, and nanoflash warns about it, naming the partitions it took.
+
+The port is the only one that suits the board, or `--port`. `--erase-all` erases the flash
+first, from the lowest offset the bootloader writes to the end (a protected bootloader stays),
+`--no-verify` skips the MD5 or CRC-16 checks, `--baud-rate` changes the speed (460800 through a
+UART bridge by default; the SAM-BA bootloader ignores it), `--json` prints one JSON document.
+The exit code is 0 on success, 1 for an input error, 2 for a device or connection error and 3
+when the flash does not read back as written.
 
 ```console
 $ nanoflash detect --port /dev/ttyACM0

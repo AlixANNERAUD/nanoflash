@@ -268,11 +268,21 @@ and resets into the application.
   layout when the layout has a `partition-table` partition and no manifest image targets it. A
   manifest image targeting that partition wins, and `layout check` warns when it differs from the
   generated table.
-- It erases only the regions it writes (rounded to the erase unit). `--erase-all` (and
-  `eraseAll: true` in the JavaScript API) erases the whole flash first. Data partitions such as
-  NVS or storage are never touched unless an image targets them.
-- On SAM-BA, where Arduino's `X` command erases from an address to the end of the application
-  area, the backend erases from the lowest written address and says so in its progress events.
+- It erases only the regions it writes (rounded to the erase unit), except on the SAMD21 (see
+  below). `--erase-all` (and `eraseAll: true` in the JavaScript API) erases the flash first, from
+  the lowest offset the bootloader writes (`writable_from`, which `connect` reports) to the end:
+  a bootloader the chip protects, such as SAM-BA's, is never erased. Data partitions such as NVS
+  or storage are not touched unless an image or an erase entry targets them, again except on the
+  SAMD21.
+- On SAM-BA, Arduino's `X` command depends on the chip:
+  - nRF52840 (Nano 33 BLE): `X` erases nothing; each write erases the 4 KiB pages it programs,
+    and an erase entry or `--erase-all` writes `0xFF` over its pages.
+  - SAMD21: `X` erases from its address to the end of flash. Writing erases from the lowest
+    written address to the end of flash, so everything stored after the lowest image, data
+    partitions included, is gone; nanoflash says so in its progress messages and adds an
+    `erases-to-end` warning to the report, naming the partitions of the layout it erased that no
+    image is written to. Erase entries must end at the end of flash, and images are written in
+    order of offset.
 - It does not initialise `otadata` and does not patch the Espressif bootloader header (flash
   size, mode, frequency): both are image formats, which nanoflash leaves to the caller. A
   manifest that wants `otadata` reset lists an image for it, or an `erase` entry for its

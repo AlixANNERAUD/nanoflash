@@ -151,8 +151,9 @@ report) and `nanoflash-error` (the error). Style it with `--nanoflash-button-bac
 
 The WebAssembly modules ship in `dist/wasm` and are loaded relative to the module that imports
 them (`new URL("...wasm", import.meta.url)`). Each protocol (`espressif`, `samba`) is a separate
-dynamic import, so a bundler loads only the module of the board that is flashed. If your bundler does not copy `.wasm`
-files it finds this way, copy `node_modules/nanoflash/dist/wasm` next to the chunk.
+dynamic import, so a bundler loads only the module of the board that is flashed. If your bundler
+does not copy `.wasm` files it finds this way, copy `node_modules/nanoflash/dist/wasm` next to the
+chunk.
 
 ## Licence
 
